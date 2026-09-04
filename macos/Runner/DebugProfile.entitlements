@@ -2,10 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  The sandbox is off. An editor opens and writes project folders wherever
+	  somebody keeps their work, and a sandboxed one redirects all of that into
+	  a container nobody can find — a project saved to "Documents" ends up
+	  buried under Library/Containers and is effectively lost.
+
+	  This is a developer tool distributed outside the App Store, which is the
+	  case the sandbox was never meant to cover.
+	-->
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
+
+	<!-- Hot reload attaches over a local socket. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
 </dict>

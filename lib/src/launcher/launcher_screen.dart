@@ -154,14 +154,23 @@ class _Rail extends StatelessWidget {
             children: [
               const _Mark(),
               const SizedBox(width: Space.md),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('Orbis', style: OrbisText.title),
-                  Text('Engine 0.1.0 · pre-alpha',
-                      style: OrbisText.caption.copyWith(fontSize: 11)),
-                ],
+              // Constrained rather than left to its natural width: the rail is
+              // a fixed size and the version string is not, so an unbounded
+              // column here overflows the moment either changes.
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Orbis',
+                        style: OrbisText.title, overflow: TextOverflow.ellipsis),
+                    Text(
+                      'Engine 0.1.0 · pre-alpha',
+                      style: OrbisText.caption.copyWith(fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

@@ -80,13 +80,27 @@ class _OrbisButtonState extends State<OrbisButton> {
           Icon(widget.icon, size: 15, color: _foreground),
           const SizedBox(width: Space.sm),
         ],
-        Text(
-          widget.label,
-          style: OrbisText.label.copyWith(
-            color: _foreground,
-            fontWeight: FontWeight.w500,
+        // Flexible when it fills its parent, since a label long enough to
+        // overflow is a translation away rather than a hypothetical.
+        if (widget.expand)
+          Flexible(
+            child: Text(
+              widget.label,
+              overflow: TextOverflow.ellipsis,
+              style: OrbisText.label.copyWith(
+                color: _foreground,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          )
+        else
+          Text(
+            widget.label,
+            style: OrbisText.label.copyWith(
+              color: _foreground,
+              fontWeight: FontWeight.w500,
+            ),
           ),
-        ),
       ],
     );
 
