@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
@@ -152,6 +155,17 @@ class _SceneFields extends StatelessWidget {
   final History history;
   final ValueChanged<SceneEntry> onLoad;
 
+  /// The fog as it stands, which is every fog command's starting point.
+  ({Color colour, double density, double height, double falloff}) _fogOf(
+    EditorScene scene,
+  ) =>
+      (
+        colour: scene.fogColour,
+        density: scene.fogDensity,
+        height: scene.fogHeight,
+        falloff: scene.fogFalloff,
+      );
+
   @override
   Widget build(BuildContext context) {
     final scene = entry.scene;
@@ -262,6 +276,98 @@ class _SceneFields extends StatelessWidget {
           ),
         ),
         _ComponentSection(
+          title: 'Fog',
+          icon: Icons.foggy,
+          child: Column(
+            children: [
+              ColourRow(
+                label: 'Colour',
+                value: scene.fogColour,
+                onChanged: (value) => history
+                  ..run(SetSceneFog(
+                    sceneId: entry.id,
+                    from: _fogOf(scene),
+                    to: (
+                      colour: value,
+                      density: scene.fogDensity,
+                      height: scene.fogHeight,
+                      falloff: scene.fogFalloff,
+                    ),
+                  ))
+                  ..seal(),
+              ),
+              SliderRow(
+                label: 'Density',
+                value: scene.fogDensity,
+                min: 0,
+                max: 0.4,
+                decimals: 3,
+                onChanged: (value) => history.run(SetSceneFog(
+                  sceneId: entry.id,
+                  from: _fogOf(scene),
+                  to: (
+                    colour: scene.fogColour,
+                    density: value,
+                    height: scene.fogHeight,
+                    falloff: scene.fogFalloff,
+                  ),
+                )),
+                onSettled: history.seal,
+              ),
+              // Only worth showing once there is fog to lie anywhere. A
+              // height for nothing is two controls that do nothing.
+              if (scene.fogDensity > 0) ...[
+                SliderRow(
+                  label: 'Height',
+                  value: scene.fogHeight,
+                  min: -20,
+                  max: 20,
+                  decimals: 1,
+                  unit: ' m',
+                  onChanged: (value) => history.run(SetSceneFog(
+                    sceneId: entry.id,
+                    from: _fogOf(scene),
+                    to: (
+                      colour: scene.fogColour,
+                      density: scene.fogDensity,
+                      height: value,
+                      falloff: scene.fogFalloff,
+                    ),
+                  )),
+                  onSettled: history.seal,
+                ),
+                SliderRow(
+                  label: 'Falloff',
+                  value: scene.fogFalloff,
+                  min: 0,
+                  max: 2,
+                  decimals: 2,
+                  onChanged: (value) => history.run(SetSceneFog(
+                    sceneId: entry.id,
+                    from: _fogOf(scene),
+                    to: (
+                      colour: scene.fogColour,
+                      density: scene.fogDensity,
+                      height: scene.fogHeight,
+                      falloff: value,
+                    ),
+                  )),
+                  onSettled: history.seal,
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                      Space.md, Space.xs, Space.md, 0),
+                  child: Text(
+                    'Falloff is how fast the air clears with altitude. Zero '
+                    'fills the world evenly.',
+                    style: OrbisText.caption,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        _ComponentSection(
           title: 'Contents',
           icon: Icons.list,
           child: Column(
@@ -270,6 +376,12 @@ class _SceneFields extends StatelessWidget {
               TextRow(
                 label: 'Drawn',
                 value: '${scene.objects.where((o) => o.isDrawable).length}',
+              ),
+              TextRow(
+                label: 'Lights',
+                value: '${scene.objects.where(
+                      (o) => o.kind == ObjectKind.light,
+                    ).length}',
               ),
             ],
           ),
@@ -332,10 +444,53 @@ class _Fields extends StatelessWidget {
               ],
             ),
           ),
+        if (object.kind != ObjectKind.scene) _visibility(scene),
         if (object.kind != ObjectKind.scene) _transform(),
         if (object.kind == ObjectKind.light) _light(),
         if (object.kind == ObjectKind.mesh) _mesh(),
       ],
+    );
+  }
+
+  Widget _visibility(EditorScene scene) {
+    // Hidden by something further up is a different state from hidden here,
+    // and an object that says "shown" while nothing appears is worse than no
+    // control at all.
+    final hiddenAbove = object.visible && !scene.isShown(object.id);
+
+    return _ComponentSection(
+      title: 'Object',
+      icon: Icons.visibility_outlined,
+      child: Column(
+        children: [
+          ChoiceRow(
+            label: 'Visible',
+            options: const ['Hidden', 'Shown'],
+            selected: object.visible ? 'Shown' : 'Hidden',
+            onSelect: (value) {
+              final wanted = value == 'Shown';
+              if (wanted == object.visible) return;
+              history
+                ..run(SetVisible(
+                  sceneId: sceneId,
+                  id: object.id,
+                  name: object.name,
+                  to: wanted,
+                ))
+                ..seal();
+            },
+          ),
+          if (hiddenAbove)
+            Padding(
+              padding:
+                  const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+              child: Text(
+                'Hidden anyway, because something it is inside is hidden.',
+                style: OrbisText.caption,
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -374,45 +529,203 @@ class _Fields extends StatelessWidget {
         ),
       );
 
-  Widget _light() => _ComponentSection(
-        title: 'Light',
-        icon: Icons.wb_sunny_outlined,
-        child: Column(
-          children: [
-            // Only Sun is offered because only Sun is rendered. The other
-            // three arrive with the renderer's punctual lights.
-            const ChoiceRow(label: 'Type', options: ['Sun'], selected: 'Sun'),
-            ColourRow(
-              label: 'Colour',
-              value: object.colour,
-              onChanged: (value) => history
-                ..run(SetColour(
+  /// What each light type is called in the inspector, in the order they are
+  /// offered: the two an artist reaches for first, then the two that need
+  /// more said about them.
+  static const Map<LightType, String> _lightNames = {
+    LightType.point: 'Point',
+    LightType.sun: 'Sun',
+    LightType.spot: 'Spot',
+    LightType.area: 'Area',
+  };
+
+  Widget _light() {
+    final type = object.lightType;
+    final isSun = type == LightType.sun;
+    final isSpot = type == LightType.spot;
+    final isArea = type == LightType.area;
+
+    return _ComponentSection(
+      title: 'Light',
+      icon: Icons.wb_sunny_outlined,
+      child: Column(
+        children: [
+          ChoiceRow(
+            label: 'Type',
+            options: _lightNames.values.toList(),
+            selected: _lightNames[type]!,
+            onSelect: (value) {
+              final wanted = _lightNames.entries
+                  .firstWhere((entry) => entry.value == value)
+                  .key;
+              if (wanted == type) return;
+              history
+                ..run(SetLightType(
                   sceneId: sceneId,
                   id: object.id,
                   name: object.name,
-                  from: object.colour,
-                  to: value,
+                  from: type,
+                  to: wanted,
+                  fromPower: object.power,
+                  // The number means something different on the other side of
+                  // this change, so it is restated rather than carried: a sun
+                  // is watts per square metre and the rest are watts, and a
+                  // thousand of the second is a hundred suns.
+                  toPower: _powerFor(wanted, from: type, power: object.power),
                 ))
-                ..seal(),
-            ),
-            SliderRow(
-              label: 'Power',
-              value: object.power,
-              min: 0,
-              max: 5000,
-              unit: 'W',
-              onChanged: (value) => history.run(SetPower(
+                ..seal();
+            },
+          ),
+          ColourRow(
+            label: 'Colour',
+            value: object.colour,
+            onChanged: (value) => history
+              ..run(SetColour(
                 sceneId: sceneId,
                 id: object.id,
                 name: object.name,
-                from: object.power,
+                from: object.colour,
                 to: value,
-              )),
+              ))
+              ..seal(),
+          ),
+          SliderRow(
+            label: 'Power',
+            value: object.power,
+            min: 0,
+            max: isSun ? 400 : 5000,
+            decimals: isSun ? 1 : 0,
+            unit: isSun ? ' W/m²' : ' W',
+            onChanged: (value) => history.run(SetPower(
+              sceneId: sceneId,
+              id: object.id,
+              name: object.name,
+              from: object.power,
+              to: value,
+            )),
+            onSettled: history.seal,
+          ),
+          if (isSpot) ...[
+            SliderRow(
+              label: 'Cone',
+              value: object.spotSize,
+              min: 1,
+              max: 180,
+              unit: '°',
+              onChanged: (value) => _shape(size: value),
+              onSettled: history.seal,
+            ),
+            SliderRow(
+              label: 'Blend',
+              value: object.spotBlend,
+              min: 0,
+              max: 1,
+              decimals: 2,
+              onChanged: (value) => _shape(blend: value),
               onSettled: history.seal,
             ),
           ],
-        ),
-      );
+          if (isSun)
+            SliderRow(
+              label: 'Sun size',
+              value: object.sunAngle,
+              min: 0,
+              max: 12,
+              decimals: 2,
+              unit: '°',
+              onChanged: (value) => _shape(sun: value),
+              onSettled: history.seal,
+            )
+          else
+            SliderRow(
+              label: isArea ? 'Size' : 'Radius',
+              value: object.sourceRadius,
+              min: 0,
+              max: isArea ? 4 : 1,
+              decimals: 2,
+              unit: ' m',
+              onChanged: (value) => _shape(radius: value),
+              onSettled: history.seal,
+            ),
+          ChoiceRow(
+            label: 'Cast shadows',
+            options: const ['Off', 'On'],
+            selected: object.castShadows ? 'On' : 'Off',
+            onSelect: (value) {
+              final wanted = value == 'On';
+              if (wanted == object.castShadows) return;
+              history
+                ..run(SetCastShadows(
+                  sceneId: sceneId,
+                  id: object.id,
+                  name: object.name,
+                  to: wanted,
+                ))
+                ..seal();
+            },
+          ),
+          Padding(
+            padding:
+                const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+            child: Text(
+              switch (type) {
+                LightType.sun =>
+                  'Sun size is the width of the source in the sky. It is what '
+                      'makes a shadow crisp at your feet and soft at its end.',
+                LightType.area =>
+                  'An area light is drawn as a point of the same power at the '
+                      'centre of the shape. The falloff is right; the soft '
+                      'shadow its surface would cast is not.',
+                _ => 'Radius is how big the source is, not how bright. Power '
+                    'stays the same and spreads over a wider surface, which '
+                    'is what widens the penumbra.',
+              },
+              style: OrbisText.caption,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Runs one shape edit, keeping the values that were not touched.
+  void _shape({double? size, double? blend, double? radius, double? sun}) {
+    history.run(SetLightShape(
+      sceneId: sceneId,
+      id: object.id,
+      name: object.name,
+      from: (
+        size: object.spotSize,
+        blend: object.spotBlend,
+        radius: object.sourceRadius,
+        sun: object.sunAngle,
+      ),
+      to: (
+        size: size ?? object.spotSize,
+        blend: blend ?? object.spotBlend,
+        radius: radius ?? object.sourceRadius,
+        sun: sun ?? object.sunAngle,
+      ),
+    ));
+  }
+
+  /// The same light, restated in the units of the type it is becoming.
+  ///
+  /// Watts and watts per square metre are not interchangeable, and the ratio
+  /// between them here is the one the renderer already used: a point light's
+  /// lumens spread over a sphere. Converting keeps the scene looking as it
+  /// did, which is what somebody switching a type is expecting.
+  static double _powerFor(
+    LightType wanted, {
+    required LightType from,
+    required double power,
+  }) {
+    const sphere = 4 * math.pi;
+    if (wanted == from) return power;
+    if (wanted == LightType.sun) return power / sphere;
+    if (from == LightType.sun) return power * sphere;
+    return power;
+  }
 
   Widget _mesh() => _ComponentSection(
         title: 'Mesh renderer',
@@ -449,11 +762,36 @@ class _Fields extends StatelessWidget {
                   ..seal();
               },
             ),
+            ChoiceRow(
+              label: 'Receive shadows',
+              options: const ['Off', 'On'],
+              selected: object.receiveShadows ? 'On' : 'Off',
+              onSelect: (value) {
+                final wanted = value == 'On';
+                if (wanted == object.receiveShadows) return;
+                history
+                  ..run(SetReceiveShadows(
+                    sceneId: sceneId,
+                    id: object.id,
+                    name: object.name,
+                    to: wanted,
+                  ))
+                  ..seal();
+              },
+            ),
             TextRow(
               label: 'Mesh',
               value: object.meshAsset ?? 'cube (built in)',
             ),
-
+            Padding(
+              padding:
+                  const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+              child: Text(
+                'A ground plane that casts shadows casts them onto itself, '
+                'which is most of what makes a scene look dirty.',
+                style: OrbisText.caption,
+              ),
+            ),
           ],
         ),
       );

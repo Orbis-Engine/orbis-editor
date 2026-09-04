@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:orbis_filament/orbis_filament.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -26,16 +28,120 @@ void main() {
       expect(linear.x, closeTo(0.2158, 0.001));
     });
 
-    test('points the sun where its rotation points', () {
+    test('points a light where its rotation points', () {
       final scene = EditorScene(
         [SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light)],
       );
       // Unrotated, forward is -Z: light falling straight down the view axis.
       final direction = scene
           .toRenderScene(OrbitCamera().toRenderCamera())
-          .sun
+          .lights
+          .single
           .direction;
       expect(direction.z, closeTo(-1, 1e-9));
+    });
+
+    test('states a sun in lux and a bulb in lumens', () {
+      final scene = EditorScene([
+        SceneObject(
+          id: 'sun',
+          name: 'Sun',
+          kind: ObjectKind.light,
+          power: 100,
+        ),
+        SceneObject(
+          id: 'bulb',
+          name: 'Bulb',
+          kind: ObjectKind.light,
+          lightType: LightType.point,
+          power: 100,
+        ),
+      ]);
+
+      final lights = scene.toRenderScene(OrbitCamera().toRenderCamera()).lights;
+      final sun = lights.firstWhere((l) => l.kind == OrbisLightKind.directional);
+      final bulb = lights.firstWhere((l) => l.kind == OrbisLightKind.point);
+
+      // The same number of watts means two different things, and the units
+      // are the whole reason the conversion lives in one place.
+      expect(sun.intensity, closeTo(100 * 683, 1));
+      expect(bulb.intensity, closeTo(100 * 683, 1));
+      // A sun does not fall off, so it is sent no radius to fall off within.
+      expect(sun.falloffRadius, 0);
+      expect(bulb.falloffRadius, greaterThan(0));
+    });
+
+    test('an area light arrives as a point of the same power', () {
+      final scene = EditorScene([
+        SceneObject(
+          id: 'panel',
+          name: 'Panel',
+          kind: ObjectKind.light,
+          lightType: LightType.area,
+          power: 100,
+          sourceRadius: 0.5,
+        ),
+      ]);
+
+      final light =
+          scene.toRenderScene(OrbitCamera().toRenderCamera()).lights.single;
+      expect(light.kind, OrbisLightKind.point);
+      // Not a point source, though: it keeps a width, so it still casts a
+      // penumbra of about the right size.
+      expect(light.sourceRadius, greaterThan(0.2));
+    });
+
+    test('hiding a group hides what is inside it', () {
+      final scene = EditorScene.starter();
+      scene['props']!.visible = false;
+
+      final rendered = scene.toRenderScene(OrbitCamera().toRenderCamera());
+      final cube = rendered.objects
+          .firstWhere((o) => o.key == scene['cube']!.renderKey);
+
+      // The cube's own flag was never touched. It is hidden because the thing
+      // it sits in is.
+      expect(scene['cube']!.visible, isTrue);
+      expect(cube.visible, isFalse);
+    });
+
+    test('a hidden light is left out rather than sent dark', () {
+      final scene = EditorScene([
+        SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light)
+          ..visible = false,
+      ]);
+
+      expect(
+        scene.toRenderScene(OrbitCamera().toRenderCamera()).lights,
+        isEmpty,
+      );
+    });
+
+    test('an object keeps the key the renderer knows it by', () {
+      final scene = EditorScene.starter();
+      final before = scene
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .objects
+          .map((o) => o.key)
+          .toList();
+
+      scene['cube']!.position.setValues(3, 0, 0);
+      scene.invalidate();
+
+      final after = scene
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .objects
+          .map((o) => o.key)
+          .toList();
+
+      // The whole point: an edit is the same objects in new places, so the
+      // renderer moves them rather than building the scene again.
+      expect(after, before);
+    });
+
+    test('a copy is a new object, not the same one somewhere else', () {
+      final original = SceneObject(id: 'a', name: 'A', kind: ObjectKind.mesh);
+      expect(original.copyAs(id: 'b').renderKey, isNot(original.renderKey));
     });
 
     test('an edit to an object reaches the next rendered scene', () {

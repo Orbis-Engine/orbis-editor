@@ -58,9 +58,11 @@ class _EditorShellState extends State<EditorShell> {
 
   static const _minimumBrowserHeight = 120.0;
 
-  /// Meshes already complained about, so a failure is named once rather than
-  /// on every frame of a drag.
-  final Set<String> _reportedMeshes = {};
+  /// What the renderer has already been heard on, so a note is said once
+  /// rather than on every frame of a drag. A subject that stops being
+  /// reported leaves this set, so fixing a scene and breaking it again is
+  /// heard both times.
+  final Set<String> _reportedNotes = {};
 
   int _nextSceneId = 0;
 
@@ -306,7 +308,7 @@ class _EditorShellState extends State<EditorShell> {
       _primary = null;
       _selectedScene = null;
       _camera = OrbitCamera();
-      _reportedMeshes.clear();
+      _reportedNotes.clear();
     });
     _report(opened.problems);
   }
@@ -702,18 +704,26 @@ class _EditorShellState extends State<EditorShell> {
 
   int _nextObject = 0;
 
-  void _reportMeshErrors(Map<String, String> errors) {
+  void _reportSceneNotes(Map<String, String> notes) {
+    // Said once each. The scene is republished on every frame of a drag, and
+    // the same missing file would otherwise arrive a hundred times while
+    // somebody moved the object that names it.
+    _reportedNotes.removeWhere((subject) => !notes.containsKey(subject));
+
     final fresh = [
-      for (final entry in errors.entries)
-        if (_reportedMeshes.add(entry.key)) entry,
+      for (final entry in notes.entries)
+        if (_reportedNotes.add(entry.key)) entry,
     ];
     if (fresh.isEmpty) return;
 
     final first = fresh.first;
+    // A path is worth shortening to its file name; a subject like "too many
+    // lights" is not a path and is left as it is.
+    final subject = first.key.contains('/') ? p.basename(first.key) : null;
     _say(fresh.length == 1
-        ? '${p.basename(first.key)}: ${first.value}'
-        : '${fresh.length} meshes could not be loaded. '
-            '${p.basename(first.key)}: ${first.value}');
+        ? (subject == null ? first.value : '$subject: ${first.value}')
+        : '${fresh.length} things in this scene need attention. '
+            '${subject ?? first.key}: ${first.value}');
   }
 
   void _say(String message) {
@@ -942,7 +952,7 @@ class _EditorShellState extends State<EditorShell> {
                                 selected: _selected,
                                 onDropAsset: _dropAsset,
                                 projectRoot: widget.project.directory,
-                                onMeshErrors: _reportMeshErrors,
+                                onSceneNotes: _reportSceneNotes,
                               ),
                             ),
                             _Splitter(

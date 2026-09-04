@@ -582,8 +582,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
 
-    // Pick a sky from the swatches.
-    await tester.tap(find.byType(Slider));
+    // Pick a sky from the swatches. The first slider is the ambient; the
+    // scene panel has fog sliders under it now.
+    await tester.tap(find.byType(Slider).first);
     await tester.pumpAndSettle();
     await save(tester);
 

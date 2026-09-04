@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:orbis_filament/orbis_filament.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
@@ -25,13 +26,30 @@ class SceneObject {
     Vector3? scale,
     this.colour = const Color(0xFFD9634F),
     this.power = 1000,
+    this.lightType = LightType.sun,
+    this.spotSize = 45,
+    this.spotBlend = 0.15,
+    this.sourceRadius = 0.1,
+    this.sunAngle = 0.526,
     this.castShadows = true,
+    this.receiveShadows = true,
+    this.visible = true,
     this.meshAsset,
   })  : position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
         scale = scale ?? Vector3(1, 1, 1);
 
   final String id;
+
+  /// What the renderer knows this object by.
+  ///
+  /// A number rather than the id, because it crosses to native code on every
+  /// frame of a drag and a string would be encoded, copied and hashed each
+  /// time. Assigned once and never reused, so a pasted copy gets a key of its
+  /// own instead of inheriting the entity of the thing it was copied from.
+  final int renderKey = _nextRenderKey++;
+
+  static int _nextRenderKey = 1;
 
   String name;
 
@@ -53,10 +71,46 @@ class SceneObject {
 
   Color colour;
 
-  /// Light power in watts. Ignored by anything that is not a light.
+  /// Light power, in the units its [lightType] is stated in: watts per square
+  /// metre for a sun, which has no total to state, and watts for everything
+  /// else. Ignored by anything that is not a light.
   double power;
 
+  /// What kind of light this is. Decides what [power] means, whether the cone
+  /// applies, and what the renderer is asked for.
+  LightType lightType;
+
+  /// The full cone angle of a spot in degrees, and how much of it is falloff
+  /// rather than full brightness — zero for a hard edge, one for a cone that
+  /// is all gradient.
+  double spotSize;
+  double spotBlend;
+
+  /// How large the emitting source is, in metres.
+  ///
+  /// Not a brightness control: the power is unchanged and spread over a bigger
+  /// surface. What it changes is the shadow — a point source gives a knife
+  /// edge, and anything with size gives a penumbra that widens with distance.
+  double sourceRadius;
+
+  /// The sun's angular diameter in degrees, which is the same idea for a light
+  /// that has no position. Defaults to the real sun's.
+  ///
+  /// It is why a shadow outdoors is crisp at your feet and soft at its far
+  /// end, and setting it to zero is the quickest way to make a scene look
+  /// computer-generated.
+  double sunAngle;
+
   bool castShadows;
+
+  /// Whether shadows land on this object.
+  bool receiveShadows;
+
+  /// Whether it is drawn, and whether it lights anything.
+  ///
+  /// Hidden is not deleted: it keeps its place in the tree, its children, and
+  /// the key the renderer knows it by, so showing it again is immediate.
+  bool visible;
 
   /// The mesh this object draws, as a path relative to the project.
   ///
@@ -84,21 +138,14 @@ class SceneObject {
     ..multiply(Matrix4.diagonal3(scale));
 
   /// A copy with a new identity, for pasting.
-  SceneObject copyAs({required String id, String? parentId}) => SceneObject(
-        id: id,
-        name: name,
-        kind: kind,
-        parentId: parentId,
-        position: position.clone(),
-        rotation: rotation.clone(),
-        scale: scale.clone(),
-        colour: colour,
-        power: power,
-        castShadows: castShadows,
-        meshAsset: meshAsset,
-      );
+  SceneObject copyAs({required String id, String? parentId}) =>
+      _copyWith(id: id, parentId: parentId);
 
-  SceneObject copy() => SceneObject(
+  SceneObject copy() => _copyWith(id: id, parentId: parentId);
+
+  /// One place both copies are made, so a field added to an object cannot be
+  /// remembered by paste and forgotten by the clipboard.
+  SceneObject _copyWith({required String id, String? parentId}) => SceneObject(
         id: id,
         name: name,
         kind: kind,
@@ -108,7 +155,14 @@ class SceneObject {
         scale: scale.clone(),
         colour: colour,
         power: power,
+        lightType: lightType,
+        spotSize: spotSize,
+        spotBlend: spotBlend,
+        sourceRadius: sourceRadius,
+        sunAngle: sunAngle,
         castShadows: castShadows,
+        receiveShadows: receiveShadows,
+        visible: visible,
         meshAsset: meshAsset,
       );
 }
@@ -209,8 +263,13 @@ class EditorScene {
     this.name = 'Scene',
     Color? skyColour,
     this.ambient = 28000,
+    Color? fogColour,
+    this.fogDensity = 0,
+    this.fogHeight = 0,
+    this.fogFalloff = 0.2,
   })  : _objects = objects,
-        skyColour = skyColour ?? const Color(0xFF1A2029) {
+        skyColour = skyColour ?? const Color(0xFF1A2029),
+        fogColour = fogColour ?? const Color(0xFF7D8794) {
     for (final object in objects) {
       if (_byId.containsKey(object.id)) {
         throw SceneError('Two objects share the id "${object.id}".');
@@ -276,9 +335,12 @@ class EditorScene {
   /// The ground is a flattened box rather than a plane because the renderer
   /// draws boxes and nothing else yet; when meshes load it becomes a mesh.
   factory EditorScene.starter() => EditorScene([
+        // Watts per square metre, because that is what a sun's strength is
+        // stated in. A hundred and ten of them is about seventy-five thousand
+        // lux, which is a bright but not blinding afternoon.
         SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light,
             rotation: Vector3(-55, 35, 0),
-            colour: const Color(0xFFFFF3E0), power: 1400),
+            colour: const Color(0xFFFFF3E0), power: 110),
         SceneObject(id: 'ground', name: 'Ground', kind: ObjectKind.mesh,
             position: Vector3(0, -1.05, 0), scale: Vector3(8, 0.05, 8),
             colour: const Color(0xFF3B424C)),
@@ -306,6 +368,18 @@ class EditorScene {
 
   /// How much light the sky casts, in lux.
   double ambient;
+
+  /// The air the scene is seen through.
+  ///
+  /// A density of zero is clear air and costs nothing — the whole computation
+  /// is switched off rather than run with nothing in it.
+  Color fogColour;
+  double fogDensity;
+
+  /// The height the fog's own layer sits at, and how fast it thins going up.
+  /// A falloff of zero is fog that fills the world evenly at every altitude.
+  double fogHeight;
+  double fogFalloff;
 
   final List<SceneObject> _objects;
   final Map<String, SceneObject> _byId = {};
@@ -362,6 +436,24 @@ class EditorScene {
   }
 
   static const _maxDepth = 256;
+
+  /// Whether an object is shown, which means it and everything above it is.
+  ///
+  /// Hiding a group has to hide what is inside it. A flag that applied only to
+  /// the thing it was set on would make hiding a folder do nothing visible,
+  /// which reads as a broken toggle rather than as a deliberate limit.
+  bool isShown(String id) {
+    var current = _byId[id];
+    var steps = 0;
+    while (current != null && steps < _maxDepth) {
+      if (!current.visible) return false;
+      final parentId = current.parentId;
+      if (parentId == null) return true;
+      current = _byId[parentId];
+      steps++;
+    }
+    return true;
+  }
 
   /// Whether [ancestor] is above [id] in the tree.
   ///
@@ -555,37 +647,91 @@ class EditorScene {
   /// project so a scene file survives the folder being moved or shared, and
   /// have to be absolute by the time the renderer opens them.
   OrbisScene toRenderScene(OrbisCamera camera, {String? projectRoot}) {
-    final light = _objects.cast<SceneObject?>().firstWhere(
-          (o) => o!.kind == ObjectKind.light,
-          orElse: () => null,
-        );
-
-    // The sun's direction comes from its world matrix, so a sun parented to a
-    // rig turns with it.
-    final direction = light == null
-        ? Vector3(0, -1, 0)
-        : (worldOf(light.id).getRotation() * Vector3(0, 0, -1))
-      ..normalize();
-
     return OrbisScene(
       objects: [
         for (final object in _objects)
           if (object.isDrawable)
             OrbisObject(
+              key: object.renderKey,
               transform: worldOf(object.id),
               colour: linearFromColour(object.colour),
               mesh: _resolveMesh(object.meshAsset, projectRoot),
+              castShadows: object.castShadows,
+              receiveShadows: object.receiveShadows,
+              visible: isShown(object.id),
             ),
       ],
-      sun: OrbisSun(
-        direction: direction,
-        colour: linearFromColour(light?.colour ?? const Color(0xFFFFFFFF)),
-        // Watts to lux through the same 683 lm/W the light package uses, so a
-        // number set here means what it means in Blender.
-        illuminance: (light?.power ?? 1000) * 683 / 12.566370614359172,
-      ),
+      lights: [
+        for (final object in _objects)
+          // A hidden light is left out rather than sent dark. Filament shades
+          // one directional light and a budget of punctual ones, and a light
+          // nobody can see should not be the one that fills the budget.
+          if (object.kind == ObjectKind.light && isShown(object.id))
+            _lightFor(object),
+      ],
       sky: OrbisSky(colour: linearFromColour(skyColour), ambient: ambient),
+      fog: OrbisFog(
+        colour: linearFromColour(fogColour),
+        density: fogDensity,
+        height: fogHeight,
+        heightFalloff: fogFalloff,
+      ),
       camera: camera,
+    );
+  }
+
+  /// One authored light, in the units the renderer takes.
+  ///
+  /// The conversion happens in `orbis_light` rather than here. Watts, metres
+  /// and degrees are what a light is stated in; lumens, lux and radians are
+  /// what a renderer is told. Doing that arithmetic in the editor as well
+  /// would be a second place for it to drift.
+  OrbisLight _lightFor(SceneObject object) {
+    final world = worldOf(object.id);
+
+    final described = Light(
+      type: object.lightType,
+      color: linearFromColour(object.colour),
+      power: object.power,
+      radius: object.sourceRadius,
+      spotSize: object.spotSize,
+      spotBlend: object.spotBlend,
+      sunAngle: object.sunAngle,
+      castShadows: object.castShadows,
+      // An area light arrives as a point of the same luminous power, so the
+      // size it would have emitted from becomes the size of the source that
+      // stands in for it — the falloff and the total are right, and the
+      // penumbra is at least a believable width.
+      sizeX: object.sourceRadius * 2,
+      sizeY: object.sourceRadius * 2,
+    );
+    final light = described.toRenderer();
+
+    // Down the local -Z axis, which is where a light points: the same
+    // convention as a camera, so a light parented to a rig turns with it.
+    final direction = world.getRotation() * Vector3(0, 0, -1)
+      ..normalize();
+
+    return OrbisLight(
+      key: object.renderKey,
+      kind: switch (light.kind) {
+        RendererLightKind.directional => OrbisLightKind.directional,
+        RendererLightKind.point => OrbisLightKind.point,
+        RendererLightKind.spot => OrbisLightKind.spot,
+      },
+      colour: light.color,
+      intensity: light.intensity,
+      position: world.getTranslation(),
+      direction: direction,
+      // A sun's influence is infinite, which is not a number a renderer can
+      // be given. It ignores the falloff of a directional light anyway, so
+      // zero here means "not asked" rather than "no reach".
+      falloffRadius: light.falloffRadius.isFinite ? light.falloffRadius : 0,
+      innerConeAngle: light.innerConeAngle,
+      outerConeAngle: light.outerConeAngle,
+      sunAngularRadius: light.sunAngularRadius,
+      sourceRadius: light.sourceRadius,
+      castShadows: light.castShadows,
     );
   }
 

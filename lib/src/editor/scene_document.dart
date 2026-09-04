@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'scene.dart';
@@ -43,7 +44,12 @@ class SceneFormatException implements Exception {
 /// every commit into a diff nobody can review.
 abstract final class SceneDocument {
   /// Bumped when the shape changes in a way an older editor could misread.
-  static const int formatVersion = 1;
+  ///
+  /// Two, because a light's power changed units. Version one stated every
+  /// light in watts and converted them all as if they were bulbs; a sun is
+  /// stated in watts per square metre, and reading an old number as a new one
+  /// would make every outdoor scene about twelve times too bright.
+  static const int formatVersion = 2;
 
   static const JsonEncoder _encoder = JsonEncoder.withIndent('  ');
 
@@ -55,6 +61,14 @@ abstract final class SceneDocument {
       // in it — there was nowhere to put them until it had a row of its own.
       'sky': _hex(scene.skyColour),
       'ambient': scene.ambient,
+      // Written even when there is none, because a scene that has had its fog
+      // turned off should save as fog-free rather than as silent about it.
+      'fog': {
+        'colour': _hex(scene.fogColour),
+        'density': scene.fogDensity,
+        'height': scene.fogHeight,
+        'falloff': scene.fogFalloff,
+      },
       'objects': [
         for (final object in scene.objects) objectToJson(object),
       ],
@@ -73,13 +87,34 @@ abstract final class SceneDocument {
         'rotation': _vector(object.rotation),
         'scale': _vector(object.scale),
         'colour': _hex(object.colour),
-        if (object.kind == ObjectKind.light) 'power': object.power,
-        if (object.isDrawable) 'castShadows': object.castShadows,
+        if (object.kind == ObjectKind.light) ...{
+          'power': object.power,
+          'lightType': object.lightType.name,
+          if (object.lightType == LightType.spot) ...{
+            'spotSize': object.spotSize,
+            'spotBlend': object.spotBlend,
+          },
+          if (object.lightType == LightType.sun)
+            'sunAngle': object.sunAngle
+          else
+            'sourceRadius': object.sourceRadius,
+        },
+        if (object.isDrawable) ...{
+          'castShadows': object.castShadows,
+          'receiveShadows': object.receiveShadows,
+        },
+        if (object.kind == ObjectKind.light) 'castShadows': object.castShadows,
+        // Only written when it is false, so the ordinary case stays out of
+        // the file and out of everybody's diffs.
+        if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
       };
 
   /// One object from JSON, or null if it cannot be read.
-  static SceneObject? objectFromJson(Map<String, Object?> entry) {
+  static SceneObject? objectFromJson(
+    Map<String, Object?> entry, {
+    int version = formatVersion,
+  }) {
     final id = entry['id'];
     if (id is! String || id.isEmpty) return null;
 
@@ -87,6 +122,41 @@ abstract final class SceneDocument {
         .cast<ObjectKind?>()
         .firstWhere((k) => k!.name == entry['kind'], orElse: () => null);
     if (kind == null) return null;
+
+    return _objectFrom(entry, id: id, kind: kind, version: version);
+  }
+
+  /// The fields of an object, once its id and kind are known.
+  ///
+  /// One reader for the clipboard and the file, because the two have to agree:
+  /// a field the file remembers and a paste forgets is a property that
+  /// silently resets when somebody copies something.
+  static SceneObject _objectFrom(
+    Map<String, Object?> entry, {
+    required String id,
+    required ObjectKind kind,
+    required int version,
+  }) {
+    double number(String key, double fallback) =>
+        entry[key] is num ? (entry[key]! as num).toDouble() : fallback;
+    bool flag(String key, {bool fallback = true}) =>
+        entry[key] is bool ? entry[key]! as bool : fallback;
+
+    final type = LightType.values
+            .cast<LightType?>()
+            .firstWhere((t) => t!.name == entry['lightType'],
+                orElse: () => null) ??
+        // Every light in a version-one file was drawn as a sun, whatever it
+        // called itself, so that is what it is read back as.
+        LightType.sun;
+
+    var power = number('power', 1000);
+    // Version one stated a light's power in watts and turned it into lux the
+    // way a bulb's would be, spread over a sphere. A sun states watts per
+    // square metre, so the same look is the old number over that sphere.
+    if (version < 2 && kind == ObjectKind.light && type == LightType.sun) {
+      power = power / (4 * 3.141592653589793);
+    }
 
     return SceneObject(
       id: id,
@@ -97,9 +167,15 @@ abstract final class SceneDocument {
       rotation: _readVector(entry['rotation']),
       scale: _readVector(entry['scale'], fallback: 1),
       colour: _readColour(entry['colour']),
-      power: entry['power'] is num ? (entry['power']! as num).toDouble() : 1000,
-      castShadows:
-          entry['castShadows'] is bool ? entry['castShadows']! as bool : true,
+      power: power,
+      lightType: type,
+      spotSize: number('spotSize', 45),
+      spotBlend: number('spotBlend', 0.15),
+      sourceRadius: number('sourceRadius', 0.1),
+      sunAngle: number('sunAngle', 0.526),
+      castShadows: flag('castShadows'),
+      receiveShadows: flag('receiveShadows'),
+      visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
     );
   }
@@ -182,21 +258,9 @@ abstract final class SceneDocument {
         continue;
       }
 
-      objects.add(SceneObject(
-        id: id,
-        name: entry['name'] is String ? entry['name']! as String : id,
-        kind: kind,
-        parentId: entry['parent'] is String ? entry['parent']! as String : null,
-        position: _readVector(entry['position']),
-        rotation: _readVector(entry['rotation']),
-        scale: _readVector(entry['scale'], fallback: 1),
-        colour: _readColour(entry['colour']),
-        power: entry['power'] is num ? (entry['power']! as num).toDouble() : 1000,
-        castShadows: entry['castShadows'] is bool
-            ? entry['castShadows']! as bool
-            : true,
-        meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
-      ));
+      objects.add(
+        _objectFrom(entry, id: id, kind: kind, version: version),
+      );
     }
 
     // A parent that is not in the file would leave the object unreachable, so
@@ -226,6 +290,13 @@ abstract final class SceneDocument {
             : _readColour(parsed['sky'], fallback: const Color(0xFF59616F)),
         ambient:
             parsed['ambient'] is num ? (parsed['ambient']! as num).toDouble() : 28000,
+        fogColour: _readColour(
+          _fogField(parsed, 'colour'),
+          fallback: const Color(0xFF7D8794),
+        ),
+        fogDensity: _fogNumber(parsed, 'density', 0),
+        fogHeight: _fogNumber(parsed, 'height', 0),
+        fogFalloff: _fogNumber(parsed, 'falloff', 0.2),
       ),
       name: name,
       problems: problems,
@@ -285,6 +356,21 @@ abstract final class SceneDocument {
         current = byId[current]?.parentId;
       }
     }
+  }
+
+  /// One field of the fog block, or null when a file predates having one.
+  static Object? _fogField(Map<String, Object?> parsed, String key) {
+    final fog = parsed['fog'];
+    return fog is Map<String, Object?> ? fog[key] : null;
+  }
+
+  static double _fogNumber(
+    Map<String, Object?> parsed,
+    String key,
+    double fallback,
+  ) {
+    final value = _fogField(parsed, key);
+    return value is num ? value.toDouble() : fallback;
   }
 
   static List<double> _vector(Vector3 value) => [value.x, value.y, value.z];

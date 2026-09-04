@@ -124,7 +124,7 @@ class SceneViewport extends StatefulWidget {
     this.selected = const {},
     this.onDropAsset,
     this.projectRoot,
-    this.onMeshErrors,
+    this.onSceneNotes,
   });
 
   /// Only the loaded scene is drawn. The others are names and paths until
@@ -147,8 +147,9 @@ class SceneViewport extends StatefulWidget {
   /// Where mesh references are resolved from.
   final String? projectRoot;
 
-  /// Called with any mesh the renderer could not load, by path.
-  final ValueChanged<Map<String, String>>? onMeshErrors;
+  /// Called with anything the scene asked for that the renderer could not
+  /// give: a mesh that would not load, a light it has no room to shade.
+  final ValueChanged<Map<String, String>>? onSceneNotes;
 
   @override
   State<SceneViewport> createState() => _SceneViewportState();
@@ -266,7 +267,7 @@ class _SceneViewportState extends State<SceneViewport> {
             widget.camera.toRenderCamera(),
             projectRoot: widget.projectRoot,
           ),
-          onMeshErrors: widget.onMeshErrors,
+          onSceneNotes: widget.onSceneNotes,
         ),
       ),
     );

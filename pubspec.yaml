@@ -40,6 +40,12 @@ dependencies:
   # Orbis-Engine/orbis.
   orbis_filament:
     path: ../orbis/packages/orbis_filament
+
+  # Where a light's watts, metres and degrees become the lumens, lux and
+  # radians a renderer takes. The editor authors the first and sends the
+  # second, and converting in both places is how the two drift apart.
+  orbis_light:
+    path: ../orbis/packages/orbis_light
   path: ^1.9.0
   path_provider: ^2.1.5
 

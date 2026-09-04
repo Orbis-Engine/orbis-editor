@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
@@ -59,6 +60,116 @@ void main() {
       final load = SceneDocument.decode(SceneDocument.encode(EditorScene([])));
       expect(load.scene.length, 0);
       expect(load.hasProblems, isFalse);
+    });
+  });
+
+  group('a light survives a trip to disk and back', () {
+    test('its type, its shape and its power all come back', () {
+      final before = EditorScene([
+        SceneObject(
+          id: 'lamp',
+          name: 'Lamp',
+          kind: ObjectKind.light,
+          lightType: LightType.spot,
+          power: 240,
+          spotSize: 63,
+          spotBlend: 0.4,
+          sourceRadius: 0.35,
+        ),
+      ]);
+
+      final after = SceneDocument.decode(SceneDocument.encode(before))
+          .scene['lamp']!;
+
+      expect(after.lightType, LightType.spot);
+      expect(after.power, 240);
+      expect(after.spotSize, 63);
+      expect(after.spotBlend, 0.4);
+      expect(after.sourceRadius, 0.35);
+    });
+
+    test('a sun keeps the width it casts shadows with', () {
+      final before = EditorScene([
+        SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light)
+          ..sunAngle = 4.5,
+      ]);
+
+      final after =
+          SceneDocument.decode(SceneDocument.encode(before)).scene['sun']!;
+      expect(after.sunAngle, 4.5);
+    });
+
+    test('a light written before types were stored is read as a sun', () {
+      // Every light in a version-one file was drawn as a sun whatever it
+      // called itself, and its power was turned into lux the way a bulb's
+      // would be. The same look is that number spread over a sphere.
+      const text = '''
+{
+  "formatVersion": 1,
+  "name": "Old",
+  "objects": [
+    {"id": "sun", "name": "Sun", "kind": "light", "power": 1256.6370614}
+  ]
+}
+''';
+
+      final sun = SceneDocument.decode(text).scene['sun']!;
+      expect(sun.lightType, LightType.sun);
+      expect(sun.power, closeTo(100, 0.001));
+    });
+  });
+
+  group('what the scene itself holds', () {
+    test('the fog comes back as it was set', () {
+      final before = EditorScene(
+        [],
+        fogColour: const Color(0xFF334455),
+        fogDensity: 0.12,
+        fogHeight: -3,
+        fogFalloff: 0.75,
+      );
+
+      final after = SceneDocument.decode(SceneDocument.encode(before)).scene;
+
+      expect(after.fogColour.toARGB32(), 0xFF334455);
+      expect(after.fogDensity, 0.12);
+      expect(after.fogHeight, -3);
+      expect(after.fogFalloff, 0.75);
+    });
+
+    test('a scene from before fog existed is clear rather than grey', () {
+      const text = '''
+{"formatVersion": 1, "name": "Old", "objects": []}
+''';
+      expect(SceneDocument.decode(text).scene.fogDensity, 0);
+    });
+
+    test('hidden objects are remembered, shown ones stay out of the file', () {
+      final scene = EditorScene([
+        SceneObject(id: 'a', name: 'A', kind: ObjectKind.mesh)
+          ..visible = false,
+        SceneObject(id: 'b', name: 'B', kind: ObjectKind.mesh),
+      ]);
+
+      final text = SceneDocument.encode(scene);
+      // Once, for the one that is hidden: the default belongs in the reader
+      // rather than in every line of everybody's diffs.
+      expect('"visible"'.allMatches(text).length, 1);
+
+      final after = SceneDocument.decode(text).scene;
+      expect(after['a']!.visible, isFalse);
+      expect(after['b']!.visible, isTrue);
+    });
+
+    test('an object that stops receiving shadows says so', () {
+      final scene = EditorScene([
+        SceneObject(id: 'ground', name: 'Ground', kind: ObjectKind.mesh)
+          ..receiveShadows = false,
+      ]);
+
+      final after =
+          SceneDocument.decode(SceneDocument.encode(scene)).scene['ground']!;
+      expect(after.receiveShadows, isFalse);
     });
   });
 

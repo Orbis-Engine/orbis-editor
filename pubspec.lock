@@ -303,6 +303,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  orbis_light:
+    dependency: "direct main"
+    description:
+      path: "../orbis/packages/orbis_light"
+      relative: true
+    source: path
+    version: "0.1.0"
   package_config:
     dependency: transitive
     description:
