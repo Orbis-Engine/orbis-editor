@@ -1,31 +1,20 @@
 import 'package:flutter/material.dart';
 
 import '../theme/orbis_theme.dart';
-
-/// One thing in the scene.
-class SceneEntry {
-  const SceneEntry(this.name, this.icon, {this.depth = 0});
-
-  final String name;
-  final IconData icon;
-  final int depth;
-}
+import 'scene.dart';
 
 /// What is in the scene, as a tree.
 class Outliner extends StatelessWidget {
-  const Outliner({super.key, required this.selected, required this.onSelect});
+  const Outliner({
+    super.key,
+    required this.scene,
+    required this.selected,
+    required this.onSelect,
+  });
 
+  final EditorScene scene;
   final String selected;
   final ValueChanged<String> onSelect;
-
-  // Standing in for a loaded scene until the document format exists.
-  static const _entries = [
-    SceneEntry('Scene', Icons.public, depth: 0),
-    SceneEntry('Sun', Icons.wb_sunny_outlined, depth: 1),
-    SceneEntry('Ground', Icons.grid_on, depth: 1),
-    SceneEntry('Cube', Icons.view_in_ar_outlined, depth: 1),
-    SceneEntry('Camera', Icons.videocam_outlined, depth: 1),
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -50,13 +39,16 @@ class Outliner extends StatelessWidget {
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(vertical: Space.xs),
-              itemCount: _entries.length,
+              itemCount: scene.objects.length,
               itemBuilder: (context, index) {
-                final entry = _entries[index];
+                final object = scene.objects[index];
                 return _OutlinerRow(
-                  entry: entry,
-                  selected: entry.name == selected,
-                  onTap: () => onSelect(entry.name),
+                  object: object,
+                  // Everything hangs off the scene root until parenting is a
+                  // thing the document can express.
+                  depth: object.kind == ObjectKind.scene ? 0 : 1,
+                  selected: object.name == selected,
+                  onTap: () => onSelect(object.name),
                 );
               },
             ),
@@ -69,12 +61,14 @@ class Outliner extends StatelessWidget {
 
 class _OutlinerRow extends StatefulWidget {
   const _OutlinerRow({
-    required this.entry,
+    required this.object,
+    required this.depth,
     required this.selected,
     required this.onTap,
   });
 
-  final SceneEntry entry;
+  final SceneObject object;
+  final int depth;
   final bool selected;
   final VoidCallback onTap;
 
@@ -100,7 +94,7 @@ class _OutlinerRowState extends State<_OutlinerRow> {
         child: Container(
           height: 26,
           padding: EdgeInsets.only(
-            left: Space.md + widget.entry.depth * 14.0,
+            left: Space.md + widget.depth * 14.0,
             right: Space.md,
           ),
           color: widget.selected
@@ -108,11 +102,11 @@ class _OutlinerRowState extends State<_OutlinerRow> {
               : (_hovering ? OrbisColors.raised : Colors.transparent),
           child: Row(
             children: [
-              Icon(widget.entry.icon, size: 14, color: colour),
+              Icon(widget.object.icon, size: 14, color: colour),
               const SizedBox(width: Space.sm),
               Expanded(
                 child: Text(
-                  widget.entry.name,
+                  widget.object.name,
                   overflow: TextOverflow.ellipsis,
                   style: OrbisText.label.copyWith(
                     color: colour,

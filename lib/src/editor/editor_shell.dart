@@ -5,6 +5,8 @@ import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'inspector.dart';
 import 'outliner.dart';
+import 'scene.dart';
+import 'viewport.dart';
 
 /// The editor, once a project is open.
 ///
@@ -28,7 +30,8 @@ class EditorShell extends StatefulWidget {
 }
 
 class _EditorShellState extends State<EditorShell> {
-  String _selected = 'Sun';
+  final EditorScene _scene = EditorScene.starter();
+  String _selected = 'Cube';
   bool _playing = false;
 
   @override
@@ -49,15 +52,21 @@ class _EditorShellState extends State<EditorShell> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Outliner(
+                  scene: _scene,
                   selected: _selected,
                   onSelect: (name) => setState(() => _selected = name),
                 ),
-                const Expanded(child: _Viewport()),
-                Inspector(selected: _selected),
+                Expanded(child: SceneViewport(scene: _scene)),
+                Inspector(
+                  object: _scene.byName(_selected),
+                  // The scene is edited in place, so the rebuild is what
+                  // carries the change to the outliner and the renderer.
+                  onChanged: () => setState(() {}),
+                ),
               ],
             ),
           ),
-          const _StatusBar(),
+          _StatusBar(objects: _scene.objects.length),
         ],
       ),
     );
@@ -172,99 +181,10 @@ class _TransportButtonState extends State<_TransportButton> {
   }
 }
 
-/// Where the scene will be.
-///
-/// Marked as unfinished rather than dressed up: a fake viewport that looks
-/// real is the kind of thing somebody demonstrates by accident.
-class _Viewport extends StatelessWidget {
-  const _Viewport();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.all(Space.sm),
-      decoration: BoxDecoration(
-        color: const Color(0xFF14181F),
-        borderRadius: BorderRadius.circular(Radii.panel),
-        border: Border.all(color: OrbisColors.lineSoft),
-      ),
-      child: Stack(
-        children: [
-          const Positioned.fill(child: CustomPaint(painter: _GridPainter())),
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.view_in_ar_outlined,
-                    size: 34, color: OrbisColors.inkDim),
-                const SizedBox(height: Space.md),
-                Text('Viewport', style: OrbisText.label),
-                const SizedBox(height: Space.xs),
-                Text('The renderer arrives with scene loading.',
-                    style: OrbisText.caption),
-              ],
-            ),
-          ),
-          Positioned(
-            left: Space.md,
-            top: Space.md,
-            child: Row(children: [
-              _ViewportChip('Perspective'),
-              const SizedBox(width: Space.xs),
-              _ViewportChip('Shaded'),
-            ]),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ViewportChip extends StatelessWidget {
-  const _ViewportChip(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: Space.sm, vertical: 3),
-      decoration: BoxDecoration(
-        color: OrbisColors.surface.withValues(alpha: 0.8),
-        borderRadius: BorderRadius.circular(Radii.control),
-        border: Border.all(color: OrbisColors.lineSoft),
-      ),
-      child: Text(label, style: OrbisText.caption.copyWith(fontSize: 11)),
-    );
-  }
-}
-
-/// A faint ground grid, so the empty viewport reads as a space rather than a
-/// panel that failed to load.
-class _GridPainter extends CustomPainter {
-  const _GridPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = OrbisColors.line.withValues(alpha: 0.35)
-      ..strokeWidth = 1;
-    const spacing = 32.0;
-
-    for (var x = spacing; x < size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (var y = spacing; y < size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _GridPainter oldDelegate) => false;
-}
-
 class _StatusBar extends StatelessWidget {
-  const _StatusBar();
+  const _StatusBar({required this.objects});
+
+  final int objects;
 
   @override
   Widget build(BuildContext context) {
@@ -279,7 +199,7 @@ class _StatusBar extends StatelessWidget {
         children: [
           Text('Ready', style: OrbisText.caption.copyWith(fontSize: 11)),
           const Spacer(),
-          Text('4 entities', style: OrbisText.mono.copyWith(fontSize: 11)),
+          Text('$objects objects', style: OrbisText.mono.copyWith(fontSize: 11)),
           const SizedBox(width: Space.lg),
           Text('— fps', style: OrbisText.mono.copyWith(fontSize: 11)),
         ],
