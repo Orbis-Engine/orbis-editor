@@ -648,6 +648,71 @@ class EditorScene {
     invalidate();
   }
 
+  /// The nearest drawable object a ray runs into, or null for empty space.
+  ///
+  /// Against the unit cube the renderer draws, in each object's own space, so
+  /// an object that has been rotated and squashed is hit where it looks rather
+  /// than inside the upright box that would contain it. A real mesh is a finer
+  /// question than this can answer — that wants the geometry itself, which
+  /// lives on the other side of the channel.
+  String? objectAlong(Vector3 origin, Vector3 direction) {
+    String? nearest;
+    var closest = double.infinity;
+
+    for (final object in _objects) {
+      if (!object.isDrawable || !isShown(object.id)) continue;
+
+      final world = worldOf(object.id);
+      final inverse = Matrix4.tryInvert(world);
+      // A zero scale on any axis leaves nothing to hit.
+      if (inverse == null) continue;
+
+      final from = inverse.transformed3(origin.clone());
+      // As the difference of two transformed points, so the translation
+      // cancels and what is left is the direction in the object's space —
+      // still measured in world units, which is what makes the distances
+      // comparable between objects.
+      final along = inverse.transformed3(origin + direction) - from;
+
+      final hit = _unitCubeHit(from, along);
+      if (hit == null || hit >= closest) continue;
+      closest = hit;
+      nearest = object.id;
+    }
+    return nearest;
+  }
+
+  /// How far along a ray the unit cube is first met, or null for a miss.
+  ///
+  /// The slab method: the span of the ray inside each pair of parallel faces,
+  /// intersected. If what is left is empty the ray goes past.
+  static double? _unitCubeHit(Vector3 origin, Vector3 direction) {
+    var near = -double.infinity;
+    var far = double.infinity;
+
+    for (var axis = 0; axis < 3; axis++) {
+      final o = origin[axis];
+      final d = direction[axis];
+
+      if (d.abs() < 1e-9) {
+        // Parallel to this pair of faces: either between them for the whole
+        // ray, or never.
+        if (o < -1 || o > 1) return null;
+        continue;
+      }
+
+      final first = (-1 - o) / d;
+      final second = (1 - o) / d;
+      near = math.max(near, math.min(first, second));
+      far = math.min(far, math.max(first, second));
+      if (near > far) return null;
+    }
+
+    // Behind the eye is not in front of it.
+    if (far < 0) return null;
+    return near >= 0 ? near : far;
+  }
+
   /// Roughly where an object sits and how big it is, with its children.
   ///
   /// Built from the unit cube the renderer draws for everything, so it is only

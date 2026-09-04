@@ -4,10 +4,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
+import 'commands.dart';
+import 'gizmo.dart';
+import 'history.dart';
 import 'scene.dart';
 import 'workspace.dart';
 
@@ -127,6 +131,9 @@ class SceneViewport extends StatefulWidget {
     this.projectRoot,
     this.onSceneNotes,
     this.onClock,
+    this.primary,
+    this.history,
+    this.onPick,
   });
 
   /// Only the loaded scene is drawn. The others are names and paths until
@@ -153,6 +160,20 @@ class SceneViewport extends StatefulWidget {
   /// give: a mesh that would not load, a light it has no room to shade.
   final ValueChanged<Map<String, String>>? onSceneNotes;
 
+  /// The one of the selection the handles sit on, and whose transform a drag
+  /// writes first. The others follow it.
+  final String? primary;
+
+  /// Where a drag's changes go. Without it the viewport can still show and
+  /// select, but nothing in it can be moved.
+  final History? history;
+
+  /// Called when something in the scene is clicked, or nothing is.
+  ///
+  /// `add` is set when a modifier was held, which the shell reads as adding to
+  /// or taking away from what is already selected rather than replacing it.
+  final void Function(String? id, {required bool add})? onPick;
+
   /// Called a few times a second while a scene is animating, so the panels
   /// that are not the viewport can keep up.
   ///
@@ -168,6 +189,206 @@ class SceneViewport extends StatefulWidget {
 class _SceneViewportState extends State<SceneViewport>
     with SingleTickerProviderStateMixin {
   Offset? _dragAnchor;
+
+  /// What a drag on a handle does. Kept here rather than in the shell because
+  /// it is a property of how somebody is working in this view, not of the
+  /// document — it is not saved and it is not undone.
+  GizmoMode _mode = GizmoMode.move;
+
+  /// The size of the surface, as laid out. Needed to turn a pointer position
+  /// into a ray, and only known once the viewport has been given a box.
+  Size? _surface;
+
+  GizmoAxis? _hovered;
+  GizmoAxis? _dragging;
+
+  /// Where on the handle the drag began, in world space, and what every
+  /// object being dragged looked like before it started.
+  Vector3? _grabbed;
+  final Map<String, Vector3> _before = {};
+  final Map<String, Matrix3> _beforeWorld = {};
+
+  /// The gizmo as it stands, or null when there is nothing to put it on.
+  Gizmo? get _gizmo {
+    final scene = widget.workspace.loaded?.scene;
+    final id = widget.primary;
+    final size = _surface;
+    if (scene == null || id == null || size == null || size.isEmpty) {
+      return null;
+    }
+    final object = scene[id];
+    if (object == null || object.kind == ObjectKind.scene) return null;
+
+    return Gizmo(
+      mode: _mode,
+      pivot: scene.worldOf(id).getTranslation(),
+      projection: ViewportProjection(camera: widget.camera, size: size),
+    );
+  }
+
+  /// Everything a drag moves: the whole selection, or just the one the handles
+  /// are on when the selection is empty for some reason.
+  List<String> get _targets {
+    final scene = widget.workspace.loaded?.scene;
+    if (scene == null) return const [];
+    final ids = widget.selected.isEmpty
+        ? [if (widget.primary != null) widget.primary!]
+        : widget.selected.toList();
+    return [
+      for (final id in ids)
+        if (scene[id] != null && scene[id]!.kind != ObjectKind.scene) id,
+    ];
+  }
+
+  void _hover(Offset local) {
+    final axis = _gizmo?.axisAt(local);
+    if (axis == _hovered) return;
+    setState(() => _hovered = axis);
+  }
+
+  /// Picks whatever is under the pointer, or nothing.
+  void _pick(Offset local) {
+    final scene = widget.workspace.loaded?.scene;
+    final size = _surface;
+    if (scene == null || size == null || size.isEmpty) return;
+
+    final ray = ViewportProjection(camera: widget.camera, size: size)
+        .rayThrough(local);
+    final hit = scene.objectAlong(ray.origin, ray.direction);
+
+    final modifiers = {
+      LogicalKeyboardKey.shiftLeft,
+      LogicalKeyboardKey.shiftRight,
+      LogicalKeyboardKey.metaLeft,
+      LogicalKeyboardKey.metaRight,
+    };
+    final held = HardwareKeyboard.instance.logicalKeysPressed
+        .any(modifiers.contains);
+
+    widget.onPick?.call(hit, add: held);
+  }
+
+  /// Takes hold of a handle, remembering where everything was.
+  bool _grab(Offset local) {
+    final gizmo = _gizmo;
+    final scene = widget.workspace.loaded?.scene;
+    final axis = gizmo?.axisAt(local);
+    if (gizmo == null || scene == null || axis == null) return false;
+    if (widget.history == null) return false;
+
+    final grabbed = _mode == GizmoMode.move
+        ? gizmo.pointOnAxis(local, axis)
+        : gizmo.pointOnRing(local, axis);
+    // The pointer is on the handle but the plane behind it is edge-on to the
+    // camera, so there is no sensible place to have grabbed. Better to orbit
+    // than to teleport whatever is selected.
+    if (grabbed == null) return false;
+
+    _before.clear();
+    _beforeWorld.clear();
+    for (final id in _targets) {
+      final object = scene[id]!;
+      _before[id] = _mode == GizmoMode.move
+          ? object.position.clone()
+          : object.rotation.clone();
+      _beforeWorld[id] = scene.worldOf(id).getRotation();
+    }
+
+    setState(() {
+      _dragging = axis;
+      _grabbed = grabbed;
+    });
+    return true;
+  }
+
+  /// Applies the drag as it stands: one command, however many objects.
+  void _dragTo(Offset local) {
+    final gizmo = _gizmo;
+    final scene = widget.workspace.loaded?.scene;
+    final axis = _dragging;
+    final grabbed = _grabbed;
+    final history = widget.history;
+    final sceneId = widget.workspace.loaded?.id;
+    if (gizmo == null ||
+        scene == null ||
+        axis == null ||
+        grabbed == null ||
+        history == null ||
+        sceneId == null) {
+      return;
+    }
+
+    final changes = <String, ({Vector3 from, Vector3 to})>{};
+
+    if (_mode == GizmoMode.move) {
+      final now = gizmo.pointOnAxis(local, axis);
+      if (now == null) return;
+      final shift = now - grabbed;
+
+      for (final entry in _before.entries) {
+        final object = scene[entry.key];
+        if (object == null) continue;
+        // A world-space shift means something different inside a parent that
+        // is itself turned or scaled, so it is taken into that parent's frame
+        // before it is added to a local position.
+        final parentId = object.parentId;
+        final local = parentId == null || !scene.contains(parentId)
+            ? shift
+            : Matrix4.inverted(scene.worldOf(parentId)).rotated3(shift.clone());
+        changes[entry.key] = (from: entry.value, to: entry.value + local);
+      }
+    } else {
+      final now = gizmo.pointOnRing(local, axis);
+      if (now == null) return;
+      final angle = gizmo.angleBetween(grabbed, now, axis);
+      final turn =
+          Quaternion.axisAngle(axis.direction, angle).asRotationMatrix();
+
+      for (final entry in _before.entries) {
+        final object = scene[entry.key];
+        final was = _beforeWorld[entry.key];
+        if (object == null || was == null) continue;
+
+        // Turned about the world axis, then read back into the parent's frame.
+        // Each object turns where it stands rather than orbiting the handle,
+        // so a selection of several keeps its shape.
+        final turned = turn * was;
+        final parentId = object.parentId;
+        final localRotation = parentId == null || !scene.contains(parentId)
+            ? turned
+            : (Matrix3.copy(scene.worldOf(parentId).getRotation())..invert()) *
+                turned;
+
+        changes[entry.key] = (
+          from: entry.value,
+          to: eulerDegreesOf(Matrix4.identity()..setRotation(localRotation)),
+        );
+      }
+    }
+
+    if (changes.isEmpty) return;
+    history.run(TransformMany(
+      sceneId: sceneId,
+      field: _mode == GizmoMode.move
+          ? TransformField.position
+          : TransformField.rotation,
+      what: changes.length == 1
+          ? scene[changes.keys.first]!.name
+          : '${changes.length} objects',
+      changes: changes,
+    ));
+  }
+
+  void _release() {
+    if (_dragging == null) return;
+    // Sealed here rather than on a timer, so the whole gesture is one step
+    // however long somebody took over it.
+    widget.history?.seal();
+    setState(() {
+      _dragging = null;
+      _grabbed = null;
+    });
+  }
 
   /// Drives anything in the scene that moves on its own — a day running, mist
   /// drifting.
@@ -255,7 +476,14 @@ class _SceneViewportState extends State<SceneViewport>
       child: DragTarget<String>(
         onWillAcceptWithDetails: (_) => widget.onDropAsset != null,
         onAcceptWithDetails: (details) => widget.onDropAsset?.call(details.data),
-        builder: (context, candidate, _) => Stack(
+        builder: (context, candidate, _) => LayoutBuilder(
+          builder: (context, constraints) {
+            // The size the handles are projected into. Recorded rather than
+            // asked for at gesture time, because a pointer arrives before the
+            // next layout does.
+            _surface = constraints.biggest;
+
+            return Stack(
           children: [
             Positioned.fill(
               child:
@@ -288,6 +516,20 @@ class _SceneViewportState extends State<SceneViewport>
                 ),
               ),
             ),
+            // Over the outline, because a handle you cannot see is a handle
+            // you cannot grab — and under nothing, because it has to be the
+            // thing the pointer finds first.
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: GizmoPainter(
+                    gizmo: _gizmo,
+                    hovered: _hovered,
+                    dragging: _dragging,
+                  ),
+                ),
+              ),
+            ),
             Positioned(
               left: Space.md,
               top: Space.md,
@@ -300,14 +542,34 @@ class _SceneViewportState extends State<SceneViewport>
               ]),
             ),
             if (_rendererAvailable)
+              Positioned(
+                left: Space.md,
+                bottom: Space.md,
+                child: Row(
+                  children: [
+                    for (final mode in GizmoMode.values) ...[
+                      _ToolButton(
+                        mode: mode,
+                        selected: _mode == mode,
+                        onPressed: () => setState(() => _mode = mode),
+                      ),
+                      const SizedBox(width: Space.xs),
+                    ],
+                  ],
+                ),
+              ),
+            if (_rendererAvailable)
               const Positioned(
                 right: Space.md,
                 bottom: Space.md,
                 child: _ViewportChip(
-                  'Drag to orbit · scroll to zoom · F to frame',
+                  'Click to select · drag a handle to move · '
+                  'drag elsewhere to orbit',
                 ),
               ),
           ],
+        );
+          },
         ),
       ),
     );
@@ -319,12 +581,26 @@ class _SceneViewportState extends State<SceneViewport>
         if (event is! PointerScrollEvent) return;
         widget.onCameraChanged(widget.camera.zoom(event.scrollDelta.dy));
       },
-      child: GestureDetector(
+      child: MouseRegion(
+        onHover: (event) => _hover(event.localPosition),
+        onExit: (_) => setState(() => _hovered = null),
+        child: GestureDetector(
         // Opaque so drags land here rather than falling through to whatever
         // scrolls behind the viewport.
         behavior: HitTestBehavior.opaque,
-        onPanStart: (details) => _dragAnchor = details.localPosition,
+        onTapUp: (details) => _pick(details.localPosition),
+        onPanStart: (details) {
+          // A handle first: a drag that starts on one is a transform, and
+          // anywhere else is the view turning. Nothing to hold down and no
+          // mode to be in — the handles are the mode.
+          if (_grab(details.localPosition)) return;
+          _dragAnchor = details.localPosition;
+        },
         onPanUpdate: (details) {
+          if (_dragging != null) {
+            _dragTo(details.localPosition);
+            return;
+          }
           final anchor = _dragAnchor;
           if (anchor == null) return;
           widget.onCameraChanged(
@@ -332,7 +608,14 @@ class _SceneViewportState extends State<SceneViewport>
           );
           _dragAnchor = details.localPosition;
         },
-        onPanEnd: (_) => _dragAnchor = null,
+        onPanEnd: (_) {
+          _release();
+          _dragAnchor = null;
+        },
+        onPanCancel: () {
+          _release();
+          _dragAnchor = null;
+        },
         child: OrbisView(
           // One scene at a time, so the viewport shows one document and there
           // is never a question about which one an object belongs to.
@@ -342,6 +625,46 @@ class _SceneViewportState extends State<SceneViewport>
             projectRoot: widget.projectRoot,
           ),
           onSceneNotes: widget.onSceneNotes,
+        ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One of the two things a drag on a handle can do.
+class _ToolButton extends StatelessWidget {
+  const _ToolButton({
+    required this.mode,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final GizmoMode mode;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: mode.label,
+      child: GestureDetector(
+        onTap: onPressed,
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: selected ? OrbisColors.ember : OrbisColors.raised,
+            borderRadius: BorderRadius.circular(Radii.control),
+            border: Border.all(
+              color: selected ? OrbisColors.ember : OrbisColors.lineSoft,
+            ),
+          ),
+          child: Icon(
+            mode.icon,
+            size: 15,
+            color: selected ? Colors.white : OrbisColors.inkDim,
+          ),
         ),
       ),
     );

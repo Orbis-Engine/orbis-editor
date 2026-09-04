@@ -950,6 +950,23 @@ class _EditorShellState extends State<EditorShell> {
                                 onCameraChanged: (camera) =>
                                     setState(() => _camera = camera),
                                 selected: _selected,
+                                primary: _primary,
+                                history: _history,
+                                onPick: (id, {required bool add}) {
+                                  // Clicking empty space clears the
+                                  // selection, which is how somebody puts the
+                                  // handles away without reaching for a menu.
+                                  if (id == null) {
+                                    if (add) return;
+                                    setState(() {
+                                      _selected.clear();
+                                      _primary = null;
+                                      _selectedScene = null;
+                                    });
+                                    return;
+                                  }
+                                  _select(id, additive: add);
+                                },
                                 onDropAsset: _dropAsset,
                                 projectRoot: widget.project.directory,
                                 onSceneNotes: _reportSceneNotes,
