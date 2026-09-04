@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:orbis_editor/src/editor/clipboard.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
@@ -16,12 +17,35 @@ import 'package:path/path.dart' as p;
 void main() {
   late Directory root;
 
+  /// Stands in for the system clipboard, which has no implementation under
+  /// the test binding. Copy writes here and paste reads it, so the round trip
+  /// through text is what the tests actually exercise.
+  String? systemClipboard;
+
   setUp(() {
+    systemClipboard = null;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      switch (call.method) {
+        case 'Clipboard.setData':
+          systemClipboard =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          return null;
+        case 'Clipboard.getData':
+          return systemClipboard == null ? null : {'text': systemClipboard};
+      }
+      return null;
+    });
+
     root = Directory.systemTemp.createTempSync('orbis_shell');
     Directory(p.join(root.path, 'scenes')).createSync();
   });
 
-  tearDown(() => root.deleteSync(recursive: true));
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+    root.deleteSync(recursive: true);
+  });
 
   Future<void> open(WidgetTester tester) async {
     // The editor's real minimum. At the default 800x600 the panels sit below
@@ -853,5 +877,161 @@ void main() {
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
     expect(find.text('Paste Crate'), findsOneWidget);
+  });
+
+  /// Clicks a row with a modifier held.
+  Future<void> clickWith(
+    WidgetTester tester,
+    String name,
+    LogicalKeyboardKey modifier,
+  ) async {
+    await tester.sendKeyDownEvent(modifier);
+    await tester.tap(row(name));
+    await tester.pumpAndSettle();
+    await tester.sendKeyUpEvent(modifier);
+  }
+
+  testWidgets('command-click adds to the selection', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Sun'));
+    await tester.pumpAndSettle();
+    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Copy 2 objects'), findsOneWidget);
+  });
+
+  testWidgets('shift-click takes everything between', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Sun'));
+    await tester.pumpAndSettle();
+    await clickWith(tester, 'Cube', LogicalKeyboardKey.shiftLeft);
+
+    // Sun, Ground, Props, Cube — in the order the tree draws them.
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Copy 4 objects'), findsOneWidget);
+  });
+
+  testWidgets('command-click again takes one back out', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Sun'));
+    await tester.pumpAndSettle();
+    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Copy'), findsOneWidget, reason: 'back to one');
+  });
+
+  testWidgets('deleting several is one step', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Sun'));
+    await tester.pumpAndSettle();
+    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+    await tester.pumpAndSettle();
+
+    expect(row('Sun'), findsNothing);
+    expect(row('Ground'), findsNothing);
+    expect(find.textContaining('Delete 2 objects'), findsOneWidget);
+
+    await press(tester, LogicalKeyboardKey.keyZ);
+    expect(row('Sun'), findsOneWidget);
+    expect(row('Ground'), findsOneWidget);
+  });
+
+  testWidgets('several can be copied into another scene at once',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([], name: 'Props')));
+
+    await open(tester);
+    await save(tester);
+
+    await tester.tap(row('Sun'));
+    await tester.pumpAndSettle();
+    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    await loadScene(tester, 'props');
+    await press(tester, LogicalKeyboardKey.keyV);
+
+    expect(row('Sun'), findsOneWidget);
+    expect(row('Ground'), findsOneWidget);
+  });
+
+  testWidgets('a copy leaves readable text on the system clipboard',
+      (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    // What lands in a text editor is the scene's own encoding, not a blob.
+    expect(systemClipboard, isNotNull);
+    expect(systemClipboard, contains('"Crate"'));
+    expect(systemClipboard, contains('orbis.objects'));
+  });
+
+  testWidgets('a copy from elsewhere can be pasted in', (tester) async {
+    await open(tester);
+
+    // As though another window had put it there.
+    final elsewhere = SceneClipboard()
+      ..take(
+        EditorScene([
+          SceneObject(id: 'x', name: 'From Elsewhere', kind: ObjectKind.mesh),
+        ]),
+        ['x'],
+      );
+    systemClipboard = elsewhere.toText();
+
+    await press(tester, LogicalKeyboardKey.keyV);
+
+    expect(row('From Elsewhere'), findsOneWidget);
+  });
+
+  testWidgets('text that is not ours is not pasted', (tester) async {
+    await open(tester);
+    systemClipboard = 'just some notes I had copied';
+
+    await press(tester, LogicalKeyboardKey.keyV);
+
+    expect(find.textContaining('nothing on the clipboard'), findsOneWidget);
+  });
+
+  testWidgets('a pasted object lands where it was in the world',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([], name: 'Props')));
+
+    await open(tester);
+    await save(tester);
+
+    // The crate sits inside Props, at 2.2 along x.
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    await loadScene(tester, 'props');
+    await press(tester, LogicalKeyboardKey.keyV);
+    await save(tester);
+
+    // The other scene has no Props to inherit from, so the local transform has
+    // to carry what the parent used to contribute.
+    final written = File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .readAsStringSync();
+    final load = SceneDocument.decode(written);
+    final crate = load.scene.objects.firstWhere((o) => o.name == 'Crate');
+    expect(crate.position.x, closeTo(2.2, 1e-6));
   });
 }

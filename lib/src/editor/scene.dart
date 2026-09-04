@@ -171,6 +171,28 @@ Vector3 eulerDegreesOf(Matrix4 transform) {
   return Vector3(degrees(x), degrees(y), degrees(z));
 }
 
+/// Sets an object's local transform so it lands on a given world matrix.
+///
+/// What keeps a thing where it looks when its parent changes — on a reparent,
+/// and on a paste into a scene whose parent chain is different. Without it,
+/// dropping something into a folder teleports it.
+void placeInWorld(EditorScene scene, SceneObject object, Matrix4 world) {
+  final parentId = object.parentId;
+  final local = parentId == null || !scene.contains(parentId)
+      ? world
+      : Matrix4.inverted(scene.worldOf(parentId)).multiplied(world);
+
+  final position = Vector3.zero();
+  final rotation = Quaternion.identity();
+  final scale = Vector3.zero();
+  local.decompose(position, rotation, scale);
+
+  object.position.setFrom(position);
+  object.rotation.setFrom(eulerDegreesOf(local));
+  object.scale.setFrom(scale);
+  scene.invalidate();
+}
+
 /// Something an edit could not do, worth saying out loud.
 class SceneError extends StateError {
   SceneError(super.message);

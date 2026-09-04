@@ -161,7 +161,7 @@ void main() {
       final rig = open();
       final scene = rig.scene;
       final history = rig.history
-        ..run(DeleteObject(sceneId: 'a', id: 'props', name: 'Props'));
+        ..run(DeleteObjects(sceneId: 'a', ids: ['props'], what: 'Props'));
 
       expect(scene.contains('props'), isFalse);
       expect(scene.contains('cube'), isFalse, reason: 'a child was left behind');
@@ -178,7 +178,7 @@ void main() {
       final before = [for (final o in scene.objects) o.id];
 
       rig.history
-        ..run(DeleteObject(sceneId: 'a', id: 'props', name: 'Props'))
+        ..run(DeleteObjects(sceneId: 'a', ids: ['props'], what: 'Props'))
         ..undo();
 
       expect([for (final o in scene.objects) o.id], before);

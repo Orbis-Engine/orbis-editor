@@ -1,7 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' hide Clipboard;
+import 'package:flutter/services.dart' as services;
 import 'package:path/path.dart' as p;
 
 import '../launcher/project.dart';
@@ -45,8 +46,11 @@ class _EditorShellState extends State<EditorShell> {
   late final History _history = History(_workspace);
   late final AssetTree _assets = AssetTree(widget.project.directory);
 
-  /// The selected object, or null when the active scene itself is selected.
-  String? _selected;
+  /// The selected objects. Empty when the scene itself is selected.
+  final Set<String> _selected = {};
+
+  /// The one the inspector shows, and what a shift-click ranges from.
+  String? _primary;
 
   bool _playing = false;
   OrbitCamera _camera = OrbitCamera();
@@ -78,8 +82,6 @@ class _EditorShellState extends State<EditorShell> {
       path: opened.path,
       neverWritten: opened.isNew,
     ));
-    _selected = null;
-
     // Every other scene in the project is listed but not loaded, so they can
     // be reached without going hunting for them.
     _listSiblingScenes();
@@ -108,6 +110,66 @@ class _EditorShellState extends State<EditorShell> {
   String _defaultScenePath() =>
       p.join(widget.project.directory, 'scenes', 'main$sceneExtension');
 
+  /// Replaces, adds to, or extends the selection.
+  void _select(String id, {bool additive = false, bool range = false}) {
+    final scene = _current?.scene;
+    if (scene == null) return;
+
+    setState(() {
+      _selectedScene = null;
+
+      if (range && _primary != null) {
+        // Everything between the anchor and here, in the order the tree is
+        // drawn — which is what somebody shift-clicking means, rather than the
+        // order objects happen to sit in the document.
+        final order = _visibleOrder(scene);
+        final from = order.indexOf(_primary!);
+        final to = order.indexOf(id);
+        if (from >= 0 && to >= 0) {
+          final low = from < to ? from : to;
+          final high = from < to ? to : from;
+          _selected.addAll(order.sublist(low, high + 1));
+          _primary = id;
+          return;
+        }
+      }
+
+      if (additive) {
+        if (!_selected.remove(id)) {
+          _selected.add(id);
+          _primary = id;
+        } else if (_primary == id) {
+          _primary = _selected.isEmpty ? null : _selected.last;
+        }
+        return;
+      }
+
+      _selected
+        ..clear()
+        ..add(id);
+      _primary = id;
+    });
+  }
+
+  /// Object ids in the order the tree draws them.
+  List<String> _visibleOrder(EditorScene scene) {
+    final order = <String>[];
+    void walk(List<SceneObject> objects) {
+      for (final object in objects) {
+        order.add(object.id);
+        walk(scene.childrenOf(object.id));
+      }
+    }
+
+    walk(scene.roots);
+    return order;
+  }
+
+  void _clearSelection() => setState(() {
+        _selected.clear();
+        _primary = null;
+      });
+
   /// The scene an edit goes into. Only one is loaded, so there is only one.
   SceneEntry? get _current => _workspace.loaded;
 
@@ -115,6 +177,10 @@ class _EditorShellState extends State<EditorShell> {
   /// somebody has clicked to look at without opening.
   SceneEntry? get _inspected =>
       _selectedScene == null ? _workspace.loaded : _workspace[_selectedScene!];
+
+  /// What is on the clipboard, kept so a menu can name it without reading the
+  /// system clipboard, which cannot be done without waiting.
+  String get _clipboardLabel => _clipboard.description;
 
   String? _selectedScene;
 
@@ -236,7 +302,8 @@ class _EditorShellState extends State<EditorShell> {
       ..savedStamp = _history.stampFor(entry.id);
 
     setState(() {
-      _selected = null;
+      _selected.clear();
+      _primary = null;
       _selectedScene = null;
       _camera = OrbitCamera();
       _reportedMeshes.clear();
@@ -361,7 +428,8 @@ class _EditorShellState extends State<EditorShell> {
       ..load(entry, EditorScene.starter()..name = name);
 
     setState(() {
-      _selected = null;
+      _selected.clear();
+      _primary = null;
       _selectedScene = null;
       _camera = OrbitCamera();
     });
@@ -381,7 +449,8 @@ class _EditorShellState extends State<EditorShell> {
     _history.forget(entry.id);
     _workspace.remove(entry.id);
     setState(() {
-      _selected = null;
+      _selected.clear();
+      _primary = null;
       if (_selectedScene == entry.id) _selectedScene = null;
     });
   }
@@ -452,13 +521,13 @@ class _EditorShellState extends State<EditorShell> {
 
     // Added inside whatever is selected when that can hold things, which is
     // what somebody building a hierarchy means by "add" most of the time.
-    final selected = _selected == null ? null : scene[_selected!];
+    final selected = _primary == null ? null : scene[_primary!];
     final parent = selected == null
         ? null
         : (selected.kind == ObjectKind.group ? selected.id : selected.parentId);
 
     _run(AddObject(object, sceneId: open.id, parentId: parent));
-    setState(() => _selected = object.id);
+    _select(object.id);
   }
 
   String _uniqueName(EditorScene scene, String base) {
@@ -469,13 +538,34 @@ class _EditorShellState extends State<EditorShell> {
     }
   }
 
+  /// Deletes one object, whatever is selected.
   void _delete(String id) {
     final open = _workspace.sceneHolding(id);
     final object = open?.scene?[id];
     if (open == null || object == null) return;
 
-    _run(DeleteObject(sceneId: open.id, id: id, name: object.name));
-    if (_selected == id) setState(() => _selected = null);
+    _run(DeleteObjects(sceneId: open.id, ids: [id], what: object.name));
+    setState(() {
+      _selected.remove(id);
+      if (_primary == id) _primary = _selected.lastOrNull;
+    });
+  }
+
+  /// Deletes everything selected, as one step.
+  void _deleteSelection() {
+    final open = _current;
+    final scene = open?.scene;
+    if (open == null || scene == null || _selected.isEmpty) return;
+
+    final ids = _visibleOrder(scene).where(_selected.contains).toList();
+    if (ids.isEmpty) return;
+
+    final what = ids.length == 1
+        ? (scene[ids.single]?.name ?? 'object')
+        : '${ids.length} objects';
+
+    _run(DeleteObjects(sceneId: open.id, ids: ids, what: what));
+    _clearSelection();
   }
 
   /// Moves an object in the tree, by reparenting, reordering, or both.
@@ -504,29 +594,34 @@ class _EditorShellState extends State<EditorShell> {
     ));
   }
 
-  /// Puts the selection on the clipboard.
-  void _copy() {
-    final id = _selected;
+  /// Puts the selection on the clipboard, and on the system's.
+  ///
+  /// Written out as text as well, so a copy can cross into another window —
+  /// or into a text editor, where it is readable rather than an opaque blob.
+  Future<void> _copy() async {
     final scene = _current?.scene;
-    if (id == null || scene == null) return;
+    if (scene == null || _selected.isEmpty) return;
 
-    _clipboard.take(scene, id);
+    _clipboard.take(scene, _selected);
     setState(() {});
+    await services.Clipboard.setData(
+      services.ClipboardData(text: _clipboard.toText()),
+    );
     _say('Copied ${_clipboard.description}.');
   }
 
   /// Copies the selection and then removes it.
-  void _cut() {
-    final id = _selected;
+  Future<void> _cut() async {
     final scene = _current?.scene;
-    final object = id == null ? null : scene?[id];
-    if (id == null || scene == null || object == null) return;
+    if (scene == null || _selected.isEmpty) return;
 
     // Copied before it is deleted, since the delete is what makes it
     // unreachable.
-    _clipboard.take(scene, id);
-    _delete(id);
-    setState(() {});
+    _clipboard.take(scene, _selected);
+    await services.Clipboard.setData(
+      services.ClipboardData(text: _clipboard.toText()),
+    );
+    _deleteSelection();
   }
 
   /// Puts the clipboard into the loaded scene.
@@ -534,52 +629,72 @@ class _EditorShellState extends State<EditorShell> {
   /// Beside whatever is selected rather than inside it, which is what somebody
   /// pressing paste usually means — pasting into the thing you were looking at
   /// buries it one level down.
-  void _paste() {
+  Future<void> _paste() async {
     final open = _current;
     final scene = open?.scene;
-    if (open == null || scene == null || _clipboard.isEmpty) return;
+    if (open == null || scene == null) return;
 
-    final beside = _selected == null ? null : scene[_selected!];
+    // The system clipboard first, so a copy from another window wins over
+    // whatever this one did last.
+    final text = await services.Clipboard.getData('text/plain');
+    if (!mounted) return;
+    _clipboard.takeText(text?.text);
+
+    if (_clipboard.isEmpty) {
+      _say('There is nothing on the clipboard to paste.');
+      return;
+    }
+
+    final beside = _primary == null ? null : scene[_primary!];
     final content = _clipboard.contents(
       nextId: _nextObjectId,
       parentId: beside?.parentId,
     );
 
-    // Named for what it was, so the undo entry reads as the thing somebody
-    // did rather than as a count.
     _run(PasteObjects(
       sceneId: open.id,
       objects: content.objects,
       roots: content.roots,
+      worlds: content.worlds,
       what: _clipboard.description,
     ));
 
-    setState(() => _selected = content.roots.firstOrNull);
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(content.roots);
+      _primary = content.roots.lastOrNull;
+    });
   }
 
   /// Copies the selection and pastes it straight back.
   void _duplicate() {
-    final id = _selected;
     final open = _current;
     final scene = open?.scene;
-    if (id == null || open == null || scene == null) return;
+    if (open == null || scene == null || _selected.isEmpty) return;
 
     // On its own clipboard, so duplicating does not throw away what somebody
     // had copied earlier.
-    final taken = SceneClipboard()..take(scene, id);
+    final taken = SceneClipboard()..take(scene, _selected);
     final content = taken.contents(
       nextId: _nextObjectId,
-      parentId: scene[id]?.parentId,
+      parentId: _primary == null ? null : scene[_primary!]?.parentId,
     );
 
     _run(PasteObjects(
       sceneId: open.id,
       objects: content.objects,
       roots: content.roots,
+      worlds: content.worlds,
       what: taken.description,
     ));
 
-    setState(() => _selected = content.roots.firstOrNull);
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(content.roots);
+      _primary = content.roots.lastOrNull;
+    });
   }
 
   String _nextObjectId() =>
@@ -615,7 +730,7 @@ class _EditorShellState extends State<EditorShell> {
   }
 
   void _frameSelection() {
-    final id = _selected;
+    final id = _primary;
     final scene = _current?.scene;
     if (scene == null) return;
 
@@ -659,7 +774,7 @@ class _EditorShellState extends State<EditorShell> {
     );
 
     _run(AddObject(object, sceneId: open.id));
-    setState(() => _selected = object.id);
+    _select(object.id);
   }
 
   /// Undo, then show what it changed, so a step in another scene is not
@@ -681,15 +796,17 @@ class _EditorShellState extends State<EditorShell> {
     final scene = _workspace[sceneId]?.scene;
     if (scene == null) return;
     setState(() {
-      if (_selected != null && !scene.contains(_selected!)) _selected = null;
+      _selected.removeWhere((id) => !scene.contains(id));
+      if (_primary != null && !scene.contains(_primary!)) {
+        _primary = _selected.lastOrNull;
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final open = _current;
-    final selected =
-        _selected == null ? null : open?.scene?[_selected!];
+    final selected = _primary == null ? null : open?.scene?[_primary!];
 
     return Shortcuts(
       shortcuts: {
@@ -732,8 +849,7 @@ class _EditorShellState extends State<EditorShell> {
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
           _DeleteIntent: CallbackAction<_DeleteIntent>(
             onInvoke: (_) {
-              final id = _selected;
-              if (id != null) _delete(id);
+              _deleteSelection();
               return null;
             },
           ),
@@ -787,8 +903,8 @@ class _EditorShellState extends State<EditorShell> {
                   onNewScene: () => _newScene(),
                   onUndo: _undo,
                   onRedo: _redo,
-                  hasSelection: _selected != null,
-                  clipboard: _clipboard.description,
+                  selectionCount: _selected.length,
+                  clipboard: _clipboardLabel,
                   onCopy: _copy,
                   onCut: _cut,
                   onPaste: _paste,
@@ -801,12 +917,11 @@ class _EditorShellState extends State<EditorShell> {
                       Outliner(
                         workspace: _workspace,
                         selected: _selected,
-                        onSelect: (id) => setState(() {
-                          _selected = id;
-                          _selectedScene = null;
-                        }),
+                        primary: _primary,
+                        onSelect: _select,
                         onSelectScene: (entry) => setState(() {
-                          _selected = null;
+                          _selected.clear();
+                          _primary = null;
                           _selectedScene = entry.id;
                         }),
                         onLoadScene: _loadScene,
@@ -856,6 +971,7 @@ class _EditorShellState extends State<EditorShell> {
                         object: selected,
                         history: _history,
                         onLoad: _loadScene,
+                        selectionCount: _selected.length,
                       ),
                     ],
                   ),
@@ -947,7 +1063,7 @@ class _TopBar extends StatelessWidget {
     required this.onNewScene,
     required this.onUndo,
     required this.onRedo,
-    required this.hasSelection,
+    required this.selectionCount,
     required this.clipboard,
     required this.onCopy,
     required this.onCut,
@@ -968,7 +1084,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onNewScene;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
-  final bool hasSelection;
+  final int selectionCount;
 
   /// What is on the clipboard, or empty for nothing.
   final String clipboard;
@@ -1006,7 +1122,7 @@ class _TopBar extends StatelessWidget {
           _AddMenu(onAdd: onAdd),
           const SizedBox(width: Space.xs),
           _EditMenu(
-            hasSelection: hasSelection,
+            selectionCount: selectionCount,
             clipboard: clipboard,
             onCopy: onCopy,
             onCut: onCut,
@@ -1282,7 +1398,7 @@ class _SceneMenu extends StatelessWidget {
 /// keystroke that is not written down anywhere.
 class _EditMenu extends StatelessWidget {
   const _EditMenu({
-    required this.hasSelection,
+    required this.selectionCount,
     required this.clipboard,
     required this.onCopy,
     required this.onCut,
@@ -1290,7 +1406,7 @@ class _EditMenu extends StatelessWidget {
     required this.onDuplicate,
   });
 
-  final bool hasSelection;
+  final int selectionCount;
   final String clipboard;
   final VoidCallback onCopy;
   final VoidCallback onCut;
@@ -1311,19 +1427,29 @@ class _EditMenu extends StatelessWidget {
         ),
       ),
       menuChildren: [
-        _item('Cut', '⌘X', Icons.content_cut, hasSelection ? onCut : null),
-        _item('Copy', '⌘C', Icons.content_copy, hasSelection ? onCopy : null),
+        _item(
+          selectionCount > 1 ? 'Cut $selectionCount objects' : 'Cut',
+          '⌘X',
+          Icons.content_cut,
+          selectionCount > 0 ? onCut : null,
+        ),
+        _item(
+          selectionCount > 1 ? 'Copy $selectionCount objects' : 'Copy',
+          '⌘C',
+          Icons.content_copy,
+          selectionCount > 0 ? onCopy : null,
+        ),
         _item(
           clipboard.isEmpty ? 'Paste' : 'Paste $clipboard',
           '⌘V',
           Icons.content_paste,
-          clipboard.isEmpty ? null : onPaste,
+          onPaste,
         ),
         _item(
           'Duplicate',
           '⌘D',
           Icons.copy_all,
-          hasSelection ? onDuplicate : null,
+          selectionCount > 0 ? onDuplicate : null,
         ),
       ],
       builder: (context, controller, child) => OrbisButton(

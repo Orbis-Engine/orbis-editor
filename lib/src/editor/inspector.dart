@@ -23,6 +23,7 @@ class Inspector extends StatelessWidget {
     required this.object,
     required this.history,
     required this.onLoad,
+    this.selectionCount = 0,
   });
 
   /// The scene being looked at, which need not be the loaded one — a scene can
@@ -35,6 +36,11 @@ class Inspector extends StatelessWidget {
   final History history;
 
   final ValueChanged<SceneEntry> onLoad;
+
+  /// How many objects are selected. The fields below edit one of them, and
+  /// saying which beats leaving somebody to guess why their changes only
+  /// landed on one thing.
+  final int selectionCount;
 
   @override
   Widget build(BuildContext context) {
@@ -71,13 +77,57 @@ class Inspector extends StatelessWidget {
                         history: history,
                         onLoad: onLoad,
                       )
-                    : _Fields(
-                        key: ValueKey(selected.id),
-                        sceneId: entry.id,
-                        scene: entry.scene!,
-                        object: selected,
-                        history: history,
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (selectionCount > 1)
+                            _MultipleNotice(
+                              count: selectionCount,
+                              name: selected.name,
+                            ),
+                          Expanded(
+                            child: _Fields(
+                              key: ValueKey(selected.id),
+                              sceneId: entry.id,
+                              scene: entry.scene!,
+                              object: selected,
+                              history: history,
+                            ),
+                          ),
+                        ],
                       )),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Says that the fields below belong to one of several selected things.
+class _MultipleNotice extends StatelessWidget {
+  const _MultipleNotice({required this.count, required this.name});
+
+  final int count;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Space.md,
+        vertical: Space.sm,
+      ),
+      color: OrbisColors.emberWash,
+      child: Row(
+        children: [
+          const Icon(Icons.layers_outlined, size: 13, color: OrbisColors.ember),
+          const SizedBox(width: Space.sm),
+          Expanded(
+            child: Text(
+              '$count selected · editing $name',
+              overflow: TextOverflow.ellipsis,
+              style: OrbisText.caption.copyWith(color: OrbisColors.ember),
+            ),
           ),
         ],
       ),

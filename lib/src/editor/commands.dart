@@ -257,7 +257,7 @@ class MoveObject extends EditorCommand {
     // Only when the parent actually changed: a reorder among siblings leaves
     // the transform alone, and recomposing it would introduce rounding for no
     // reason.
-    if (from != to) _placeInWorld(scene, object, world);
+    if (from != to) placeInWorld(scene, object, world);
   }
 
   @override
@@ -273,27 +273,6 @@ class MoveObject extends EditorCommand {
     scene.invalidate();
   }
 
-  /// Sets an object's local transform so it lands on a given world matrix.
-  static void _placeInWorld(
-    EditorScene scene,
-    SceneObject object,
-    Matrix4 world,
-  ) {
-    final parentId = object.parentId;
-    final local = parentId == null
-        ? world
-        : Matrix4.inverted(scene.worldOf(parentId)).multiplied(world);
-
-    final position = Vector3.zero();
-    final rotation = Quaternion.identity();
-    final scale = Vector3.zero();
-    local.decompose(position, rotation, scale);
-
-    object.position.setFrom(position);
-    object.rotation.setFrom(eulerDegreesOf(local));
-    object.scale.setFrom(scale);
-    scene.invalidate();
-  }
 }
 
 /// Changes something about the scene itself rather than a thing in it.
@@ -406,6 +385,7 @@ class PasteObjects extends EditorCommand {
     required this.objects,
     required this.roots,
     required this.what,
+    this.worlds = const {},
   });
 
   @override
@@ -418,6 +398,13 @@ class PasteObjects extends EditorCommand {
   /// The tops of what was pasted, which is what a delete has to take.
   final List<String> roots;
 
+  /// Where each top sat in the world when it was copied.
+  ///
+  /// Pasting into a scene whose parent chain is different would otherwise put
+  /// the object somewhere else entirely, because a local transform only means
+  /// anything relative to the parent it was measured against.
+  final Map<String, Matrix4> worlds;
+
   final String what;
 
   @override
@@ -429,6 +416,13 @@ class PasteObjects extends EditorCommand {
     if (scene == null) return;
     for (final object in objects) {
       if (!scene.contains(object.id)) scene.add(object);
+    }
+
+    // After every object is in, so a root's new parent can be resolved.
+    for (final root in roots) {
+      final world = worlds[root];
+      final object = scene[root];
+      if (world != null && object != null) placeInWorld(scene, object, world);
     }
   }
 
@@ -444,29 +438,50 @@ class PasteObjects extends EditorCommand {
   }
 }
 
-/// Deletes an object and everything under it.
-class DeleteObject extends EditorCommand {
-  DeleteObject({
+/// Deletes objects and everything under them.
+///
+/// One command however many are selected: deleting three things is one thing
+/// somebody did, and undoing it a third at a time would be tedious and would
+/// let a subtree come back without its parent.
+class DeleteObjects extends EditorCommand {
+  DeleteObjects({
     required this.sceneId,
-    required this.id,
-    required this.name,
+    required this.ids,
+    required this.what,
   });
 
   @override
   final String sceneId;
 
-  final String id;
-  final String name;
+  final List<String> ids;
+  final String what;
 
-  List<({SceneObject object, int index})> _removed = const [];
-
-  @override
-  String get label => 'Delete $name';
+  final List<List<({SceneObject object, int index})>> _removed = [];
 
   @override
-  void apply(SceneHost host) =>
-      _removed = host.sceneFor(sceneId)?.remove(id) ?? const [];
+  String get label => 'Delete $what';
 
   @override
-  void revert(SceneHost host) => host.sceneFor(sceneId)?.restore(_removed);
+  void apply(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    _removed.clear();
+    for (final id in ids) {
+      // Already gone if it was inside something removed a moment ago, which is
+      // not a mistake — the selection simply held a parent and its child.
+      if (!scene.contains(id)) continue;
+      _removed.add(scene.remove(id));
+    }
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    // Backwards, so each restore puts things back at indices the ones after it
+    // have not yet shifted.
+    for (final batch in _removed.reversed) {
+      scene.restore(batch);
+    }
+  }
 }

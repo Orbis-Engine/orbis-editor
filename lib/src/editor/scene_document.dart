@@ -56,13 +56,15 @@ abstract final class SceneDocument {
       'sky': _hex(scene.skyColour),
       'ambient': scene.ambient,
       'objects': [
-        for (final object in scene.objects) _objectToJson(object),
+        for (final object in scene.objects) objectToJson(object),
       ],
     };
     return '${_encoder.convert(json)}\n';
   }
 
-  static Map<String, Object?> _objectToJson(SceneObject object) => {
+  /// One object as JSON. Shared with the clipboard, so what is copied and
+  /// what is saved are the same shape.
+  static Map<String, Object?> objectToJson(SceneObject object) => {
         'id': object.id,
         'name': object.name,
         'kind': object.kind.name,
@@ -75,6 +77,32 @@ abstract final class SceneDocument {
         if (object.isDrawable) 'castShadows': object.castShadows,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
       };
+
+  /// One object from JSON, or null if it cannot be read.
+  static SceneObject? objectFromJson(Map<String, Object?> entry) {
+    final id = entry['id'];
+    if (id is! String || id.isEmpty) return null;
+
+    final kind = ObjectKind.values
+        .cast<ObjectKind?>()
+        .firstWhere((k) => k!.name == entry['kind'], orElse: () => null);
+    if (kind == null) return null;
+
+    return SceneObject(
+      id: id,
+      name: entry['name'] is String ? entry['name']! as String : id,
+      kind: kind,
+      parentId: entry['parent'] is String ? entry['parent']! as String : null,
+      position: _readVector(entry['position']),
+      rotation: _readVector(entry['rotation']),
+      scale: _readVector(entry['scale'], fallback: 1),
+      colour: _readColour(entry['colour']),
+      power: entry['power'] is num ? (entry['power']! as num).toDouble() : 1000,
+      castShadows:
+          entry['castShadows'] is bool ? entry['castShadows']! as bool : true,
+      meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
+    );
+  }
 
   static SceneLoad decode(String text) {
     final Object? parsed;

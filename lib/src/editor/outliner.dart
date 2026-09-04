@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/orbis_theme.dart';
 import 'scene.dart';
@@ -37,6 +38,7 @@ class Outliner extends StatefulWidget {
     super.key,
     required this.workspace,
     required this.selected,
+    required this.primary,
     required this.onSelect,
     required this.onSelectScene,
     required this.onLoadScene,
@@ -47,10 +49,15 @@ class Outliner extends StatefulWidget {
 
   final Workspace workspace;
 
-  /// The selected object, or null when a scene itself is selected.
-  final String? selected;
+  /// The selected objects. Empty when a scene itself is selected.
+  final Set<String> selected;
 
-  final ValueChanged<String> onSelect;
+  /// The one the inspector shows, and the anchor a shift-click ranges from.
+  final String? primary;
+
+  /// [additive] toggles one in or out; [range] takes everything between the
+  /// anchor and this row.
+  final void Function(String id, {bool additive, bool range}) onSelect;
 
   /// Selecting a scene's row, which shows what it is without opening it.
   final ValueChanged<SceneEntry> onSelectScene;
@@ -191,13 +198,23 @@ class _OutlinerState extends State<Outliner> {
                   row: row,
                   workspace: widget.workspace,
                   selected: row.object == null
-                      ? widget.selected == null &&
+                      ? widget.selected.isEmpty &&
                           _selectedScene == row.entry.id
-                      : row.object!.id == widget.selected,
+                      : widget.selected.contains(row.object!.id),
+                  primary: row.object?.id == widget.primary,
                   collapsed: _collapsed.contains(key),
                   onTap: () {
                     if (row.object != null) {
-                      widget.onSelect(row.object!.id);
+                      final keys = HardwareKeyboard.instance.logicalKeysPressed;
+                      widget.onSelect(
+                        row.object!.id,
+                        additive: keys.contains(LogicalKeyboardKey.metaLeft) ||
+                            keys.contains(LogicalKeyboardKey.metaRight) ||
+                            keys.contains(LogicalKeyboardKey.controlLeft) ||
+                            keys.contains(LogicalKeyboardKey.controlRight),
+                        range: keys.contains(LogicalKeyboardKey.shiftLeft) ||
+                            keys.contains(LogicalKeyboardKey.shiftRight),
+                      );
                       return;
                     }
                     setState(() => _selectedScene = row.entry.id);
@@ -228,6 +245,7 @@ class _Row extends StatefulWidget {
     required this.row,
     required this.workspace,
     required this.selected,
+    required this.primary,
     required this.collapsed,
     required this.onTap,
     required this.onDoubleTap,
@@ -239,6 +257,10 @@ class _Row extends StatefulWidget {
   final OutlinerRow row;
   final Workspace workspace;
   final bool selected;
+
+  /// The one of several the inspector is showing.
+  final bool primary;
+
   final bool collapsed;
   final VoidCallback onTap;
   final VoidCallback? onDoubleTap;
@@ -403,6 +425,18 @@ class _RowState extends State<_Row> {
                               ),
                             ),
                           ),
+                          // A quiet mark on the one of several whose fields
+                          // the inspector is showing, so a multiple selection
+                          // does not look like it lost track of itself.
+                          if (widget.primary && widget.selected)
+                            Padding(
+                              padding: const EdgeInsets.only(left: Space.xs),
+                              child: Icon(
+                                Icons.edit_outlined,
+                                size: 11,
+                                color: OrbisColors.ember,
+                              ),
+                            ),
                         ],
                       ),
                     ),

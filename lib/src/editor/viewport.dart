@@ -121,7 +121,7 @@ class SceneViewport extends StatefulWidget {
     required this.workspace,
     required this.camera,
     required this.onCameraChanged,
-    this.selected,
+    this.selected = const {},
     this.onDropAsset,
     this.projectRoot,
     this.onMeshErrors,
@@ -137,8 +137,9 @@ class SceneViewport extends StatefulWidget {
 
   final ValueChanged<OrbitCamera> onCameraChanged;
 
-  /// The object to outline, if any.
-  final String? selected;
+  /// The objects to outline. All of them, so a multiple selection is visible
+  /// in the viewport rather than only in the tree.
+  final Set<String> selected;
 
   /// Called when a file is dragged in from the project browser.
   final ValueChanged<String>? onDropAsset;
@@ -352,7 +353,7 @@ class _SelectionPainter extends CustomPainter {
   });
 
   final Workspace workspace;
-  final String? selected;
+  final Set<String> selected;
   final OrbitCamera camera;
 
   /// The unit cube the renderer draws for every object, in its own space.
@@ -371,12 +372,10 @@ class _SelectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final id = selected;
-    if (id == null || size.isEmpty) return;
+    if (selected.isEmpty || size.isEmpty) return;
 
     final scene = workspace.loaded?.scene;
-    final object = scene?[id];
-    if (scene == null || object == null || !object.isDrawable) return;
+    if (scene == null) return;
 
     final view = camera.toRenderCamera();
     final viewMatrix = makeViewMatrix(
@@ -390,33 +389,42 @@ class _SelectionPainter extends CustomPainter {
       0.1,
       1000,
     );
-    final clip = projection.multiplied(viewMatrix)
-      ..multiply(scene.worldOf(id));
-
-    final points = <Offset>[];
-    for (final corner in _corners) {
-      final projected = clip.transform(Vector4(
-        corner.x,
-        corner.y,
-        corner.z,
-        1,
-      ));
-      // Behind the camera: the perspective divide flips the point to the
-      // opposite side of the screen, which would draw a box across the whole
-      // viewport. Nothing is drawn instead.
-      if (projected.w <= 1e-6) return;
-      points.add(Offset(
-        (projected.x / projected.w * 0.5 + 0.5) * size.width,
-        (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
-      ));
-    }
-
+    final viewProjection = projection.multiplied(viewMatrix);
     final path = Path();
-    for (final edge in _edges) {
-      path
-        ..moveTo(points[edge[0]].dx, points[edge[0]].dy)
-        ..lineTo(points[edge[1]].dx, points[edge[1]].dy);
+
+    for (final id in selected) {
+      final object = scene[id];
+      if (object == null || !object.isDrawable) continue;
+
+      final clip = viewProjection.multiplied(scene.worldOf(id));
+      final points = <Offset>[];
+      var visible = true;
+
+      for (final corner in _corners) {
+        final projected =
+            clip.transform(Vector4(corner.x, corner.y, corner.z, 1));
+        // Behind the camera: the perspective divide flips the point to the
+        // opposite side of the screen, which would draw a box across the whole
+        // viewport. That one is skipped rather than drawn wrong.
+        if (projected.w <= 1e-6) {
+          visible = false;
+          break;
+        }
+        points.add(Offset(
+          (projected.x / projected.w * 0.5 + 0.5) * size.width,
+          (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
+        ));
+      }
+      if (!visible) continue;
+
+      for (final edge in _edges) {
+        path
+          ..moveTo(points[edge[0]].dx, points[edge[0]].dy)
+          ..lineTo(points[edge[1]].dx, points[edge[1]].dy);
+      }
     }
+
+    if (path.getBounds().isEmpty) return;
 
     canvas
       // A dark pass under the bright one, so the outline reads against a pale
