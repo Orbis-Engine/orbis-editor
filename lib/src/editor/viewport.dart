@@ -15,19 +15,21 @@ import 'scene.dart';
 /// used to look *at* something, and yaw/pitch/distance cannot be driven into a
 /// state you have to reset your way out of.
 class OrbitCamera {
-  const OrbitCamera({
+  OrbitCamera({
     this.yaw = 0.6,
     this.pitch = 0.35,
     this.distance = 12,
     this.fieldOfView = 50,
-  });
+    Vector3? target,
+  }) : target = target ?? Vector3(0, 0.5, 0);
 
   final double yaw;
   final double pitch;
   final double distance;
   final double fieldOfView;
 
-  static const _target = (x: 0.0, y: 0.5, z: 0.0);
+  /// What the camera turns around and looks at.
+  final Vector3 target;
 
   /// Pitch is clamped just short of straight up and straight down: at exactly
   /// vertical the up vector and the view direction are parallel and the view
@@ -39,6 +41,7 @@ class OrbitCamera {
         pitch: (pitch + delta.dy * 0.008).clamp(-_pitchLimit, _pitchLimit),
         distance: distance,
         fieldOfView: fieldOfView,
+        target: target,
       );
 
   OrbitCamera zoom(double amount) => OrbitCamera(
@@ -46,17 +49,58 @@ class OrbitCamera {
         pitch: pitch,
         distance: (distance * math.exp(amount * 0.0016)).clamp(1.5, 200.0),
         fieldOfView: fieldOfView,
+        target: target,
       );
+
+  /// Slides the camera sideways, keeping its angle. What a middle-drag does.
+  OrbitCamera pan(Offset delta) {
+    // Scaled by distance so panning feels the same close up and far away, and
+    // moved along the camera's own axes rather than the world's.
+    final scale = distance * 0.0016;
+    final right = Vector3(math.cos(yaw), 0, -math.sin(yaw));
+    final up = Vector3(
+      -math.sin(yaw) * math.sin(pitch),
+      math.cos(pitch),
+      -math.cos(yaw) * math.sin(pitch),
+    );
+
+    return OrbitCamera(
+      yaw: yaw,
+      pitch: pitch,
+      distance: distance,
+      fieldOfView: fieldOfView,
+      target: target - right * (delta.dx * scale) + up * (delta.dy * scale),
+    );
+  }
+
+  /// Points the camera at a box, far enough back to see all of it.
+  ///
+  /// Keeps the angle it was already at, because framing something should not
+  /// also spin the view — somebody pressing F wants the thing on screen, not a
+  /// different shot of it.
+  OrbitCamera framing({required Vector3 centre, required double radius}) {
+    // Fitted to the vertical field of view with room to spare, and floored so
+    // framing a flat or tiny object does not put the camera inside it.
+    final fitted = radius / math.tan(radians(fieldOfView) / 2) * 1.6;
+
+    return OrbitCamera(
+      yaw: yaw,
+      pitch: pitch,
+      distance: fitted.clamp(1.5, 200.0),
+      fieldOfView: fieldOfView,
+      target: centre.clone(),
+    );
+  }
 
   OrbisCamera toRenderCamera() {
     final horizontal = distance * math.cos(pitch);
     return OrbisCamera(
       position: Vector3(
-        _target.x + horizontal * math.sin(yaw),
-        _target.y + distance * math.sin(pitch),
-        _target.z + horizontal * math.cos(yaw),
+        target.x + horizontal * math.sin(yaw),
+        target.y + distance * math.sin(pitch),
+        target.z + horizontal * math.cos(yaw),
       ),
-      target: Vector3(_target.x, _target.y, _target.z),
+      target: target.clone(),
       fieldOfView: fieldOfView,
     );
   }
@@ -71,19 +115,34 @@ class OrbitCamera {
 // Viewport, and a name that collides with the framework's is one somebody has
 // to disambiguate at every call site.
 class SceneViewport extends StatefulWidget {
-  const SceneViewport({super.key, required this.scene, this.selected});
+  const SceneViewport({
+    super.key,
+    required this.scene,
+    required this.camera,
+    required this.onCameraChanged,
+    this.selected,
+    this.onDropAsset,
+  });
 
   final EditorScene scene;
 
+  /// Owned by the shell rather than here, so pressing F anywhere can frame the
+  /// selection and so the view could later be saved with the scene.
+  final OrbitCamera camera;
+
+  final ValueChanged<OrbitCamera> onCameraChanged;
+
   /// The object to outline, if any.
   final String? selected;
+
+  /// Called when a file is dragged in from the project browser.
+  final ValueChanged<String>? onDropAsset;
 
   @override
   State<SceneViewport> createState() => _SceneViewportState();
 }
 
 class _SceneViewportState extends State<SceneViewport> {
-  OrbitCamera _camera = const OrbitCamera();
   Offset? _dragAnchor;
 
   bool get _rendererAvailable =>
@@ -99,11 +158,26 @@ class _SceneViewportState extends State<SceneViewport> {
         borderRadius: BorderRadius.circular(Radii.panel),
         border: Border.all(color: OrbisColors.lineSoft),
       ),
-      child: Stack(
+      child: DragTarget<String>(
+        onWillAcceptWithDetails: (_) => widget.onDropAsset != null,
+        onAcceptWithDetails: (details) => widget.onDropAsset?.call(details.data),
+        builder: (context, candidate, _) => Stack(
         children: [
           Positioned.fill(
             child: _rendererAvailable ? _buildSurface() : const _Placeholder(),
           ),
+          if (candidate.isNotEmpty)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: OrbisColors.emberWash,
+                    border: Border.all(color: OrbisColors.ember, width: 2),
+                    borderRadius: BorderRadius.circular(Radii.panel),
+                  ),
+                ),
+              ),
+            ),
           // Drawn in Flutter over the texture rather than as a render pass:
           // an outline pass in Filament is a real piece of work, and a box
           // projected with the same camera is honest about where the object
@@ -114,7 +188,7 @@ class _SceneViewportState extends State<SceneViewport> {
                 painter: _SelectionPainter(
                   scene: widget.scene,
                   selected: widget.selected,
-                  camera: _camera,
+                  camera: widget.camera,
                 ),
               ),
             ),
@@ -134,9 +208,12 @@ class _SceneViewportState extends State<SceneViewport> {
             const Positioned(
               right: Space.md,
               bottom: Space.md,
-              child: _ViewportChip('Drag to orbit · scroll to zoom'),
+              child: _ViewportChip(
+                'Drag to orbit · scroll to zoom · F to frame',
+              ),
             ),
         ],
+      ),
       ),
     );
   }
@@ -145,7 +222,7 @@ class _SceneViewportState extends State<SceneViewport> {
     return Listener(
       onPointerSignal: (event) {
         if (event is! PointerScrollEvent) return;
-        setState(() => _camera = _camera.zoom(event.scrollDelta.dy));
+        widget.onCameraChanged(widget.camera.zoom(event.scrollDelta.dy));
       },
       child: GestureDetector(
         // Opaque so drags land here rather than falling through to whatever
@@ -155,14 +232,14 @@ class _SceneViewportState extends State<SceneViewport> {
         onPanUpdate: (details) {
           final anchor = _dragAnchor;
           if (anchor == null) return;
-          setState(() {
-            _camera = _camera.orbit(details.localPosition - anchor);
-            _dragAnchor = details.localPosition;
-          });
+          widget.onCameraChanged(
+            widget.camera.orbit(details.localPosition - anchor),
+          );
+          _dragAnchor = details.localPosition;
         },
         onPanEnd: (_) => _dragAnchor = null,
         child: OrbisView(
-          scene: widget.scene.toRenderScene(_camera.toRenderCamera()),
+          scene: widget.scene.toRenderScene(widget.camera.toRenderCamera()),
         ),
       ),
     );

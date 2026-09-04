@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -25,7 +26,7 @@ enum AssetKind {
   final IconData icon;
 
   static const _byExtension = <String, AssetKind>{
-    '.orbisscene': scene,
+    '.oscene': scene,
     '.gltf': mesh, '.glb': mesh, '.obj': mesh, '.fbx': mesh,
     '.png': texture, '.jpg': texture, '.jpeg': texture,
     '.ktx2': texture, '.hdr': texture, '.exr': texture,
@@ -67,17 +68,70 @@ class Asset {
   }
 }
 
-/// Reads what is actually in a project folder.
+/// Reads what is actually in a project folder, and says when it changes.
 ///
-/// Synchronous and on demand rather than watched. A file watcher is the right
-/// answer eventually and is a bigger thing than it looks — the honest version
-/// for now is a list that is correct when it was read, and a button that says
-/// so.
+/// Reads are synchronous and on demand: a folder is small and a build that
+/// blocks for a moment beats a list that is a frame behind. [changes] is what
+/// tells the browser a read is worth doing again.
 class AssetTree {
-  const AssetTree(this.root);
+  AssetTree(this.root);
 
   /// The project directory, which is the only place the browser will look.
   final String root;
+
+  StreamController<void>? _changes;
+  StreamSubscription<FileSystemEvent>? _watch;
+  Timer? _settle;
+
+  /// Fires after the project folder changes, whoever changed it.
+  ///
+  /// Coalesced: saving one file from another program can produce several
+  /// events, and a copy of a hundred assets produces hundreds. Rebuilding the
+  /// browser for each one would make the editor stutter during exactly the
+  /// operation somebody most wants to watch.
+  Stream<void> get changes => (_changes ??= _openWatch()).stream;
+
+  static const Duration _settleDelay = Duration(milliseconds: 180);
+
+  StreamController<void> _openWatch() {
+    final controller = StreamController<void>.broadcast(onCancel: _stopWatch);
+
+    try {
+      _watch = Directory(root)
+          .watch(recursive: true)
+          .listen(
+            (_) {
+              _settle?.cancel();
+              _settle = Timer(_settleDelay, () {
+                if (!controller.isClosed) controller.add(null);
+              });
+            },
+            // A watch that dies takes the stream with it rather than leaving
+            // the browser silently stale — the refresh button still works.
+            onError: (Object _) {},
+            cancelOnError: true,
+          );
+    } on FileSystemException {
+      // Watching is not available everywhere, and a browser that cannot watch
+      // is still a browser. The refresh button is the fallback.
+    }
+
+    return controller;
+  }
+
+  void _stopWatch() {
+    _settle?.cancel();
+    _settle = null;
+    _watch?.cancel();
+    _watch = null;
+  }
+
+  /// Stops watching. Call when the browser goes away.
+  void dispose() {
+    _stopWatch();
+    _changes?.close();
+    _changes = null;
+  }
 
   /// What is directly inside [directory], folders first and then by name.
   ///

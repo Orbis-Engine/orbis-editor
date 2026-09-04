@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
@@ -11,10 +13,18 @@ import 'assets.dart';
 /// *has* — and stacking them in one column makes each look like part of the
 /// other.
 class AssetBrowser extends StatefulWidget {
-  const AssetBrowser({super.key, required this.tree, required this.height});
+  const AssetBrowser({
+    super.key,
+    required this.tree,
+    required this.height,
+    this.onOpenAsset,
+  });
 
   final AssetTree tree;
   final double height;
+
+  /// Called when somebody opens a file, rather than a folder.
+  final ValueChanged<Asset>? onOpenAsset;
 
   @override
   State<AssetBrowser> createState() => _AssetBrowserState();
@@ -24,9 +34,29 @@ class _AssetBrowserState extends State<AssetBrowser> {
   late String _directory = widget.tree.root;
   String? _selected;
 
-  /// Bumped to force a re-read. The list is a snapshot of a folder somebody
-  /// else can change, so refreshing is explicit rather than pretended.
+  /// Bumped to force a re-read, by the watcher or by the button.
   int _revision = 0;
+
+  StreamSubscription<void>? _changes;
+
+  @override
+  void initState() {
+    super.initState();
+    _listen();
+  }
+
+  void _listen() {
+    _changes?.cancel();
+    _changes = widget.tree.changes.listen((_) {
+      if (mounted) setState(() => _revision++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _changes?.cancel();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(AssetBrowser oldWidget) {
@@ -34,6 +64,7 @@ class _AssetBrowserState extends State<AssetBrowser> {
     if (oldWidget.tree.root != widget.tree.root) {
       _directory = widget.tree.root;
       _selected = null;
+      _listen();
     }
   }
 
@@ -85,7 +116,10 @@ class _AssetBrowserState extends State<AssetBrowser> {
                       onSelect: (asset) =>
                           setState(() => _selected = asset.path),
                       onOpen: (asset) {
-                        if (!asset.isFolder) return;
+                        if (!asset.isFolder) {
+                          widget.onOpenAsset?.call(asset);
+                          return;
+                        }
                         setState(() {
                           _directory = asset.path;
                           _selected = null;
@@ -374,7 +408,7 @@ class _TileState extends State<_Tile> {
   Widget build(BuildContext context) {
     final asset = widget.asset;
 
-    return Tooltip(
+    final tile = Tooltip(
       message: '${asset.name}\n${asset.kind.label}'
           '${asset.bytes == null ? '' : ' · ${asset.size}'}',
       waitDuration: const Duration(milliseconds: 600),
@@ -429,6 +463,53 @@ class _TileState extends State<_Tile> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+
+    // Folders are for navigating, not for dropping into a scene.
+    if (asset.isFolder) return tile;
+
+    return Draggable<String>(
+      data: asset.path,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: _DragLabel(asset: asset),
+      childWhenDragging: Opacity(opacity: 0.35, child: tile),
+      child: tile,
+    );
+  }
+}
+
+/// What follows the pointer while an asset is dragged.
+class _DragLabel extends StatelessWidget {
+  const _DragLabel({required this.asset});
+
+  final Asset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Space.sm,
+          vertical: Space.xs,
+        ),
+        decoration: BoxDecoration(
+          color: OrbisColors.raised,
+          borderRadius: BorderRadius.circular(Radii.control),
+          border: Border.all(color: OrbisColors.ember),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(asset.kind.icon, size: 13, color: OrbisColors.ember),
+            const SizedBox(width: Space.sm),
+            Text(
+              asset.name,
+              style: OrbisText.label.copyWith(color: OrbisColors.ink),
+            ),
+          ],
         ),
       ),
     );

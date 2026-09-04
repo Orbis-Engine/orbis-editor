@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
+import 'package:orbis_editor/src/editor/scene.dart';
+import 'package:orbis_editor/src/editor/scene_document.dart';
+import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:path/path.dart' as p;
@@ -14,7 +17,6 @@ void main() {
   setUp(() {
     root = Directory.systemTemp.createTempSync('orbis_shell');
     Directory(p.join(root.path, 'scenes')).createSync();
-    File(p.join(root.path, 'scenes', 'main.orbisscene')).writeAsStringSync('{}');
   });
 
   tearDown(() => root.deleteSync(recursive: true));
@@ -51,6 +53,21 @@ void main() {
       of: find.byType(MenuItemButton),
       matching: find.text(label),
     ));
+    await tester.pumpAndSettle();
+  }
+
+  /// Opens a folder from the file grid.
+  ///
+  /// The grid tile rather than the folder-tree row beside it, because both
+  /// carry the same text. A tile opens on a double tap; a single one selects.
+  Future<void> openFolder(WidgetTester tester, String name) async {
+    final tile = find.descendant(
+      of: find.byType(GridView),
+      matching: find.text(name),
+    );
+    await tester.tap(tile);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(tile);
     await tester.pumpAndSettle();
   }
 
@@ -165,20 +182,10 @@ void main() {
   testWidgets('opening a folder shows its files', (tester) async {
     await open(tester);
 
-    // The tile in the grid, not the row in the folder tree beside it. A tile
-    // opens on a double tap; a single one only selects.
-    await tester.tap(find.descendant(
-      of: find.byType(GridView),
-      matching: find.text('scenes'),
-    ));
-    await tester.pump(const Duration(milliseconds: 50));
-    await tester.tap(find.descendant(
-      of: find.byType(GridView),
-      matching: find.text('scenes'),
-    ));
-    await tester.pumpAndSettle();
+    File(p.join(root.path, 'scenes', 'notes.txt')).writeAsStringSync('x');
+    await openFolder(tester, 'scenes');
 
-    expect(find.text('main.orbisscene'), findsOneWidget);
+    expect(find.text('notes.txt'), findsOneWidget);
   });
 
   testWidgets('undo is offered only once there is something to undo',
@@ -190,5 +197,154 @@ void main() {
 
     expect(find.byTooltip('Nothing to undo'), findsNothing);
     expect(find.byTooltip('Undo Add Cube 2'), findsOneWidget);
+  });
+
+  testWidgets('saving writes a scene file that opens again', (tester) async {
+    await open(tester);
+
+    // Nothing has been written yet, so the status bar says so.
+    expect(find.textContaining('•'), findsOneWidget,
+        reason: 'a fresh scene is unsaved and should be marked');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+
+    final written = File(p.join(root.path, 'scenes', 'main$sceneExtension'));
+    expect(written.existsSync(), isTrue);
+
+    final load = SceneDocument.decode(written.readAsStringSync());
+    expect(load.hasProblems, isFalse);
+    expect(load.scene.childrenOf('props').length, 2,
+        reason: 'the hierarchy should survive the save');
+  });
+
+  testWidgets('the unsaved marker clears on save and comes back on an edit',
+      (tester) async {
+    await open(tester);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('•'), findsNothing);
+
+    await add(tester, 'Group');
+    expect(find.textContaining('•'), findsOneWidget);
+  });
+
+  testWidgets('undoing back to the saved state reads as saved again',
+      (tester) async {
+    await open(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+
+    await add(tester, 'Group');
+    expect(find.textContaining('•'), findsOneWidget);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+
+    // Somebody who changed their mind has not changed the file.
+    expect(find.textContaining('•'), findsNothing);
+  });
+
+  testWidgets('a scene written by a newer editor is refused, not half-read',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'main$sceneExtension'))
+        .writeAsStringSync('{"formatVersion": 99, "objects": []}');
+
+    await open(tester);
+
+    // The starter scene is still there rather than an empty one.
+    expect(row('Props'), findsOneWidget);
+    expect(find.textContaining('newer Orbis'), findsOneWidget);
+  });
+
+  testWidgets('an existing scene file is what opens', (tester) async {
+    File(p.join(root.path, 'scenes', 'main$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([
+      SceneObject(id: 'x', name: 'Only Thing', kind: ObjectKind.mesh),
+    ])));
+
+    await open(tester);
+
+    expect(row('Only Thing'), findsOneWidget);
+    expect(row('Props'), findsNothing, reason: 'the starter scene should not '
+        'be used when there is a file');
+  });
+
+  testWidgets('dragging a mesh out of the browser puts it in the scene',
+      (tester) async {
+    Directory(p.join(root.path, 'assets')).createSync();
+    File(p.join(root.path, 'assets', 'crate.glb')).writeAsBytesSync([1, 2]);
+
+    await open(tester);
+    await openFolder(tester, 'assets');
+
+    final tile = find.descendant(
+      of: find.byType(GridView),
+      matching: find.text('crate.glb'),
+    );
+    expect(tile, findsOneWidget);
+
+    final gesture = await tester.startGesture(tester.getCenter(tile));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // Named after the file, and recorded as referencing it.
+    expect(row('crate'), findsOneWidget);
+    expect(find.textContaining('Add crate'), findsOneWidget);
+  });
+
+  testWidgets('a texture dragged in is refused with a reason', (tester) async {
+    Directory(p.join(root.path, 'assets')).createSync();
+    File(p.join(root.path, 'assets', 'rock.png')).writeAsBytesSync([1]);
+
+    await open(tester);
+    await openFolder(tester, 'assets');
+
+    final tile = find.descendant(
+      of: find.byType(GridView),
+      matching: find.text('rock.png'),
+    );
+    final gesture = await tester.startGesture(tester.getCenter(tile));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Only meshes and scenes'), findsOneWidget);
+    expect(row('rock'), findsNothing);
+  });
+
+  testWidgets('F frames the selection', (tester) async {
+    await open(tester);
+    await tester.tap(row('Ground'));
+    await tester.pumpAndSettle();
+
+    final before = tester
+        .widget<SceneViewport>(find.byType(SceneViewport))
+        .camera;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await tester.pumpAndSettle();
+
+    final after =
+        tester.widget<SceneViewport>(find.byType(SceneViewport)).camera;
+
+    // The ground is wide, so framing it pulls the camera back.
+    expect(after.distance, isNot(before.distance));
+    expect(after.yaw, before.yaw, reason: 'framing should not change the angle');
   });
 }

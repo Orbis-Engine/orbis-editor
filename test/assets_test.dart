@@ -104,4 +104,50 @@ void main() {
       expect(tree.relative(outside), outside);
     });
   });
+
+  group('watching', () {
+    test('says when a file appears', () async {
+      final tree = AssetTree(root.path);
+      addTearDown(tree.dispose);
+
+      final seen = tree.changes.first.timeout(const Duration(seconds: 5));
+      // A beat for the watch to be in place before anything changes.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      File(p.join(root.path, 'new.png')).writeAsBytesSync([1]);
+
+      await expectLater(seen, completes);
+    });
+
+    test('coalesces a burst into one', () async {
+      final tree = AssetTree(root.path);
+      addTearDown(tree.dispose);
+
+      var fired = 0;
+      final subscription = tree.changes.listen((_) => fired++);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+
+      // What copying a folder of assets in looks like.
+      for (var i = 0; i < 30; i++) {
+        File(p.join(root.path, 'burst$i.png')).writeAsBytesSync([1]);
+      }
+
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(fired, lessThanOrEqualTo(2),
+          reason: 'thirty files should not mean thirty rebuilds');
+      expect(fired, greaterThan(0));
+    });
+
+    test('disposing stops it, so a closed browser is not still listening',
+        () async {
+      final tree = AssetTree(root.path)..changes.listen((_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      tree.dispose();
+
+      // Nothing to assert beyond it not throwing or leaking a timer that the
+      // test binding would then complain about.
+      File(p.join(root.path, 'after.png')).writeAsBytesSync([1]);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+  });
 }

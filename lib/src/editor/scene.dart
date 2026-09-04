@@ -25,6 +25,7 @@ class SceneObject {
     this.colour = const Color(0xFFD9634F),
     this.power = 1000,
     this.castShadows = true,
+    this.meshAsset,
   })  : position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
         scale = scale ?? Vector3(1, 1, 1);
@@ -56,6 +57,14 @@ class SceneObject {
 
   bool castShadows;
 
+  /// The mesh this object draws, as a path relative to the project.
+  ///
+  /// Null means the built-in cube. A referenced mesh is *still* drawn as a
+  /// cube for now — the reference is recorded and shown, and the renderer
+  /// honours it once glTF loading exists. Naming it here rather than pretending
+  /// to load it keeps the file honest about what the scene says.
+  String? meshAsset;
+
   IconData get icon => switch (kind) {
         ObjectKind.scene => Icons.public,
         ObjectKind.group => Icons.folder_outlined,
@@ -84,6 +93,7 @@ class SceneObject {
         colour: colour,
         power: power,
         castShadows: castShadows,
+        meshAsset: meshAsset,
       );
 }
 
@@ -340,6 +350,61 @@ class EditorScene {
     }
     object.parentId = parentId;
     invalidate();
+  }
+
+  /// Roughly where an object sits and how big it is, with its children.
+  ///
+  /// Built from the unit cube the renderer draws for everything, so it is only
+  /// as accurate as the geometry is — which is exact today and becomes an
+  /// approximation the moment real meshes load. Good enough to frame by, which
+  /// is all it is for.
+  ({Vector3 centre, double radius}) boundsOf(String id) {
+    final objects = [
+      if (this[id] != null) this[id]!,
+      ...descendantsOf(id),
+    ].where((o) => o.isDrawable).toList();
+
+    // A group of nothing, or a light: frame its own position rather than
+    // refusing, so F always does something.
+    if (objects.isEmpty) {
+      final lone = this[id];
+      return (
+        centre: lone == null
+            ? Vector3.zero()
+            : worldOf(lone.id).getTranslation(),
+        radius: 1,
+      );
+    }
+
+    var minimum = Vector3.all(double.infinity);
+    var maximum = Vector3.all(double.negativeInfinity);
+
+    for (final object in objects) {
+      final world = worldOf(object.id);
+      for (final x in const [-1.0, 1.0]) {
+        for (final y in const [-1.0, 1.0]) {
+          for (final z in const [-1.0, 1.0]) {
+            final corner = world.transformed3(Vector3(x, y, z));
+            minimum = Vector3(
+              math.min(minimum.x, corner.x),
+              math.min(minimum.y, corner.y),
+              math.min(minimum.z, corner.z),
+            );
+            maximum = Vector3(
+              math.max(maximum.x, corner.x),
+              math.max(maximum.y, corner.y),
+              math.max(maximum.z, corner.z),
+            );
+          }
+        }
+      }
+    }
+
+    final centre = (minimum + maximum)..scale(0.5);
+    // Floored, so framing something flat — a ground plane — does not put the
+    // camera inside it.
+    final radius = math.max((maximum - minimum).length / 2, 0.5);
+    return (centre: centre, radius: radius);
   }
 
   /// Everything the renderer draws, viewed from [camera].

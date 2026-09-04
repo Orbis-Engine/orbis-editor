@@ -1,8 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:vector_math/vector_math_64.dart' hide Colors;
+
+import '../editor/scene.dart';
+import '../editor/scene_document.dart';
 
 /// What a project looks like on disk.
 ///
@@ -187,8 +192,8 @@ class ProjectStore {
     File(p.join(directory.path, projectFileName)).writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(project.toJson()),
     );
-    File(p.join(directory.path, 'scenes', 'main.oscene'))
-        .writeAsStringSync(_sceneFor(template));
+    File(p.join(directory.path, 'scenes', 'main$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(sceneFor(template)));
     File(p.join(directory.path, '.gitignore'))
         .writeAsStringSync('build/\n.orbis/\n');
 
@@ -206,31 +211,65 @@ class ProjectStore {
     return slug.isEmpty ? 'orbis-project' : slug;
   }
 
-  String _sceneFor(ProjectTemplate template) {
-    final entities = switch (template) {
-      ProjectTemplate.empty => <Map<String, Object?>>[],
-      ProjectTemplate.scene => [
-          {'name': 'Sun', 'components': ['DirectionalLight']},
-          {'name': 'Ground', 'components': ['Transform', 'MeshRenderer']},
-          {'name': 'Cube', 'components': ['Transform', 'MeshRenderer']},
-        ],
-      ProjectTemplate.thirdPerson => [
-          {'name': 'Sun', 'components': ['DirectionalLight']},
-          {'name': 'Ground', 'components': ['Transform', 'MeshRenderer']},
-          {'name': 'Character', 'components': ['Transform', 'MeshRenderer']},
-          {'name': 'Follow Camera', 'components': ['Transform', 'VirtualCamera']},
-        ],
-    };
-
-    return '${const JsonEncoder.withIndent('  ').convert({
-          'formatVersion': 1,
-          'name': 'main',
-          'entities': entities,
-        })}\n';
-  }
-
   Future<File> _recentsFile() async {
     final support = await getApplicationSupportDirectory();
     return File(p.join(support.path, 'recent_projects.json'));
   }
+}
+
+/// What a template starts a project with.
+///
+/// Built as a real scene and written through [SceneDocument], so a new project
+/// opens on exactly what the editor would have saved. A separate hand-written
+/// shape here would drift from the format the editor reads, and the drift
+/// would only show up as a new project failing to open.
+EditorScene sceneFor(ProjectTemplate template) {
+  final sun = SceneObject(
+    id: 'sun',
+    name: 'Sun',
+    kind: ObjectKind.light,
+    rotation: Vector3(-55, 35, 0),
+    colour: const Color(0xFFFFF3E0),
+    power: 1400,
+  );
+  final ground = SceneObject(
+    id: 'ground',
+    name: 'Ground',
+    kind: ObjectKind.mesh,
+    position: Vector3(0, -1.05, 0),
+    scale: Vector3(8, 0.05, 8),
+    colour: const Color(0xFF3B424C),
+  );
+
+  return switch (template) {
+    ProjectTemplate.empty => EditorScene([]),
+    ProjectTemplate.scene => EditorScene([
+        sun,
+        ground,
+        SceneObject(
+          id: 'cube',
+          name: 'Cube',
+          kind: ObjectKind.mesh,
+          rotation: Vector3(0, 25, 0),
+        ),
+      ]),
+    ProjectTemplate.thirdPerson => EditorScene([
+        sun,
+        ground,
+        SceneObject(
+          id: 'character',
+          name: 'Character',
+          kind: ObjectKind.mesh,
+          scale: Vector3(0.5, 0.9, 0.5),
+          colour: const Color(0xFFE5B84F),
+        ),
+        SceneObject(
+          id: 'camera',
+          name: 'Follow Camera',
+          kind: ObjectKind.camera,
+          position: Vector3(0, 3, 7),
+          rotation: Vector3(-15, 0, 0),
+        ),
+      ]),
+  };
 }
