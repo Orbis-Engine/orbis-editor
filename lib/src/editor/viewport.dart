@@ -71,9 +71,12 @@ class OrbitCamera {
 // Viewport, and a name that collides with the framework's is one somebody has
 // to disambiguate at every call site.
 class SceneViewport extends StatefulWidget {
-  const SceneViewport({super.key, required this.scene});
+  const SceneViewport({super.key, required this.scene, this.selected});
 
   final EditorScene scene;
+
+  /// The object to outline, if any.
+  final String? selected;
 
   @override
   State<SceneViewport> createState() => _SceneViewportState();
@@ -100,6 +103,21 @@ class _SceneViewportState extends State<SceneViewport> {
         children: [
           Positioned.fill(
             child: _rendererAvailable ? _buildSurface() : const _Placeholder(),
+          ),
+          // Drawn in Flutter over the texture rather than as a render pass:
+          // an outline pass in Filament is a real piece of work, and a box
+          // projected with the same camera is honest about where the object
+          // is without pretending to be more than it is.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _SelectionPainter(
+                  scene: widget.scene,
+                  selected: widget.selected,
+                  camera: _camera,
+                ),
+              ),
+            ),
           ),
           Positioned(
             left: Space.md,
@@ -220,4 +238,101 @@ class _GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _GridPainter oldDelegate) => false;
+}
+
+/// Draws a box round the selected object.
+class _SelectionPainter extends CustomPainter {
+  const _SelectionPainter({
+    required this.scene,
+    required this.selected,
+    required this.camera,
+  });
+
+  final EditorScene scene;
+  final String? selected;
+  final OrbitCamera camera;
+
+  /// The unit cube the renderer draws for every object, in its own space.
+  static final _corners = [
+    for (final x in [-1.0, 1.0])
+      for (final y in [-1.0, 1.0])
+        for (final z in [-1.0, 1.0]) Vector3(x, y, z),
+  ];
+
+  /// Pairs of corner indices making the twelve edges.
+  static const _edges = [
+    [0, 1], [1, 3], [3, 2], [2, 0],
+    [4, 5], [5, 7], [7, 6], [6, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final id = selected;
+    if (id == null || size.isEmpty) return;
+
+    final object = scene[id];
+    if (object == null || !object.isDrawable) return;
+
+    final view = camera.toRenderCamera();
+    final viewMatrix = makeViewMatrix(
+      view.position,
+      view.target,
+      Vector3(0, 1, 0),
+    );
+    final projection = makePerspectiveMatrix(
+      radians(view.fieldOfView),
+      size.width / size.height,
+      0.1,
+      1000,
+    );
+    final clip = projection.multiplied(viewMatrix)
+      ..multiply(scene.worldOf(id));
+
+    final points = <Offset>[];
+    for (final corner in _corners) {
+      final projected = clip.transform(Vector4(
+        corner.x,
+        corner.y,
+        corner.z,
+        1,
+      ));
+      // Behind the camera: the perspective divide flips the point to the
+      // opposite side of the screen, which would draw a box across the whole
+      // viewport. Nothing is drawn instead.
+      if (projected.w <= 1e-6) return;
+      points.add(Offset(
+        (projected.x / projected.w * 0.5 + 0.5) * size.width,
+        (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
+      ));
+    }
+
+    final path = Path();
+    for (final edge in _edges) {
+      path
+        ..moveTo(points[edge[0]].dx, points[edge[0]].dy)
+        ..lineTo(points[edge[1]].dx, points[edge[1]].dy);
+    }
+
+    canvas
+      // A dark pass under the bright one, so the outline reads against a pale
+      // surface as well as a dark one.
+      ..drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = const Color(0x66000000),
+      )
+      ..drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = OrbisColors.ember,
+      );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SelectionPainter old) => true;
 }

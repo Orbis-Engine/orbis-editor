@@ -1,9 +1,9 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
+import 'commands.dart';
+import 'history.dart';
 import 'scene.dart';
 
 /// Properties of whatever is selected.
@@ -12,21 +12,30 @@ import 'scene.dart';
 /// components: a light and a mesh are not the same object with some fields
 /// greyed out, they are different sets of components on an entity.
 ///
-/// Every field here edits the scene. A control that moved but changed nothing
-/// would be the most convincing kind of broken.
+/// Every field runs a command. Nothing here writes to the scene directly, so
+/// there is no edit that undo does not know about.
 class Inspector extends StatelessWidget {
-  const Inspector({super.key, required this.object, required this.onChanged});
+  const Inspector({
+    super.key,
+    required this.scene,
+    required this.object,
+    required this.history,
+  });
 
-  final SceneObject object;
+  final EditorScene scene;
 
-  /// Called after the object has been mutated, so the owner can rebuild the
-  /// outliner and push a new scene to the renderer.
-  final VoidCallback onChanged;
+  /// Null when nothing is selected, which is a state worth drawing rather than
+  /// an impossible one.
+  final SceneObject? object;
+
+  final History history;
 
   @override
   Widget build(BuildContext context) {
+    final selected = object;
+
     return Container(
-      width: 288,
+      width: 296,
       decoration: const BoxDecoration(
         color: OrbisColors.surface,
         border: Border(left: BorderSide(color: OrbisColors.lineSoft)),
@@ -44,22 +53,76 @@ class Inspector extends StatelessWidget {
             child: Text('INSPECTOR', style: OrbisText.section),
           ),
           Expanded(
-            child: ListView(
-              // Keyed on the object so the scroll position resets when the
-              // selection changes, rather than leaving a short panel scrolled
-              // to where a taller one had been.
-              key: ValueKey(object.name),
-              padding: const EdgeInsets.symmetric(vertical: Space.sm),
-              children: [
-                _Header(name: object.name, icon: object.icon),
-                if (object.kind != ObjectKind.scene) _transform(),
-                if (object.kind == ObjectKind.light) _light(),
-                if (object.kind == ObjectKind.mesh) _mesh(),
-              ],
-            ),
+            child: selected == null
+                ? Center(
+                    child: Text(
+                      'Nothing selected.',
+                      style: OrbisText.caption,
+                    ),
+                  )
+                : _Fields(
+                    key: ValueKey(selected.id),
+                    scene: scene,
+                    object: selected,
+                    history: history,
+                  ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _Fields extends StatelessWidget {
+  const _Fields({
+    super.key,
+    required this.scene,
+    required this.object,
+    required this.history,
+  });
+
+  final EditorScene scene;
+  final SceneObject object;
+  final History history;
+
+  @override
+  Widget build(BuildContext context) {
+    final parent = object.parentId == null ? null : scene[object.parentId!];
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: Space.sm),
+      children: [
+        _Header(
+          name: object.name,
+          icon: object.icon,
+          onRename: (value) {
+            if (value == object.name) return;
+            history.run(Rename(id: object.id, from: object.name, to: value));
+          },
+          onRenameDone: history.seal,
+        ),
+        if (parent != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.sm),
+            child: Row(
+              children: [
+                const Icon(Icons.subdirectory_arrow_right,
+                    size: 12, color: OrbisColors.inkDim),
+                const SizedBox(width: Space.xs),
+                Flexible(
+                  child: Text(
+                    'in ${parent.name}',
+                    overflow: TextOverflow.ellipsis,
+                    style: OrbisText.caption.copyWith(fontSize: 11.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (object.kind != ObjectKind.scene) _transform(),
+        if (object.kind == ObjectKind.light) _light(),
+        if (object.kind == ObjectKind.mesh) _mesh(),
+      ],
     );
   }
 
@@ -70,23 +133,26 @@ class Inspector extends StatelessWidget {
           children: [
             VectorRow(
               label: 'Position',
-              value: object.position,
+              object: object,
+              field: TransformField.position,
+              history: history,
               step: 0.02,
-              onChanged: onChanged,
             ),
             VectorRow(
               label: 'Rotation',
-              value: object.rotation,
+              object: object,
+              field: TransformField.rotation,
+              history: history,
               step: 0.5,
               decimals: 1,
-              onChanged: onChanged,
             ),
             VectorRow(
               label: 'Scale',
-              value: object.scale,
+              object: object,
+              field: TransformField.scale,
+              history: history,
               step: 0.02,
               minimum: 0.001,
-              onChanged: onChanged,
             ),
           ],
         ),
@@ -99,18 +165,18 @@ class Inspector extends StatelessWidget {
           children: [
             // Only Sun is offered because only Sun is rendered. The other
             // three arrive with the renderer's punctual lights.
-            const ChoiceRow(
-              label: 'Type',
-              options: ['Sun'],
-              selected: 'Sun',
-            ),
+            const ChoiceRow(label: 'Type', options: ['Sun'], selected: 'Sun'),
             ColourRow(
               label: 'Colour',
               value: object.colour,
-              onChanged: (value) {
-                object.colour = value;
-                onChanged();
-              },
+              onChanged: (value) => history
+                ..run(SetColour(
+                  id: object.id,
+                  name: object.name,
+                  from: object.colour,
+                  to: value,
+                ))
+                ..seal(),
             ),
             SliderRow(
               label: 'Power',
@@ -118,10 +184,13 @@ class Inspector extends StatelessWidget {
               min: 0,
               max: 5000,
               unit: 'W',
-              onChanged: (value) {
-                object.power = value;
-                onChanged();
-              },
+              onChanged: (value) => history.run(SetPower(
+                id: object.id,
+                name: object.name,
+                from: object.power,
+                to: value,
+              )),
+              onSettled: history.seal,
             ),
           ],
         ),
@@ -135,18 +204,29 @@ class Inspector extends StatelessWidget {
             ColourRow(
               label: 'Base colour',
               value: object.colour,
-              onChanged: (value) {
-                object.colour = value;
-                onChanged();
-              },
+              onChanged: (value) => history
+                ..run(SetColour(
+                  id: object.id,
+                  name: object.name,
+                  from: object.colour,
+                  to: value,
+                ))
+                ..seal(),
             ),
             ChoiceRow(
               label: 'Cast shadows',
               options: const ['Off', 'On'],
               selected: object.castShadows ? 'On' : 'Off',
               onSelect: (value) {
-                object.castShadows = value == 'On';
-                onChanged();
+                final wanted = value == 'On';
+                if (wanted == object.castShadows) return;
+                history
+                  ..run(SetCastShadows(
+                    id: object.id,
+                    name: object.name,
+                    to: wanted,
+                  ))
+                  ..seal();
               },
             ),
             const TextRow(label: 'Mesh', value: 'cube'),
@@ -155,16 +235,61 @@ class Inspector extends StatelessWidget {
       );
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.name, required this.icon});
+/// The object's icon and its name, which is editable in place.
+class _Header extends StatefulWidget {
+  const _Header({
+    required this.name,
+    required this.icon,
+    required this.onRename,
+    required this.onRenameDone,
+  });
 
   final String name;
   final IconData icon;
+  final ValueChanged<String> onRename;
+  final VoidCallback onRenameDone;
+
+  @override
+  State<_Header> createState() => _HeaderState();
+}
+
+class _HeaderState extends State<_Header> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.name);
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    // Renaming merges into one undo step while the field has focus, and seals
+    // when it loses it — so undo returns to the old name, not to a prefix of
+    // the new one.
+    _focus.addListener(() {
+      if (!_focus.hasFocus) widget.onRenameDone();
+    });
+  }
+
+  @override
+  void didUpdateWidget(_Header oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // An undo changes the name behind the field's back; without this the box
+    // would go on showing what was typed.
+    if (widget.name != _controller.text && !_focus.hasFocus) {
+      _controller.text = widget.name;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Space.md, Space.sm, Space.md, Space.md),
+      padding: const EdgeInsets.fromLTRB(Space.md, Space.sm, Space.md, Space.sm),
       child: Row(
         children: [
           Container(
@@ -174,12 +299,26 @@ class _Header extends StatelessWidget {
               color: OrbisColors.emberWash,
               borderRadius: BorderRadius.circular(4),
             ),
-            child: Icon(icon, size: 13, color: OrbisColors.ember),
+            child: Icon(widget.icon, size: 13, color: OrbisColors.ember),
           ),
           const SizedBox(width: Space.sm),
           Expanded(
-            child: Text(name,
-                style: OrbisText.title.copyWith(fontSize: 13.5)),
+            child: TextField(
+              controller: _controller,
+              focusNode: _focus,
+              style: OrbisText.title.copyWith(fontSize: 13.5),
+              cursorColor: OrbisColors.ember,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(vertical: 4),
+              ),
+              onChanged: (value) {
+                if (value.trim().isEmpty) return;
+                widget.onRename(value.trim());
+              },
+              onSubmitted: (_) => widget.onRenameDone(),
+            ),
           ),
         ],
       ),
@@ -266,6 +405,7 @@ class SliderRow extends StatelessWidget {
     required this.min,
     required this.max,
     required this.onChanged,
+    this.onSettled,
     this.unit,
     this.decimals = 0,
   });
@@ -275,6 +415,10 @@ class SliderRow extends StatelessWidget {
   final double min;
   final double max;
   final ValueChanged<double> onChanged;
+
+  /// Called when the drag finishes, so a run of changes becomes one step.
+  final VoidCallback? onSettled;
+
   final String? unit;
   final int decimals;
 
@@ -292,6 +436,7 @@ class SliderRow extends StatelessWidget {
                 min: min,
                 max: max,
                 onChanged: onChanged,
+                onChangeEnd: (_) => onSettled?.call(),
               ),
             ),
           ),
@@ -312,25 +457,25 @@ class SliderRow extends StatelessWidget {
 /// Three numbers that belong together, each draggable.
 ///
 /// Dragging rather than typing, because a transform is nearly always adjusted
-/// by feel against the viewport; typed entry arrives alongside undo, which it
-/// needs to be safe.
+/// by feel against the viewport. The whole drag is one undo step: the command
+/// merges while the pointer is down and seals when it lifts, so undo returns
+/// to where the drag started rather than stepping back through every frame.
 class VectorRow extends StatelessWidget {
   const VectorRow({
     super.key,
     required this.label,
-    required this.value,
-    required this.onChanged,
+    required this.object,
+    required this.field,
+    required this.history,
     this.step = 0.01,
     this.decimals = 2,
     this.minimum,
   });
 
   final String label;
-
-  /// Edited in place — this is the scene's own vector, not a copy.
-  final Vector3 value;
-
-  final VoidCallback onChanged;
+  final SceneObject object;
+  final TransformField field;
+  final History history;
 
   /// Units per logical pixel dragged.
   final double step;
@@ -338,7 +483,7 @@ class VectorRow extends StatelessWidget {
   final int decimals;
 
   /// A floor for each component, so scale cannot be dragged through zero into
-  /// a degenerate matrix.
+  /// a matrix that cannot be inverted.
   final double? minimum;
 
   // X, Y, Z tinted the way every 3D tool tints them, because the convention is
@@ -351,6 +496,8 @@ class VectorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final value = field.of(object);
+
     return FieldRow(
       label: label,
       child: Row(
@@ -363,10 +510,21 @@ class VectorRow extends StatelessWidget {
                 accent: _axisColours[i],
                 decimals: decimals,
                 onDrag: (pixels) {
-                  final next = value[i] + pixels * step;
-                  value[i] = minimum == null ? next : math.max(minimum!, next);
-                  onChanged();
+                  final next = Vector3.copy(field.of(object));
+                  final moved = next[i] + pixels * step;
+                  next[i] = minimum == null
+                      ? moved
+                      : (moved < minimum! ? minimum! : moved);
+
+                  history.run(SetTransform(
+                    id: object.id,
+                    field: field,
+                    name: object.name,
+                    from: field.of(object),
+                    to: next,
+                  ));
                 },
+                onSettled: history.seal,
               ),
             ),
           ],
@@ -383,12 +541,14 @@ class _NumberField extends StatefulWidget {
     required this.accent,
     required this.decimals,
     required this.onDrag,
+    required this.onSettled,
   });
 
   final double value;
   final Color accent;
   final int decimals;
   final ValueChanged<double> onDrag;
+  final VoidCallback onSettled;
 
   @override
   State<_NumberField> createState() => _NumberFieldState();
@@ -405,6 +565,8 @@ class _NumberFieldState extends State<_NumberField> {
       onExit: (_) => setState(() => _hovering = false),
       child: GestureDetector(
         onHorizontalDragUpdate: (details) => widget.onDrag(details.delta.dx),
+        onHorizontalDragEnd: (_) => widget.onSettled(),
+        onHorizontalDragCancel: widget.onSettled,
         child: Container(
           height: 24,
           padding: const EdgeInsets.symmetric(horizontal: Space.sm),

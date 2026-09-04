@@ -1,0 +1,159 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+
+/// What an asset is, decided by its extension.
+///
+/// Extension rather than content, because the browser has to label a thousand
+/// files fast enough to scroll, and opening each one to be certain is what
+/// makes a project window feel slow.
+enum AssetKind {
+  folder('Folder', Icons.folder_outlined),
+  scene('Scene', Icons.public),
+  mesh('Mesh', Icons.view_in_ar_outlined),
+  texture('Texture', Icons.image_outlined),
+  material('Material', Icons.grain),
+  script('Script', Icons.code),
+  audio('Audio', Icons.graphic_eq),
+  data('Data', Icons.data_object),
+  other('File', Icons.insert_drive_file_outlined);
+
+  const AssetKind(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+
+  static const _byExtension = <String, AssetKind>{
+    '.orbisscene': scene,
+    '.gltf': mesh, '.glb': mesh, '.obj': mesh, '.fbx': mesh,
+    '.png': texture, '.jpg': texture, '.jpeg': texture,
+    '.ktx2': texture, '.hdr': texture, '.exr': texture,
+    '.fmat': material, '.mat': material,
+    '.ts': script, '.js': script, '.dart': script,
+    '.wav': audio, '.mp3': audio, '.ogg': audio,
+    '.json': data, '.yaml': data, '.yml': data,
+  };
+
+  static AssetKind of(String path) =>
+      _byExtension[p.extension(path).toLowerCase()] ?? other;
+}
+
+/// One entry in the project folder.
+class Asset {
+  const Asset({
+    required this.name,
+    required this.path,
+    required this.kind,
+    this.bytes,
+  });
+
+  final String name;
+  final String path;
+  final AssetKind kind;
+
+  /// Null for folders, whose size is not a useful thing to show.
+  final int? bytes;
+
+  bool get isFolder => kind == AssetKind.folder;
+
+  /// A size somebody can read at a glance.
+  String get size {
+    final value = bytes;
+    if (value == null) return '';
+    if (value < 1024) return '$value B';
+    if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(0)} KB';
+    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+/// Reads what is actually in a project folder.
+///
+/// Synchronous and on demand rather than watched. A file watcher is the right
+/// answer eventually and is a bigger thing than it looks — the honest version
+/// for now is a list that is correct when it was read, and a button that says
+/// so.
+class AssetTree {
+  const AssetTree(this.root);
+
+  /// The project directory, which is the only place the browser will look.
+  final String root;
+
+  /// What is directly inside [directory], folders first and then by name.
+  ///
+  /// Returns nothing rather than throwing for a folder that has gone: a
+  /// project browser open on a folder somebody deleted in Finder should show
+  /// an empty list, not take the editor down.
+  List<Asset> read(String directory) {
+    final target = Directory(directory);
+    if (!target.existsSync()) return const [];
+
+    final entries = <Asset>[];
+    try {
+      for (final entity in target.listSync(followLinks: false)) {
+        final name = p.basename(entity.path);
+        // Dotfiles are the tool's business, not the artist's.
+        if (name.startsWith('.')) continue;
+
+        if (entity is Directory) {
+          entries.add(Asset(
+            name: name,
+            path: entity.path,
+            kind: AssetKind.folder,
+          ));
+        } else if (entity is File) {
+          entries.add(Asset(
+            name: name,
+            path: entity.path,
+            kind: AssetKind.of(entity.path),
+            bytes: _sizeOf(entity),
+          ));
+        }
+      }
+    } on FileSystemException {
+      // Unreadable folder: an empty list is the truthful answer and the
+      // browser stays usable.
+      return const [];
+    }
+
+    entries.sort((a, b) {
+      if (a.isFolder != b.isFolder) return a.isFolder ? -1 : 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    return entries;
+  }
+
+  /// Every folder under the root, for the tree on the left.
+  List<({String path, int depth})> folders({int maximumDepth = 8}) {
+    final found = <({String path, int depth})>[];
+
+    void walk(String directory, int depth) {
+      if (depth > maximumDepth) return;
+      for (final asset in read(directory)) {
+        if (!asset.isFolder) continue;
+        found.add((path: asset.path, depth: depth));
+        walk(asset.path, depth + 1);
+      }
+    }
+
+    walk(root, 0);
+    return found;
+  }
+
+  /// Where a path sits relative to the project, for the breadcrumb.
+  ///
+  /// Anything outside the project comes back as its own path rather than a
+  /// string of `..` segments, which would be both ugly and a sign of a bug.
+  String relative(String path) {
+    if (!p.isWithin(root, path)) return p.equals(root, path) ? '' : path;
+    return p.relative(path, from: root);
+  }
+
+  int? _sizeOf(File file) {
+    try {
+      return file.lengthSync();
+    } on FileSystemException {
+      return null;
+    }
+  }
+}

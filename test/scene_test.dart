@@ -28,7 +28,7 @@ void main() {
 
     test('points the sun where its rotation points', () {
       final scene = EditorScene(
-        [SceneObject(name: 'Sun', kind: ObjectKind.light)],
+        [SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light)],
       );
       // Unrotated, forward is -Z: light falling straight down the view axis.
       final direction = scene
@@ -40,8 +40,9 @@ void main() {
 
     test('an edit to an object reaches the next rendered scene', () {
       final scene = EditorScene.starter();
-      final cube = scene.byName('Cube');
+      final cube = scene['cube']!;
       cube.position.setValues(3, 0, 0);
+      scene.invalidate();
 
       final rendered = scene.toRenderScene(const OrbitCamera().toRenderCamera());
       final translations =
