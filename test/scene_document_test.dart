@@ -137,6 +137,19 @@ void main() {
       expect(after.fogFalloff, 0.75);
     });
 
+    test('the weather in the fog comes back too', () {
+      final before = EditorScene([], fogDensity: 0.1)
+        ..mist = 0.7
+        ..mistSpeed = 0.22
+        ..mistSize = 45;
+
+      final after = SceneDocument.decode(SceneDocument.encode(before)).scene;
+
+      expect(after.mist, 0.7);
+      expect(after.mistSpeed, 0.22);
+      expect(after.mistSize, 45);
+    });
+
     test('a scene from before fog existed is clear rather than grey', () {
       const text = '''
 {"formatVersion": 1, "name": "Old", "objects": []}

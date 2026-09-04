@@ -164,6 +164,7 @@ class _SceneFields extends StatelessWidget {
     double falloff,
     double mist,
     double mistSpeed,
+    double mistSize,
   }) _fogOf(EditorScene scene) => (
         colour: scene.fogColour,
         density: scene.fogDensity,
@@ -171,6 +172,7 @@ class _SceneFields extends StatelessWidget {
         falloff: scene.fogFalloff,
         mist: scene.mist,
         mistSpeed: scene.mistSpeed,
+        mistSize: scene.mistSize,
       );
 
   /// The time as it stands, likewise.
@@ -189,6 +191,7 @@ class _SceneFields extends StatelessWidget {
     double? falloff,
     double? mist,
     double? mistSpeed,
+    double? mistSize,
     bool seal = false,
   }) {
     history.run(SetSceneFog(
@@ -201,10 +204,16 @@ class _SceneFields extends StatelessWidget {
         falloff: falloff ?? scene.fogFalloff,
         mist: mist ?? scene.mist,
         mistSpeed: mistSpeed ?? scene.mistSpeed,
+        mistSize: mistSize ?? scene.mistSize,
       ),
     ));
     if (seal) history.seal();
   }
+
+  /// A light level, at a precision that says something at both ends of the
+  /// day. A night rounded to the nearest lux is a night that reads as zero.
+  static String _lux(double lux) =>
+      lux >= 10 ? '${lux.round()} lx' : '${lux.toStringAsFixed(2)} lx';
 
   /// An hour as a clock reads it.
   static String _clock(double hour) {
@@ -382,7 +391,7 @@ class _SceneFields extends StatelessWidget {
                 TextRow(label: 'Sky', value: 'From the time of day'),
                 TextRow(
                   label: 'Ambient',
-                  value: '${scene.skyState.ambient.round()} lx',
+                  value: _lux(scene.skyState.ambient),
                 ),
               ] else ...[
                 ColourRow(
@@ -468,7 +477,7 @@ class _SceneFields extends StatelessWidget {
                   onChanged: (value) => _setFog(scene, mist: value),
                   onSettled: history.seal,
                 ),
-                if (scene.mist > 0)
+                if (scene.mist > 0) ...[
                   SliderRow(
                     label: 'Drift',
                     value: scene.mistSpeed,
@@ -478,14 +487,25 @@ class _SceneFields extends StatelessWidget {
                     onChanged: (value) => _setFog(scene, mistSpeed: value),
                     onSettled: history.seal,
                   ),
+                  SliderRow(
+                    label: 'Cloud size',
+                    value: scene.mistSize,
+                    min: 2,
+                    max: 120,
+                    decimals: 0,
+                    unit: ' m',
+                    onChanged: (value) => _setFog(scene, mistSize: value),
+                    onSettled: history.seal,
+                  ),
+                ],
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
                       Space.md, Space.xs, Space.md, 0),
                   child: Text(
                     scene.mist > 0
-                        ? 'Mist is the whole layer breathing and drifting. Air '
-                            'with holes in it that move separately needs noise '
-                            'in the fog\'s own pass, which this is not.'
+                        ? 'Mist draws the same air as banks of cloud, at the '
+                            'size you set, drifting. Set the size to what the '
+                            'weather in this scene is measured in.'
                         : 'Falloff is how fast the air clears with altitude. '
                             'Zero fills the world evenly.',
                     style: OrbisText.caption,

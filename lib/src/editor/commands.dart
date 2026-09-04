@@ -566,6 +566,7 @@ class SetSceneFog extends EditorCommand {
     double falloff,
     double mist,
     double mistSpeed,
+    double mistSize,
   }) from;
 
   /// Not final: a merged run of drags rewrites where it ends up.
@@ -576,6 +577,7 @@ class SetSceneFog extends EditorCommand {
     double falloff,
     double mist,
     double mistSpeed,
+    double mistSize,
   }) to;
 
   @override
@@ -604,6 +606,7 @@ class SetSceneFog extends EditorCommand {
       double falloff,
       double mist,
       double mistSpeed,
+      double mistSize,
     }) values,
   ) {
     final scene = host.sceneFor(sceneId);
@@ -614,6 +617,7 @@ class SetSceneFog extends EditorCommand {
     scene.fogFalloff = values.falloff;
     scene.mist = values.mist;
     scene.mistSpeed = values.mistSpeed;
+    scene.mistSize = values.mistSize;
   }
 }
 

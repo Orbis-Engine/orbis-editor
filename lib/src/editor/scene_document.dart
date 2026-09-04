@@ -71,6 +71,7 @@ abstract final class SceneDocument {
         'falloff': scene.fogFalloff,
         'mist': scene.mist,
         'mistSpeed': scene.mistSpeed,
+        'mistSize': scene.mistSize,
       },
       // The hour is what the scene was authored at, not wherever a running
       // cycle had carried it to. A clock left going should not rewrite
@@ -317,6 +318,7 @@ abstract final class SceneDocument {
         fogFalloff: _fogNumber(parsed, 'falloff', 0.2),
         mist: _fogNumber(parsed, 'mist', 0),
         mistSpeed: _fogNumber(parsed, 'mistSpeed', 0.08),
+        mistSize: _fogNumber(parsed, 'mistSize', 30),
         timeOfDay: _timeNumber(parsed, 'hour', 10),
         dayCycle: _timeField(parsed, 'cycle') is bool
             ? _timeField(parsed, 'cycle')! as bool

@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What is lighting a scene from above.
@@ -81,6 +82,61 @@ class CameraExposure {
     sensitivity: 100,
   );
 
+  /// What a camera would be set to for a scene with this much light falling
+  /// on it, in lux.
+  ///
+  /// Incident metering, the way a hand-held meter works: the light landing on
+  /// the scene decides the exposure. This replaced two hand-tuned ramps — one
+  /// for how bright the day was and one for how open the lens should be — and
+  /// the reason is that they have to agree exactly, and when they did not the
+  /// night came out pure white. A meter cannot disagree with itself.
+  factory CameraExposure.forIlluminance(double lux) {
+    // Puts sunny sixteen at EV 15, which is where a century of film boxes say
+    // it goes.
+    const double calibration = 250;
+    final wanted =
+        _log2(math.max(lux, 1e-5) * 100 / calibration);
+    final light = math.pow(2, wanted).toDouble();
+
+    // A photographer's own order: stop down while there is light to spare,
+    // then open up, then hold the shutter open, and only then raise the
+    // sensitivity — because grain is the price you pay last. Doing it in that
+    // order is what keeps these numbers ones somebody would recognise.
+    var aperture = math.sqrt(light * _defaultShutter);
+    var shutter = _defaultShutter;
+    var sensitivity = 100.0;
+
+    if (aperture > _widestAperture) {
+      // Brighter than the lens can stop down for: shorten the shutter.
+      aperture = _widestAperture;
+      shutter = (aperture * aperture / light).clamp(_fastestShutter, 1.0);
+    } else if (aperture < _fastestAperture) {
+      aperture = _fastestAperture;
+      shutter = aperture * aperture / light;
+      if (shutter > _slowestShutter) {
+        // Wide open and as slow as anybody would hand-hold. What is left goes
+        // into the sensor.
+        shutter = _slowestShutter;
+        sensitivity =
+            (100 * aperture * aperture / (shutter * light)).clamp(50, 25600);
+      }
+    }
+
+    return CameraExposure(
+      aperture: aperture,
+      shutterSpeed: shutter,
+      sensitivity: sensitivity,
+    );
+  }
+
+  static const double _defaultShutter = 1 / 125;
+  static const double _slowestShutter = 1 / 30;
+  static const double _fastestShutter = 1 / 4000;
+  static const double _fastestAperture = 1.4;
+  static const double _widestAperture = 22;
+
+  static double _log2(double value) => math.log(value) / math.ln2;
+
   /// F-number.
   final double aperture;
 
@@ -89,6 +145,13 @@ class CameraExposure {
 
   /// ISO.
   final double sensitivity;
+
+  /// The exposure value these three add up to, at ISO 100.
+  ///
+  /// One number for what three describe, which is what makes two different
+  /// settings comparable — and what a test can hold to account.
+  double get ev100 =>
+      _log2(aperture * aperture / shutterSpeed) - _log2(sensitivity / 100);
 }
 
 /// Where the sun and moon are through a day, and what that does to everything.
@@ -114,6 +177,24 @@ abstract final class DayCycle {
   /// moon actually gives, for the same reason: a night has to be dark and
   /// legible at once, and the real number is only the first of those.
   static const double moonPower = 0.0015;
+
+  /// What the sun is down to as it touches the horizon.
+  ///
+  /// The moon's, exactly. The two swap at that moment, and if the light they
+  /// give did not match there the scene would step brighter or darker in a
+  /// single frame — a flicker at every dawn and every dusk.
+  static const double twilightPower = moonPower;
+
+  /// How much of what the body gives comes back off the sky.
+  ///
+  /// A third, roughly, which is what a clear day measures: seventy-five
+  /// thousand lux of sun and twenty-eight of sky. Tying the two together
+  /// rather than authoring them apart is what keeps the shadows the right
+  /// depth at every hour instead of only at noon.
+  static const double skyShare = 0.35;
+
+  /// Starlight, in lux, so a night is dark rather than a hole.
+  static const double starlight = 0.2;
 
   /// The sky at [hour], which runs from zero to twenty-four and wraps.
   static SkyState at(double hour) {
@@ -142,14 +223,18 @@ abstract final class DayCycle {
       math.cos(altitude) * math.cos(facing),
     );
 
-    // How much of a day it is: one at noon, zero from dusk to dawn. Squared
-    // off at the ends so sunrise takes a while rather than happening between
-    // two frames.
-    final daylight = _smooth(swing.clamp(0.0, 1.0) / 0.35);
-
     // Low sun is red because its light has come a long way through the air.
     // The same reason the sky is blue, seen from the other end.
     final horizon = _smooth(swing.clamp(0.0, 1.0) / 0.18);
+
+    // Full strength at noon, down to the moon's own by the time it reaches
+    // the horizon — so the handover is a change of direction rather than a
+    // change of how much light there is.
+    final power = isDay
+        ? twilightPower + (noonPower - twilightPower) * swing * swing
+        : moonPower;
+    final bodyLux = Photometry.irradianceToLux(power);
+    final ambient = math.max(starlight, skyShare * bodyLux);
 
     return SkyState(
       body: body,
@@ -160,17 +245,16 @@ abstract final class DayCycle {
       lightColour: isDay
           ? Color.lerp(_lowSun, _highSun, horizon)!
           : _moonlight,
-      power: isDay
-          ? noonPower * math.max(0, swing) * math.max(0, swing)
-          : moonPower,
+      power: power,
       skyColour: _skyAt(swing),
-      ambient: isDay
-          ? 60 + 27940 * daylight
-          // Not nothing: a night sky with no ambient at all makes every
-          // surface facing away from the moon pure black, and a night is not
-          // a scene with holes in it.
-          : 12,
-      exposure: _exposureFor(daylight),
+      ambient: ambient,
+      // Metered off what is actually falling on the scene: the body, angled
+      // by how high it is, plus the sky. Anything from a moonlit field to a
+      // noon desert then lands in the middle of the range rather than at one
+      // end of it.
+      exposure: CameraExposure.forIlluminance(
+        bodyLux * math.max(0, math.sin(altitude)) + ambient,
+      ),
     );
   }
 
@@ -186,22 +270,6 @@ abstract final class DayCycle {
     }
     if (swing < 0.18) return Color.lerp(_duskSky, _dawnSky, swing / 0.18)!;
     return Color.lerp(_dawnSky, _daySky, _smooth((swing - 0.18) / 0.5))!;
-  }
-
-  /// What a camera has to be set to, from a night to a bright day.
-  ///
-  /// Interpolated the way stops are — by doubling, not by adding — so the
-  /// middle of the range is the middle of what an eye would call it rather
-  /// than a value that races through dusk and crawls through noon.
-  static CameraExposure _exposureFor(double daylight) {
-    double stops(double dark, double light) =>
-        dark * math.pow(light / dark, daylight).toDouble();
-
-    return CameraExposure(
-      aperture: stops(1.4, 16),
-      shutterSpeed: stops(1 / 30, 1 / 125),
-      sensitivity: stops(6400, 100),
-    );
   }
 
   /// Smoothstep, clamped. Turns a straight ramp into one that eases out of

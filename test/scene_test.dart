@@ -198,6 +198,48 @@ void main() {
       expect(night.camera.aperture, lessThan(day.camera.aperture));
     });
 
+    test('the camera is set for the light the scene has, not for the hour', () {
+      // How this went wrong the first time: the exposure came from what the
+      // clock said and the light came from the scene, and the two disagreed.
+      // A bright light at midnight left the viewport a white rectangle with
+      // the shapes barely showing through it.
+      final scene = EditorScene(
+        [
+          SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light),
+          // A second directional light, which the cycle does not drive: it
+          // keeps the strength it was given, and it is what is actually
+          // lighting the scene.
+          SceneObject(
+            id: 'floods',
+            name: 'Floods',
+            kind: ObjectKind.light,
+            power: 200,
+            rotation: Vector3(-90, 0, 0),
+          ),
+        ],
+        timeOfDay: 0,
+        dayCycle: true,
+      );
+
+      final camera = scene
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .camera;
+
+      // Stopped down for daylight rather than opened up for a moon that is
+      // not what anybody is looking at.
+      expect(camera.sensitivity, 100);
+      expect(camera.aperture, greaterThan(8));
+    });
+
+    test('a scene lit only by a moon opens the camera up', () {
+      final scene = withSun(hour: 0);
+      final camera =
+          scene.toRenderScene(OrbitCamera().toRenderCamera()).camera;
+
+      expect(camera.aperture, lessThan(2));
+      expect(camera.sensitivity, greaterThan(1000));
+    });
+
     test('the sky is the scene\'s own until the cycle takes it over', () {
       final held = withSun(cycle: false)
         ..skyColour = const Color(0xFF123456);
@@ -286,6 +328,26 @@ void main() {
 
       expect(later.density, first.density);
       expect(later.height, first.height);
+    });
+
+    test('mist asks for shape as well as haze', () {
+      final scene = foggy(mist: 0.8)..mistSize = 40;
+      final fog = scene.toRenderScene(OrbitCamera().toRenderCamera()).fog;
+
+      expect(fog.structure, 0.8);
+      // Stated in metres and sent as turns per metre.
+      expect(fog.featureSize, closeTo(1 / 40, 1e-9));
+      // The even haze is still under it: banks with no haze behind them read
+      // as cut-outs hanging in clear air.
+      expect(fog.density, greaterThan(0));
+      expect(fog.thickness, greaterThan(0));
+    });
+
+    test('still air asks for no shape at all', () {
+      final fog = foggy(mist: 0)
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .fog;
+      expect(fog.structure, 0);
     });
 
     test('it thins and thickens without ever blinking out', () {

@@ -279,6 +279,7 @@ class EditorScene {
     this.fogFalloff = 0.2,
     this.mist = 0,
     this.mistSpeed = 0.08,
+    this.mistSize = 30,
     this.timeOfDay = 10,
     this.dayCycle = false,
     this.hoursPerSecond = 0.5,
@@ -405,6 +406,13 @@ class EditorScene {
   /// separates weather from a filter over the lens.
   double mist;
   double mistSpeed;
+
+  /// How large the shapes in the mist are, in metres.
+  ///
+  /// The one setting that has to be told about the scene: cloud thirty metres
+  /// across is weather over a valley and haze in a room. Nothing else here
+  /// knows how big anything is.
+  double mistSize;
 
   /// The hour the scene is set at, from zero to twenty-four.
   ///
@@ -811,6 +819,17 @@ class EditorScene {
     final driven = dayCycle;
     final lit = celestial;
 
+    final lights = [
+      for (final object in _objects)
+        // A hidden light is left out rather than sent dark. Filament shades
+        // one directional light and a budget of punctual ones, and a light
+        // nobody can see should not be the one that fills the budget.
+        if (object.kind == ObjectKind.light && isShown(object.id))
+          _lightFor(object),
+    ];
+
+    final ambientLux = driven ? sky.ambient : ambient;
+
     return OrbisScene(
       objects: [
         for (final object in _objects)
@@ -825,37 +844,63 @@ class EditorScene {
               visible: isShown(object.id),
             ),
       ],
-      lights: [
-        for (final object in _objects)
-          // A hidden light is left out rather than sent dark. Filament shades
-          // one directional light and a budget of punctual ones, and a light
-          // nobody can see should not be the one that fills the budget.
-          if (object.kind == ObjectKind.light && isShown(object.id))
-            _lightFor(object),
-      ],
+      lights: lights,
       sky: OrbisSky(
         colour: linearFromColour(driven ? sky.skyColour : skyColour),
-        ambient: driven ? sky.ambient : ambient,
+        ambient: ambientLux,
         // Nothing to draw a disk for if the scene has no light above it, and
         // one nobody can see should not appear in the sky either.
         showBody: lit != null && isShown(lit.id),
       ),
       fog: _fogNow(),
-      camera: driven
-          ? camera.copyWith(
-              aperture: sky.exposure.aperture,
-              shutterSpeed: sky.exposure.shutterSpeed,
-              sensitivity: sky.exposure.sensitivity,
-            )
-          : camera,
+      camera: driven ? _metered(camera, lights, ambientLux) : camera,
     );
   }
 
-  /// The fog as it stands this instant, with whatever movement is in it.
+  /// The camera, set for the light this scene actually has in it.
+  OrbisCamera _metered(
+    OrbisCamera camera,
+    List<OrbisLight> lights,
+    double ambientLux,
+  ) {
+    final exposure =
+        CameraExposure.forIlluminance(_incidentLux(lights, ambientLux));
+    return camera.copyWith(
+      aperture: exposure.aperture,
+      shutterSpeed: exposure.shutterSpeed,
+      sensitivity: exposure.sensitivity,
+    );
+  }
+
+  /// How much light is actually falling on this scene, in lux.
   ///
-  /// Two waves at rates that do not divide into each other, so the layer never
-  /// returns to exactly where it was. One wave is a pulse, and a pulse reads
-  /// as a fault rather than as weather.
+  /// Read off the lights being sent rather than off what the day cycle
+  /// intends, because those are not always the same thing. A scene whose light
+  /// is a bulb rather than a sun, or one somebody has turned up, still has to
+  /// be exposed for what it has — metering off the hour instead is how a night
+  /// ends up a white rectangle with the shapes barely showing through it.
+  ///
+  /// Directional light only. A lamp lights the corner it is in rather than the
+  /// scene, and a camera set for the corner would blow out everywhere else —
+  /// which is exactly what a real one does, too.
+  double _incidentLux(List<OrbisLight> lights, double ambientLux) {
+    var total = ambientLux;
+    for (final light in lights) {
+      if (light.kind != OrbisLightKind.directional) continue;
+      // Angled by how high it is: a sun on the horizon lays far less on the
+      // ground than one overhead, and metering as though it did would leave
+      // every dusk under-exposed.
+      total += light.intensity * math.max(0, -light.direction.y);
+    }
+    return total;
+  }
+
+  /// The fog as it stands this instant, and whatever weather is in it.
+  ///
+  /// Two things through one setting. The even haze is what distance looks
+  /// like; the sheets are what a bank of cloud looks like lying in a valley.
+  /// Asking for mist gives both, because weather with no haze behind it reads
+  /// as cut-outs hanging in clear air.
   OrbisFog _fogNow() {
     if (mist == 0) {
       return OrbisFog(
@@ -866,6 +911,10 @@ class EditorScene {
       );
     }
 
+    // The layer as a whole still breathes and drifts, under the shape the
+    // sheets give it. Two waves at rates that do not divide into each other,
+    // so it never returns to exactly where it was — one wave is a pulse, and
+    // a pulse reads as a fault rather than as weather.
     final phase = clock * mistSpeed * 2 * math.pi;
     final swell = math.sin(phase);
     final drift = math.sin(phase * 0.63 + 1.3);
@@ -877,6 +926,19 @@ class EditorScene {
       density: math.max(0, fogDensity * (1 + 0.45 * mist * swell)),
       height: fogHeight + 1.8 * mist * drift,
       heightFalloff: fogFalloff,
+      structure: mist,
+      // Turns of the noise per metre, which is the reciprocal of how big a
+      // shape is — stated the way somebody would measure it rather than the
+      // way the shader wants it.
+      featureSize: 1 / math.max(mistSize, 0.5),
+      // Metres a second. Slow: mist that moves at walking pace looks like
+      // smoke, and smoke is a different weight of thing.
+      drift: mistSpeed * 4,
+      // How deep the bank is, out of how fast the haze thins with altitude.
+      // The two describe the same layer, and authoring them apart would let
+      // somebody set a shallow haze with a bank standing out of the top of
+      // it.
+      thickness: (1 / math.max(fogFalloff, 0.05)).clamp(1.0, 40.0),
     );
   }
 

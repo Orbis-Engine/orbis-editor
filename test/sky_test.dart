@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/sky.dart';
 
@@ -67,10 +69,48 @@ void main() {
       expect(night.sensitivity, greaterThan(noon.sensitivity));
     });
 
-    test('noon is the daylight a camera is built for', () {
+    test('noon meters where a century of film boxes put it', () {
       final noon = DayCycle.at(12).exposure;
-      expect(noon.aperture, closeTo(CameraExposure.daylight.aperture, 0.5));
-      expect(noon.sensitivity, closeTo(CameraExposure.daylight.sensitivity, 5));
+      // Sunny sixteen is EV 15 at ISO 100, and a meter that lands anywhere
+      // else has its calibration wrong.
+      expect(noon.ev100, closeTo(15, 0.5));
+      expect(noon.sensitivity, 100);
+    });
+
+    test('no hour of the day comes out blown out or black', () {
+      // The one that matters. A cycle whose light levels and whose exposure
+      // are authored separately will disagree somewhere, and the way it shows
+      // up is an editor full of white shapes with nothing on them. Metering
+      // off the light that is actually falling on the scene is what stops
+      // that, and this is what proves it at every hour rather than the two
+      // that happened to be looked at.
+      for (var minute = 0; minute < 24 * 60; minute += 5) {
+        final sky = DayCycle.at(minute / 60);
+
+        final incident = sky.power * 683 * math.max(0, math.sin(sky.altitude)) +
+            sky.ambient;
+        // What Filament does with the three numbers, and then what a
+        // mid-grey surface facing the light comes out as.
+        final exposure = 1 / (1.2 * math.pow(2, sky.exposure.ev100));
+        final grey = incident * 0.5 / math.pi * exposure;
+
+        expect(
+          grey,
+          inInclusiveRange(0.05, 0.6),
+          reason: 'at ${minute ~/ 60}:${(minute % 60).toString().padLeft(2, '0')}'
+              ' a mid-grey surface comes out at $grey',
+        );
+      }
+    });
+
+    test('the light and the sky rise and fall together', () {
+      // The sky is lit by the same body everything else is, so the two cannot
+      // be authored apart without the shadows going the wrong depth at some
+      // hour of the day.
+      for (final hour in [7.0, 9.0, 12.0, 15.0, 17.0]) {
+        final sky = DayCycle.at(hour);
+        expect(sky.ambient, closeTo(sky.power * 683 * DayCycle.skyShare, 1));
+      }
     });
 
     test('an hour past the end of the day is an hour into the next', () {
