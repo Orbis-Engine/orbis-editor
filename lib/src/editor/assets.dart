@@ -203,6 +203,76 @@ class AssetTree {
     return p.relative(path, from: root);
   }
 
+  /// Deletes a file or a folder and everything in it.
+  ///
+  /// Returns what went wrong, or null. A deletion that fails silently is how
+  /// somebody comes to believe a file is gone when it is not.
+  String? delete(String path) {
+    try {
+      final directory = Directory(path);
+      if (directory.existsSync()) {
+        directory.deleteSync(recursive: true);
+        return null;
+      }
+      final file = File(path);
+      if (file.existsSync()) {
+        file.deleteSync();
+        return null;
+      }
+      return 'It is not there any more.';
+    } on FileSystemException catch (error) {
+      return error.osError?.message ?? error.message;
+    }
+  }
+
+  /// Renames a file or folder within its own directory.
+  ///
+  /// Refuses to overwrite something that is already there, because a rename
+  /// that silently replaces another file destroys work nobody asked about.
+  String? rename(String path, String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'A name cannot be empty.';
+    if (trimmed.contains(p.separator) || trimmed == '.' || trimmed == '..') {
+      return 'A name cannot contain a path.';
+    }
+
+    final target = p.join(p.dirname(path), trimmed);
+    if (p.equals(target, path)) return null;
+
+    // Case-only renames look like a collision on a case-insensitive disk, and
+    // are the one case where the destination existing is fine.
+    final sameFileDifferentCase =
+        p.equals(target.toLowerCase(), path.toLowerCase());
+    if (!sameFileDifferentCase &&
+        (File(target).existsSync() || Directory(target).existsSync())) {
+      return 'There is already something called "$trimmed" here.';
+    }
+
+    try {
+      if (Directory(path).existsSync()) {
+        Directory(path).renameSync(target);
+      } else {
+        File(path).renameSync(target);
+      }
+      return null;
+    } on FileSystemException catch (error) {
+      return error.osError?.message ?? error.message;
+    }
+  }
+
+  /// A path inside [directory] that nothing is using yet.
+  String available(String directory, String name) {
+    final base = p.basenameWithoutExtension(name);
+    final extension = p.extension(name);
+
+    var candidate = p.join(directory, name);
+    for (var i = 2; File(candidate).existsSync() ||
+        Directory(candidate).existsSync(); i++) {
+      candidate = p.join(directory, '$base $i$extension');
+    }
+    return candidate;
+  }
+
   int? _sizeOf(File file) {
     try {
       return file.lengthSync();

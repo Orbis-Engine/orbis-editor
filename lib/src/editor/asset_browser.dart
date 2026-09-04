@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../theme/orbis_theme.dart';
+import '../widgets/controls.dart';
 import 'assets.dart';
 
 /// The project's files, along the bottom.
@@ -18,6 +19,7 @@ class AssetBrowser extends StatefulWidget {
     required this.tree,
     required this.height,
     this.onOpenAsset,
+    this.onProblem,
   });
 
   final AssetTree tree;
@@ -25,6 +27,9 @@ class AssetBrowser extends StatefulWidget {
 
   /// Called when somebody opens a file, rather than a folder.
   final ValueChanged<Asset>? onOpenAsset;
+
+  /// Called when a file operation fails, so the shell can say so.
+  final ValueChanged<String>? onProblem;
 
   @override
   State<AssetBrowser> createState() => _AssetBrowserState();
@@ -66,6 +71,63 @@ class _AssetBrowserState extends State<AssetBrowser> {
       _selected = null;
       _listen();
     }
+  }
+
+  Future<void> _confirmDelete(Asset asset) async {
+    final agreed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: OrbisColors.surface,
+        title: Text('Delete ${asset.name}?', style: OrbisText.title),
+        content: Text(
+          asset.isFolder
+              ? 'This deletes the folder and everything in it. It does not go '
+                  'to the Trash, and undo does not cover files.'
+              : 'This does not go to the Trash, and undo does not cover files.',
+          style: OrbisText.body,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (agreed != true) return;
+
+    final problem = widget.tree.delete(asset.path);
+    if (problem != null) {
+      widget.onProblem?.call('Could not delete ${asset.name}: $problem');
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _revision++;
+        if (_selected == asset.path) _selected = null;
+      });
+    }
+  }
+
+  Future<void> _promptRename(Asset asset) async {
+    final name = await promptForName(
+      context,
+      title: 'Rename',
+      initial: asset.name,
+      action: 'Rename',
+    );
+    if (name == null || !mounted) return;
+
+    final problem = widget.tree.rename(asset.path, name);
+    if (problem != null) {
+      widget.onProblem?.call('Could not rename ${asset.name}: $problem');
+      return;
+    }
+    if (mounted) setState(() => _revision++);
   }
 
   @override
@@ -115,6 +177,8 @@ class _AssetBrowserState extends State<AssetBrowser> {
                       selected: _selected,
                       onSelect: (asset) =>
                           setState(() => _selected = asset.path),
+                      onDelete: _confirmDelete,
+                      onRename: _promptRename,
                       onOpen: (asset) {
                         if (!asset.isFolder) {
                           widget.onOpenAsset?.call(asset);
@@ -347,12 +411,16 @@ class _Grid extends StatelessWidget {
     required this.selected,
     required this.onSelect,
     required this.onOpen,
+    required this.onDelete,
+    required this.onRename,
   });
 
   final List<Asset> entries;
   final String? selected;
   final ValueChanged<Asset> onSelect;
   final ValueChanged<Asset> onOpen;
+  final ValueChanged<Asset> onDelete;
+  final ValueChanged<Asset> onRename;
 
   @override
   Widget build(BuildContext context) {
@@ -378,6 +446,8 @@ class _Grid extends StatelessWidget {
           selected: asset.path == selected,
           onTap: () => onSelect(asset),
           onDoubleTap: () => onOpen(asset),
+          onDelete: () => onDelete(asset),
+          onRename: () => onRename(asset),
         );
       },
     );
@@ -390,12 +460,16 @@ class _Tile extends StatefulWidget {
     required this.selected,
     required this.onTap,
     required this.onDoubleTap,
+    required this.onDelete,
+    required this.onRename,
   });
 
   final Asset asset;
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
+  final VoidCallback onDelete;
+  final VoidCallback onRename;
 
   @override
   State<_Tile> createState() => _TileState();
@@ -403,6 +477,30 @@ class _Tile extends StatefulWidget {
 
 class _TileState extends State<_Tile> {
   bool _hovering = false;
+
+  /// The right-click menu.
+  ///
+  /// Rename and delete live here rather than on the tile, because a button
+  /// that deletes a file is not something to leave under a passing cursor.
+  Future<void> _menu(BuildContext context, Offset at) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final choice = await showMenu<String>(
+      context: context,
+      color: OrbisColors.raised,
+      position: RelativeRect.fromRect(
+        at & Size.zero,
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem(value: 'rename', child: Text('Rename', style: OrbisText.label)),
+        PopupMenuItem(value: 'delete', child: Text('Delete', style: OrbisText.label)),
+      ],
+    );
+
+    if (choice == 'rename') widget.onRename();
+    if (choice == 'delete') widget.onDelete();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -419,6 +517,7 @@ class _TileState extends State<_Tile> {
         child: GestureDetector(
           onTap: widget.onTap,
           onDoubleTap: widget.onDoubleTap,
+          onSecondaryTapUp: (details) => _menu(context, details.globalPosition),
           child: Container(
             padding: const EdgeInsets.symmetric(vertical: Space.sm),
             decoration: BoxDecoration(

@@ -150,4 +150,101 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
     });
   });
+
+  group('deleting', () {
+    test('removes a file', () {
+      final tree = AssetTree(root.path);
+      final target = p.join(root.path, 'assets', 'rock.png');
+
+      expect(tree.delete(target), isNull);
+      expect(File(target).existsSync(), isFalse);
+    });
+
+    test('removes a folder and what is in it', () {
+      final tree = AssetTree(root.path);
+      expect(tree.delete(p.join(root.path, 'assets')), isNull);
+      expect(Directory(p.join(root.path, 'assets')).existsSync(), isFalse);
+    });
+
+    test('says so when there is nothing there, rather than pretending', () {
+      // Silently succeeding is how somebody comes to believe a file is gone
+      // when it is not.
+      expect(AssetTree(root.path).delete(p.join(root.path, 'ghost')),
+          isNotNull);
+    });
+  });
+
+  group('renaming', () {
+    test('moves it within its folder', () {
+      final tree = AssetTree(root.path);
+      final from = p.join(root.path, 'assets', 'rock.png');
+
+      expect(tree.rename(from, 'stone.png'), isNull);
+      expect(File(p.join(root.path, 'assets', 'stone.png')).existsSync(),
+          isTrue);
+      expect(File(from).existsSync(), isFalse);
+    });
+
+    test('refuses to overwrite something already there', () {
+      final tree = AssetTree(root.path);
+      File(p.join(root.path, 'assets', 'stone.png')).writeAsBytesSync([9]);
+
+      final problem =
+          tree.rename(p.join(root.path, 'assets', 'rock.png'), 'stone.png');
+
+      expect(problem, isNotNull);
+      // And the other file is untouched, rather than half-replaced.
+      expect(File(p.join(root.path, 'assets', 'stone.png')).readAsBytesSync(),
+          [9]);
+    });
+
+    test('refuses a name with a path in it', () {
+      final tree = AssetTree(root.path);
+      final problem = tree.rename(
+        p.join(root.path, 'assets', 'rock.png'),
+        '../escaped.png',
+      );
+      expect(problem, isNotNull);
+      expect(File(p.join(root.path, '..', 'escaped.png')).existsSync(),
+          isFalse);
+    });
+
+    test('refuses an empty name', () {
+      expect(
+        AssetTree(root.path).rename(p.join(root.path, 'assets', 'rock.png'), '  '),
+        isNotNull,
+      );
+    });
+
+    test('renaming to the same name is not an error', () {
+      expect(
+        AssetTree(root.path)
+            .rename(p.join(root.path, 'assets', 'rock.png'), 'rock.png'),
+        isNull,
+      );
+    });
+
+    test('a folder renames too', () {
+      final tree = AssetTree(root.path);
+      expect(tree.rename(p.join(root.path, 'scenes'), 'levels'), isNull);
+      expect(Directory(p.join(root.path, 'levels')).existsSync(), isTrue);
+    });
+  });
+
+  group('a free name', () {
+    test('is the one asked for when nothing is using it', () {
+      expect(
+        p.basename(AssetTree(root.path).available(root.path, 'new.oscene')),
+        'new.oscene',
+      );
+    });
+
+    test('is numbered when it is taken, keeping the extension', () {
+      File(p.join(root.path, 'new.oscene')).writeAsStringSync('x');
+      expect(
+        p.basename(AssetTree(root.path).available(root.path, 'new.oscene')),
+        'new 2.oscene',
+      );
+    });
+  });
 }

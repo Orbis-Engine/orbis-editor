@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -412,7 +413,11 @@ class EditorScene {
   /// The viewport's camera is passed in rather than taken from the scene's
   /// Camera object: the scene view and the game camera are separate things,
   /// and moving one should not move the other.
-  OrbisScene toRenderScene(OrbisCamera camera) {
+  ///
+  /// [projectRoot] resolves mesh references, which are stored relative to the
+  /// project so a scene file survives the folder being moved or shared, and
+  /// have to be absolute by the time the renderer opens them.
+  OrbisScene toRenderScene(OrbisCamera camera, {String? projectRoot}) {
     final light = _objects.cast<SceneObject?>().firstWhere(
           (o) => o!.kind == ObjectKind.light,
           orElse: () => null,
@@ -432,6 +437,7 @@ class EditorScene {
             OrbisObject(
               transform: worldOf(object.id),
               colour: linearFromColour(object.colour),
+              mesh: _resolveMesh(object.meshAsset, projectRoot),
             ),
       ],
       sun: OrbisSun(
@@ -443,6 +449,13 @@ class EditorScene {
       ),
       camera: camera,
     );
+  }
+
+  /// A stored mesh reference as a path the renderer can open.
+  static String? _resolveMesh(String? reference, String? root) {
+    if (reference == null) return null;
+    if (root == null || p.isAbsolute(reference)) return reference;
+    return p.join(root, reference);
   }
 
   /// sRGB to linear, because the shading maths is linear and a colour handed

@@ -56,6 +56,48 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// Picks an item out of a toolbar menu.
+  Future<void> menu(WidgetTester tester, String button, String item) async {
+    await tester.tap(find.textContaining(button).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+      of: find.byType(MenuItemButton),
+      matching: find.text(item),
+    ));
+    await tester.pumpAndSettle();
+  }
+
+  /// Types into the dialog on screen and confirms it.
+  Future<void> answerPrompt(WidgetTester tester, String text, String action) async {
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      text,
+    );
+    await tester.tap(find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.text(action),
+    ));
+    await tester.pumpAndSettle();
+  }
+
+  /// The unsaved marker in the status bar, rather than the one on the Scene
+  /// menu — both are shown, in the two places somebody looks.
+  Finder unsavedMarker() => find.descendant(
+        of: find.byType(Row),
+        matching: find.textContaining(RegExp(r'\.oscene •|Unsaved')),
+      );
+
+  /// Saves with the keyboard.
+  Future<void> save(WidgetTester tester) async {
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+  }
+
   /// Opens a folder from the file grid.
   ///
   /// The grid tile rather than the folder-tree row beside it, because both
@@ -203,13 +245,10 @@ void main() {
     await open(tester);
 
     // Nothing has been written yet, so the status bar says so.
-    expect(find.textContaining('•'), findsOneWidget,
+    expect(unsavedMarker(), findsOneWidget,
         reason: 'a fresh scene is unsaved and should be marked');
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
+    await save(tester);
 
     final written = File(p.join(root.path, 'scenes', 'main$sceneExtension'));
     expect(written.existsSync(), isTrue);
@@ -224,27 +263,20 @@ void main() {
       (tester) async {
     await open(tester);
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('•'), findsNothing);
+    await save(tester);
+    expect(unsavedMarker(), findsNothing);
 
     await add(tester, 'Group');
-    expect(find.textContaining('•'), findsOneWidget);
+    expect(unsavedMarker(), findsOneWidget);
   });
 
   testWidgets('undoing back to the saved state reads as saved again',
       (tester) async {
     await open(tester);
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
+    await save(tester);
 
     await add(tester, 'Group');
-    expect(find.textContaining('•'), findsOneWidget);
+    expect(unsavedMarker(), findsOneWidget);
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
@@ -252,7 +284,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Somebody who changed their mind has not changed the file.
-    expect(find.textContaining('•'), findsNothing);
+    expect(unsavedMarker(), findsNothing);
   });
 
   testWidgets('a scene written by a newer editor is refused, not half-read',
@@ -346,5 +378,88 @@ void main() {
     // The ground is wide, so framing it pulls the camera back.
     expect(after.distance, isNot(before.distance));
     expect(after.yaw, before.yaw, reason: 'framing should not change the angle');
+  });
+
+  testWidgets('save as writes a second scene and edits it from then on',
+      (tester) async {
+    await open(tester);
+    await save(tester);
+
+    await menu(tester, 'Scene', 'Save as…');
+    await answerPrompt(tester, 'second', 'Save');
+
+    expect(
+      File(p.join(root.path, 'scenes', 'second$sceneExtension')).existsSync(),
+      isTrue,
+    );
+    // And the first one is still there, rather than moved.
+    expect(
+      File(p.join(root.path, 'scenes', 'main$sceneExtension')).existsSync(),
+      isTrue,
+    );
+    // Edits now go to the new file.
+    expect(find.textContaining('second$sceneExtension'), findsOneWidget);
+  });
+
+  testWidgets('save as refuses to overwrite a scene that exists',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'taken$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([])));
+
+    await open(tester);
+    await menu(tester, 'Scene', 'Save as…');
+    await answerPrompt(tester, 'taken', 'Save');
+
+    expect(find.textContaining('already a scene'), findsOneWidget);
+    // Untouched.
+    expect(
+      File(p.join(root.path, 'scenes', 'taken$sceneExtension'))
+          .readAsStringSync(),
+      SceneDocument.encode(EditorScene([])),
+    );
+  });
+
+  testWidgets('a new scene starts over and asks before dropping changes',
+      (tester) async {
+    await open(tester);
+    await save(tester);
+    await add(tester, 'Group');
+
+    await menu(tester, 'Scene', 'New scene');
+
+    expect(find.text('Save changes first?'), findsOneWidget);
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+
+    // A fresh starter scene, and nowhere to save it yet.
+    expect(row('Props'), findsOneWidget);
+    expect(find.textContaining('Unsaved'), findsOneWidget);
+  });
+
+  testWidgets('a dropped mesh is recorded relative to the project',
+      (tester) async {
+    Directory(p.join(root.path, 'assets')).createSync();
+    File(p.join(root.path, 'assets', 'crate.glb')).writeAsBytesSync([1, 2]);
+
+    await open(tester);
+    await openFolder(tester, 'assets');
+
+    final tile = find.descendant(
+      of: find.byType(GridView),
+      matching: find.text('crate.glb'),
+    );
+    final gesture = await tester.startGesture(tester.getCenter(tile));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+    await save(tester);
+
+    // Relative, so the scene file survives the project being moved or shared.
+    final written = File(p.join(root.path, 'scenes', 'main$sceneExtension'))
+        .readAsStringSync();
+    expect(written, contains('"assets/crate.glb"'));
+    expect(written, isNot(contains(root.path)));
   });
 }

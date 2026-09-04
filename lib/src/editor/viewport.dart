@@ -122,6 +122,8 @@ class SceneViewport extends StatefulWidget {
     required this.onCameraChanged,
     this.selected,
     this.onDropAsset,
+    this.projectRoot,
+    this.onMeshErrors,
   });
 
   final EditorScene scene;
@@ -137,6 +139,12 @@ class SceneViewport extends StatefulWidget {
 
   /// Called when a file is dragged in from the project browser.
   final ValueChanged<String>? onDropAsset;
+
+  /// Where mesh references are resolved from.
+  final String? projectRoot;
+
+  /// Called with any mesh the renderer could not load, by path.
+  final ValueChanged<Map<String, String>>? onMeshErrors;
 
   @override
   State<SceneViewport> createState() => _SceneViewportState();
@@ -239,7 +247,11 @@ class _SceneViewportState extends State<SceneViewport> {
         },
         onPanEnd: (_) => _dragAnchor = null,
         child: OrbisView(
-          scene: widget.scene.toRenderScene(widget.camera.toRenderCamera()),
+          scene: widget.scene.toRenderScene(
+            widget.camera.toRenderCamera(),
+            projectRoot: widget.projectRoot,
+          ),
+          onMeshErrors: widget.onMeshErrors,
         ),
       ),
     );

@@ -270,3 +270,98 @@ class SectionLabel extends StatelessWidget {
     );
   }
 }
+
+/// Asks for a single name, and returns it trimmed, or null if cancelled.
+///
+/// A widget rather than a controller made at the call site, because a
+/// controller disposed as soon as `showDialog` returns is still being read by
+/// the dialog's own exit animation — which throws, once, in a place that has
+/// nothing to do with where it was created.
+Future<String?> promptForName(
+  BuildContext context, {
+  required String title,
+  required String initial,
+  String? hint,
+  String action = 'OK',
+}) {
+  return showDialog<String>(
+    context: context,
+    builder: (context) => _NamePrompt(
+      title: title,
+      initial: initial,
+      hint: hint,
+      action: action,
+    ),
+  );
+}
+
+class _NamePrompt extends StatefulWidget {
+  const _NamePrompt({
+    required this.title,
+    required this.initial,
+    required this.hint,
+    required this.action,
+  });
+
+  final String title;
+  final String initial;
+  final String? hint;
+  final String action;
+
+  @override
+  State<_NamePrompt> createState() => _NamePromptState();
+}
+
+class _NamePromptState extends State<_NamePrompt> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initial)
+        ..selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: widget.initial.length,
+        );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _accept() => Navigator.of(context).pop(_controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: OrbisColors.surface,
+      title: Text(widget.title, style: OrbisText.title),
+      content: SizedBox(
+        // Bounded on both axes: an AlertDialog gives its content whatever room
+        // it asks for, and a Column that asks for infinity gets it.
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              style: OrbisText.body,
+              cursorColor: OrbisColors.ember,
+              onSubmitted: (_) => _accept(),
+            ),
+            if (widget.hint != null) ...[
+              const SizedBox(height: Space.sm),
+              Text(widget.hint!, style: OrbisText.caption),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(onPressed: _accept, child: Text(widget.action)),
+      ],
+    );
+  }
+}

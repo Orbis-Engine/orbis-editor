@@ -196,7 +196,12 @@ class _EditorShellState extends State<EditorShell> {
   /// edit landing in that gap is not in the file, but the history would call
   /// itself clean.
   void _save() {
-    final path = _scenePath ?? _defaultScenePath();
+    final path = _scenePath;
+    if (path == null) {
+      // Nowhere to write yet, so Save becomes Save As rather than guessing.
+      _saveAs();
+      return;
+    }
     try {
       final file = File(path);
       file.parent.createSync(recursive: true);
@@ -214,6 +219,85 @@ class _EditorShellState extends State<EditorShell> {
     });
     _history.markSaved();
     _say('Saved to ${_assets.relative(path)}');
+  }
+
+  /// Names meshes the renderer could not load.
+  ///
+  /// Said once per file rather than every frame: the scene is republished on
+  /// every drag, and a failure would otherwise appear a hundred times while
+  /// somebody moves the object it belongs to.
+  final Set<String> _reportedMeshes = {};
+
+  void _reportMeshErrors(Map<String, String> errors) {
+    final fresh = [
+      for (final entry in errors.entries)
+        if (_reportedMeshes.add(entry.key)) entry,
+    ];
+    if (fresh.isEmpty) return;
+
+    final first = fresh.first;
+    _say(fresh.length == 1
+        ? '${p.basename(first.key)}: ${first.value}'
+        : '${fresh.length} meshes could not be loaded. '
+            '${p.basename(first.key)}: ${first.value}');
+  }
+
+  /// Writes the scene somewhere new, and edits it there from then on.
+  Future<void> _saveAs() async {
+    final name = await promptForName(
+      context,
+      title: 'Save scene as',
+      initial: _scenePath == null
+          ? 'main'
+          : p.basenameWithoutExtension(_scenePath!),
+      hint: 'Goes in scenes/, as $sceneExtension.',
+      action: 'Save',
+    );
+    if (!mounted) return;
+
+    final trimmed = name;
+    if (trimmed == null || trimmed.isEmpty) return;
+    if (trimmed.contains(p.separator)) {
+      _say('A scene name cannot contain a path.');
+      return;
+    }
+
+    final path = p.join(
+      widget.project.directory,
+      'scenes',
+      trimmed.endsWith(sceneExtension) ? trimmed : '$trimmed$sceneExtension',
+    );
+
+    // Refused rather than merged: overwriting a scene somebody else authored
+    // is not something to do on a name collision.
+    if (File(path).existsSync() &&
+        (_scenePath == null || !p.equals(path, _scenePath!))) {
+      _say('There is already a scene called $trimmed.');
+      return;
+    }
+
+    setState(() => _scenePath = path);
+    _save();
+  }
+
+  /// Starts an empty scene, asking about the current one first.
+  Future<void> _newScene() async {
+    if (_unsaved && !await _confirmDiscard()) return;
+
+    setState(() {
+      _history
+        ..removeListener(_onChanged)
+        ..dispose();
+      _scene = EditorScene.starter();
+      _history = History(_scene)..addListener(_onChanged);
+      // No path: the next save asks where it goes rather than overwriting
+      // whatever was open before.
+      _scenePath = null;
+      _neverWritten = true;
+      _selected = _scene.objects.isEmpty ? null : _scene.objects.last.id;
+      _camera = OrbitCamera();
+      _reportedMeshes.clear();
+    });
   }
 
   void _say(String message) {
@@ -265,8 +349,6 @@ class _EditorShellState extends State<EditorShell> {
 
     _run(AddObject(object));
     setState(() => _selected = object.id);
-    _say('Added ${object.name}. It draws as a placeholder cube until meshes '
-        'load.');
   }
 
   /// Opens a scene file, asking first if the current one has changes.
@@ -401,6 +483,10 @@ class _EditorShellState extends State<EditorShell> {
             _SaveIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
             _SaveIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyS, meta: true, shift: true):
+            _SaveAsIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+            _NewSceneIntent(),
       },
       child: Actions(
         actions: {
@@ -429,6 +515,18 @@ class _EditorShellState extends State<EditorShell> {
               return null;
             },
           ),
+          _SaveAsIntent: CallbackAction<_SaveAsIntent>(
+            onInvoke: (_) {
+              _saveAs();
+              return null;
+            },
+          ),
+          _NewSceneIntent: CallbackAction<_NewSceneIntent>(
+            onInvoke: (_) {
+              _newScene();
+              return null;
+            },
+          ),
         },
         child: Focus(
           autofocus: true,
@@ -446,6 +544,8 @@ class _EditorShellState extends State<EditorShell> {
                   onClose: widget.onClose,
                   onAdd: _add,
                   onSave: _save,
+                  onSaveAs: _saveAs,
+                  onNewScene: _newScene,
                 ),
                 Expanded(
                   child: Row(
@@ -470,6 +570,8 @@ class _EditorShellState extends State<EditorShell> {
                                     setState(() => _camera = camera),
                                 selected: _selected,
                                 onDropAsset: _dropAsset,
+                                projectRoot: widget.project.directory,
+                                onMeshErrors: _reportMeshErrors,
                               ),
                             ),
                             _Splitter(
@@ -490,6 +592,7 @@ class _EditorShellState extends State<EditorShell> {
                                   _openScene(asset.path);
                                 }
                               },
+                              onProblem: _say,
                             ),
                           ],
                         ),
@@ -531,6 +634,10 @@ class _FrameIntent extends Intent {}
 
 class _SaveIntent extends Intent {}
 
+class _SaveAsIntent extends Intent {}
+
+class _NewSceneIntent extends Intent {}
+
 /// The bar between the viewport and the project browser.
 class _Splitter extends StatefulWidget {
   const _Splitter({required this.onDrag});
@@ -571,6 +678,8 @@ class _TopBar extends StatelessWidget {
     required this.onClose,
     required this.onAdd,
     required this.onSave,
+    required this.onSaveAs,
+    required this.onNewScene,
   });
 
   final Project project;
@@ -581,6 +690,8 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onClose;
   final ValueChanged<ObjectKind> onAdd;
   final VoidCallback onSave;
+  final VoidCallback onSaveAs;
+  final VoidCallback onNewScene;
 
   @override
   Widget build(BuildContext context) {
@@ -600,16 +711,14 @@ class _TopBar extends StatelessWidget {
             onPressed: onClose,
           ),
           const SizedBox(width: Space.md),
-          _AddMenu(onAdd: onAdd),
-          const SizedBox(width: Space.xs),
-          // Marked rather than announced: a dot next to Save is how an editor
-          // says there is something to save without interrupting.
-          _TransportButton(
-            icon: dirty ? Icons.save : Icons.save_outlined,
-            tooltip: dirty ? 'Save (unsaved changes)' : 'Save',
-            active: dirty,
-            onTap: onSave,
+          _SceneMenu(
+            dirty: dirty,
+            onSave: onSave,
+            onSaveAs: onSaveAs,
+            onNewScene: onNewScene,
           ),
+          const SizedBox(width: Space.xs),
+          _AddMenu(onAdd: onAdd),
           const SizedBox(width: Space.md),
           // Labelled with what they would undo, so the tooltip answers the
           // question somebody actually has before they press it.
@@ -804,6 +913,65 @@ class _AddMenu extends StatelessWidget {
       builder: (context, controller, child) => OrbisButton(
         label: 'Add',
         icon: Icons.add,
+        tone: ButtonTone.quiet,
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+      ),
+    );
+  }
+}
+
+/// New, Save and Save As.
+class _SceneMenu extends StatelessWidget {
+  const _SceneMenu({
+    required this.dirty,
+    required this.onSave,
+    required this.onSaveAs,
+    required this.onNewScene,
+  });
+
+  final bool dirty;
+  final VoidCallback onSave;
+  final VoidCallback onSaveAs;
+  final VoidCallback onNewScene;
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(OrbisColors.raised),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Radii.panel),
+            side: const BorderSide(color: OrbisColors.line),
+          ),
+        ),
+      ),
+      menuChildren: [
+        MenuItemButton(
+          onPressed: onNewScene,
+          leadingIcon: const Icon(Icons.note_add_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('New scene', style: OrbisText.label),
+        ),
+        MenuItemButton(
+          onPressed: onSave,
+          leadingIcon: const Icon(Icons.save_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('Save', style: OrbisText.label),
+        ),
+        MenuItemButton(
+          onPressed: onSaveAs,
+          leadingIcon: const Icon(Icons.drive_file_move_outline,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('Save as…', style: OrbisText.label),
+        ),
+      ],
+      builder: (context, controller, child) => OrbisButton(
+        // The dot is the unsaved marker, in the place somebody looks for it.
+        label: dirty ? 'Scene •' : 'Scene',
+        icon: Icons.description_outlined,
         tone: ButtonTone.quiet,
         onPressed: () =>
             controller.isOpen ? controller.close() : controller.open(),

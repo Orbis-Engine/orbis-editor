@@ -233,14 +233,7 @@ class _Fields extends StatelessWidget {
               label: 'Mesh',
               value: object.meshAsset ?? 'cube (built in)',
             ),
-            if (object.meshAsset != null)
-              Padding(
-                padding: const EdgeInsets.only(top: Space.xs),
-                child: Text(
-                  'Drawn as a placeholder cube until meshes load.',
-                  style: OrbisText.caption.copyWith(fontSize: 10.5),
-                ),
-              ),
+
           ],
         ),
       );
