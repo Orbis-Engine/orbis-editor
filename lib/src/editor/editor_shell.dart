@@ -9,6 +9,7 @@ import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'asset_browser.dart';
 import 'assets.dart';
+import 'clipboard.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'inspector.dart';
@@ -58,6 +59,10 @@ class _EditorShellState extends State<EditorShell> {
   final Set<String> _reportedMeshes = {};
 
   int _nextSceneId = 0;
+
+  /// Survives a scene being unloaded, which is what makes moving something
+  /// from one scene to another possible at all.
+  final SceneClipboard _clipboard = SceneClipboard();
 
   @override
   void initState() {
@@ -499,6 +504,89 @@ class _EditorShellState extends State<EditorShell> {
     ));
   }
 
+  /// Puts the selection on the clipboard.
+  void _copy() {
+    final id = _selected;
+    final scene = _current?.scene;
+    if (id == null || scene == null) return;
+
+    _clipboard.take(scene, id);
+    setState(() {});
+    _say('Copied ${_clipboard.description}.');
+  }
+
+  /// Copies the selection and then removes it.
+  void _cut() {
+    final id = _selected;
+    final scene = _current?.scene;
+    final object = id == null ? null : scene?[id];
+    if (id == null || scene == null || object == null) return;
+
+    // Copied before it is deleted, since the delete is what makes it
+    // unreachable.
+    _clipboard.take(scene, id);
+    _delete(id);
+    setState(() {});
+  }
+
+  /// Puts the clipboard into the loaded scene.
+  ///
+  /// Beside whatever is selected rather than inside it, which is what somebody
+  /// pressing paste usually means — pasting into the thing you were looking at
+  /// buries it one level down.
+  void _paste() {
+    final open = _current;
+    final scene = open?.scene;
+    if (open == null || scene == null || _clipboard.isEmpty) return;
+
+    final beside = _selected == null ? null : scene[_selected!];
+    final content = _clipboard.contents(
+      nextId: _nextObjectId,
+      parentId: beside?.parentId,
+    );
+
+    // Named for what it was, so the undo entry reads as the thing somebody
+    // did rather than as a count.
+    _run(PasteObjects(
+      sceneId: open.id,
+      objects: content.objects,
+      roots: content.roots,
+      what: _clipboard.description,
+    ));
+
+    setState(() => _selected = content.roots.firstOrNull);
+  }
+
+  /// Copies the selection and pastes it straight back.
+  void _duplicate() {
+    final id = _selected;
+    final open = _current;
+    final scene = open?.scene;
+    if (id == null || open == null || scene == null) return;
+
+    // On its own clipboard, so duplicating does not throw away what somebody
+    // had copied earlier.
+    final taken = SceneClipboard()..take(scene, id);
+    final content = taken.contents(
+      nextId: _nextObjectId,
+      parentId: scene[id]?.parentId,
+    );
+
+    _run(PasteObjects(
+      sceneId: open.id,
+      objects: content.objects,
+      roots: content.roots,
+      what: taken.description,
+    ));
+
+    setState(() => _selected = content.roots.firstOrNull);
+  }
+
+  String _nextObjectId() =>
+      'o${DateTime.now().microsecondsSinceEpoch}_${_nextObject++}';
+
+  int _nextObject = 0;
+
   void _reportMeshErrors(Map<String, String> errors) {
     final fresh = [
       for (final entry in errors.entries)
@@ -621,6 +709,22 @@ class _EditorShellState extends State<EditorShell> {
             _SaveAsIntent(),
         const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
             _NewSceneIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyC, meta: true):
+            _CopyIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyX, meta: true):
+            _CutIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+            _PasteIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true):
+            _DuplicateIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyC, control: true):
+            _CopyIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyX, control: true):
+            _CutIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+            _PasteIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyD, control: true):
+            _DuplicateIntent(),
       },
       child: Actions(
         actions: {
@@ -657,6 +761,11 @@ class _EditorShellState extends State<EditorShell> {
               return null;
             },
           ),
+          _CopyIntent: CallbackAction<_CopyIntent>(onInvoke: (_) => _copy()),
+          _CutIntent: CallbackAction<_CutIntent>(onInvoke: (_) => _cut()),
+          _PasteIntent: CallbackAction<_PasteIntent>(onInvoke: (_) => _paste()),
+          _DuplicateIntent:
+              CallbackAction<_DuplicateIntent>(onInvoke: (_) => _duplicate()),
         },
         child: Focus(
           autofocus: true,
@@ -678,6 +787,12 @@ class _EditorShellState extends State<EditorShell> {
                   onNewScene: () => _newScene(),
                   onUndo: _undo,
                   onRedo: _redo,
+                  hasSelection: _selected != null,
+                  clipboard: _clipboard.description,
+                  onCopy: _copy,
+                  onCut: _cut,
+                  onPaste: _paste,
+                  onDuplicate: _duplicate,
                 ),
                 Expanded(
                   child: Row(
@@ -780,6 +895,14 @@ class _SaveAsIntent extends Intent {}
 
 class _NewSceneIntent extends Intent {}
 
+class _CopyIntent extends Intent {}
+
+class _CutIntent extends Intent {}
+
+class _PasteIntent extends Intent {}
+
+class _DuplicateIntent extends Intent {}
+
 /// The bar between the viewport and the project browser.
 class _Splitter extends StatefulWidget {
   const _Splitter({required this.onDrag});
@@ -824,6 +947,12 @@ class _TopBar extends StatelessWidget {
     required this.onNewScene,
     required this.onUndo,
     required this.onRedo,
+    required this.hasSelection,
+    required this.clipboard,
+    required this.onCopy,
+    required this.onCut,
+    required this.onPaste,
+    required this.onDuplicate,
   });
 
   final Project project;
@@ -839,6 +968,15 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onNewScene;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
+  final bool hasSelection;
+
+  /// What is on the clipboard, or empty for nothing.
+  final String clipboard;
+
+  final VoidCallback onCopy;
+  final VoidCallback onCut;
+  final VoidCallback onPaste;
+  final VoidCallback onDuplicate;
 
   @override
   Widget build(BuildContext context) {
@@ -866,6 +1004,15 @@ class _TopBar extends StatelessWidget {
           ),
           const SizedBox(width: Space.xs),
           _AddMenu(onAdd: onAdd),
+          const SizedBox(width: Space.xs),
+          _EditMenu(
+            hasSelection: hasSelection,
+            clipboard: clipboard,
+            onCopy: onCopy,
+            onCut: onCut,
+            onPaste: onPaste,
+            onDuplicate: onDuplicate,
+          ),
           const SizedBox(width: Space.md),
           // Labelled with what they would undo, so the tooltip answers the
           // question somebody actually has before they press it.
@@ -1123,6 +1270,98 @@ class _SceneMenu extends StatelessWidget {
         tone: ButtonTone.quiet,
         onPressed: () =>
             controller.isOpen ? controller.close() : controller.open(),
+      ),
+    );
+  }
+}
+
+/// Cut, copy, paste and duplicate.
+///
+/// Worth a menu rather than only shortcuts: copying between scenes is the
+/// only way to move an object from one to another, and nobody discovers a
+/// keystroke that is not written down anywhere.
+class _EditMenu extends StatelessWidget {
+  const _EditMenu({
+    required this.hasSelection,
+    required this.clipboard,
+    required this.onCopy,
+    required this.onCut,
+    required this.onPaste,
+    required this.onDuplicate,
+  });
+
+  final bool hasSelection;
+  final String clipboard;
+  final VoidCallback onCopy;
+  final VoidCallback onCut;
+  final VoidCallback onPaste;
+  final VoidCallback onDuplicate;
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(OrbisColors.raised),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Radii.panel),
+            side: const BorderSide(color: OrbisColors.line),
+          ),
+        ),
+      ),
+      menuChildren: [
+        _item('Cut', '⌘X', Icons.content_cut, hasSelection ? onCut : null),
+        _item('Copy', '⌘C', Icons.content_copy, hasSelection ? onCopy : null),
+        _item(
+          clipboard.isEmpty ? 'Paste' : 'Paste $clipboard',
+          '⌘V',
+          Icons.content_paste,
+          clipboard.isEmpty ? null : onPaste,
+        ),
+        _item(
+          'Duplicate',
+          '⌘D',
+          Icons.copy_all,
+          hasSelection ? onDuplicate : null,
+        ),
+      ],
+      builder: (context, controller, child) => OrbisButton(
+        label: 'Edit',
+        icon: Icons.content_copy,
+        tone: ButtonTone.quiet,
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+      ),
+    );
+  }
+
+  Widget _item(
+    String label,
+    String shortcut,
+    IconData icon,
+    VoidCallback? onPressed,
+  ) {
+    final enabled = onPressed != null;
+    return MenuItemButton(
+      onPressed: onPressed,
+      leadingIcon: Icon(
+        icon,
+        size: 14,
+        color: enabled ? OrbisColors.inkMid : OrbisColors.line,
+      ),
+      trailingIcon: Text(
+        shortcut,
+        style: OrbisText.mono.copyWith(
+          fontSize: 11,
+          color: enabled ? OrbisColors.inkDim : OrbisColors.line,
+        ),
+      ),
+      child: Text(
+        label,
+        style: OrbisText.label.copyWith(
+          color: enabled ? OrbisColors.ink : OrbisColors.line,
+        ),
       ),
     );
   }

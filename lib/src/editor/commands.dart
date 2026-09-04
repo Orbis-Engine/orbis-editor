@@ -395,6 +395,55 @@ class AddObject extends EditorCommand {
   void revert(SceneHost host) => host.sceneFor(sceneId)?.remove(object.id);
 }
 
+/// Puts objects into a scene, keeping the shape they had.
+///
+/// One command for the whole paste rather than one per object: a paste is one
+/// thing somebody did, and undoing it halfway would leave a subtree with its
+/// parent missing.
+class PasteObjects extends EditorCommand {
+  PasteObjects({
+    required this.sceneId,
+    required this.objects,
+    required this.roots,
+    required this.what,
+  });
+
+  @override
+  final String sceneId;
+
+  /// In insertion order: a parent is always added before its children, so no
+  /// object is ever briefly pointing at something that is not there.
+  final List<SceneObject> objects;
+
+  /// The tops of what was pasted, which is what a delete has to take.
+  final List<String> roots;
+
+  final String what;
+
+  @override
+  String get label => 'Paste $what';
+
+  @override
+  void apply(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    for (final object in objects) {
+      if (!scene.contains(object.id)) scene.add(object);
+    }
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    // Roots only: removing one takes everything under it, and asking for a
+    // child that has already gone is not an error worth having.
+    for (final root in roots) {
+      scene.remove(root);
+    }
+  }
+}
+
 /// Deletes an object and everything under it.
 class DeleteObject extends EditorCommand {
   DeleteObject({

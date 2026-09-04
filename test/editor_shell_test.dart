@@ -736,4 +736,122 @@ void main() {
     expect(find.text('Load scene'), findsOneWidget);
     expect(find.text('ENVIRONMENT'), findsNothing);
   });
+
+  /// Loads a scene from its row in the hierarchy.
+  Future<void> loadScene(WidgetTester tester, String name) async {
+    final target = sceneRow(name);
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyEvent(key);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('an object can be copied from one scene into another',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([], name: 'Props')));
+
+    await open(tester);
+    await save(tester);
+
+    // Copy a whole subtree out of the first scene...
+    await tester.tap(row('Props'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    // ...leave it, and paste into the other.
+    await loadScene(tester, 'props');
+    expect(row('Props'), findsNothing, reason: 'the other scene is empty');
+
+    await press(tester, LogicalKeyboardKey.keyV);
+
+    expect(row('Props'), findsOneWidget);
+    expect(row('Cube'), findsOneWidget, reason: 'the children came too');
+    expect(row('Crate'), findsOneWidget);
+  });
+
+  testWidgets('the clipboard survives the scene it came from being unloaded',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([], name: 'Props')));
+
+    await open(tester);
+    await save(tester);
+
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    await loadScene(tester, 'props');
+    await press(tester, LogicalKeyboardKey.keyV);
+    await save(tester);
+
+    final written = File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .readAsStringSync();
+    expect(written, contains('"Crate"'));
+  });
+
+  testWidgets('cut removes it from the scene it was in', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyX);
+
+    expect(row('Crate'), findsNothing);
+    expect(find.textContaining('Delete Crate'), findsOneWidget);
+  });
+
+  testWidgets('duplicate leaves the original alone', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyD);
+
+    // Two now, sharing a name and nothing else.
+    expect(row('Crate'), findsNWidgets(2));
+    expect(find.textContaining('Paste Crate'), findsOneWidget);
+  });
+
+  testWidgets('pasting is undoable in one step', (tester) async {
+    await open(tester);
+
+    await tester.tap(row('Props'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyD);
+    expect(row('Cube'), findsNWidgets(2));
+
+    await press(tester, LogicalKeyboardKey.keyZ);
+
+    // The whole subtree went, not just its root.
+    expect(row('Cube'), findsOneWidget);
+    expect(row('Props'), findsOneWidget);
+  });
+
+  testWidgets('the edit menu says what paste would do', (tester) async {
+    await open(tester);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    // Nothing copied yet, so it is just Paste.
+    expect(find.text('Paste'), findsOneWidget);
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await press(tester, LogicalKeyboardKey.keyC);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paste Crate'), findsOneWidget);
+  });
 }

@@ -83,6 +83,21 @@ class SceneObject {
     ..multiply(rotationFromDegrees(rotation))
     ..multiply(Matrix4.diagonal3(scale));
 
+  /// A copy with a new identity, for pasting.
+  SceneObject copyAs({required String id, String? parentId}) => SceneObject(
+        id: id,
+        name: name,
+        kind: kind,
+        parentId: parentId,
+        position: position.clone(),
+        rotation: rotation.clone(),
+        scale: scale.clone(),
+        colour: colour,
+        power: power,
+        castShadows: castShadows,
+        meshAsset: meshAsset,
+      );
+
   SceneObject copy() => SceneObject(
         id: id,
         name: name,
