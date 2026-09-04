@@ -47,10 +47,14 @@ abstract final class SceneDocument {
 
   static const JsonEncoder _encoder = JsonEncoder.withIndent('  ');
 
-  static String encode(EditorScene scene, {String name = 'main'}) {
+  static String encode(EditorScene scene, {String? name}) {
     final json = {
       'formatVersion': formatVersion,
-      'name': name,
+      'name': name ?? scene.name,
+      // The scene's own settings, which belong to it rather than to anything
+      // in it — there was nowhere to put them until it had a row of its own.
+      'sky': _hex(scene.skyColour),
+      'ambient': scene.ambient,
       'objects': [
         for (final object in scene.objects) _objectToJson(object),
       ],
@@ -103,10 +107,19 @@ abstract final class SceneDocument {
     }
 
     final problems = <String>[];
-    final raw = parsed['objects'];
     final objects = <SceneObject>[];
     final seen = <String>{};
 
+    // Scenes written before objects carried transforms. The shape only
+    // existed briefly, and it holds names but no positions, so it is
+    // converted rather than refused — and the conversion says what it could
+    // not recover instead of leaving somebody to wonder why everything is
+    // stacked at the origin.
+    if (parsed['objects'] == null && parsed['entities'] is List) {
+      return _fromEntities(parsed['entities']! as List, parsed['name']);
+    }
+
+    final raw = parsed['objects'];
     if (raw is! List) {
       throw const SceneFormatException(
         'This scene has no list of objects in it.',
@@ -174,10 +187,52 @@ abstract final class SceneDocument {
 
     _breakCycles(objects, problems);
 
+    final name = parsed['name'] is String ? parsed['name']! as String : null;
+
     return SceneLoad(
-      scene: EditorScene(objects),
-      name: parsed['name'] is String ? parsed['name']! as String : null,
+      scene: EditorScene(
+        objects,
+        name: name ?? 'Scene',
+        skyColour: parsed['sky'] == null
+            ? null
+            : _readColour(parsed['sky'], fallback: const Color(0xFF59616F)),
+        ambient:
+            parsed['ambient'] is num ? (parsed['ambient']! as num).toDouble() : 28000,
+      ),
+      name: name,
       problems: problems,
+    );
+  }
+
+  /// Reads the shape scenes had before they stored transforms.
+  static SceneLoad _fromEntities(List entities, Object? name) {
+    final objects = <SceneObject>[];
+
+    for (final (index, entry) in entities.indexed) {
+      if (entry is! Map<String, Object?>) continue;
+      final components = entry['components'];
+      final named = components is List ? components.join(' ') : '';
+
+      objects.add(SceneObject(
+        id: 'legacy$index',
+        name: entry['name'] is String ? entry['name']! as String : 'Object',
+        // The old shape said what components a thing had, which is enough to
+        // tell a light from a camera from everything else.
+        kind: named.contains('Light')
+            ? ObjectKind.light
+            : (named.contains('Camera') ? ObjectKind.camera : ObjectKind.mesh),
+      ));
+    }
+
+    return SceneLoad(
+      scene: EditorScene(objects, name: name is String ? name : 'Scene'),
+      name: name is String ? name : null,
+      problems: objects.isEmpty
+          ? const []
+          : [
+              'This scene was written before Orbis stored positions, so its '
+                  '${objects.length} objects are all at the origin.',
+            ],
     );
   }
 
@@ -217,11 +272,14 @@ abstract final class SceneDocument {
   static String _hex(Color colour) =>
       '#${colour.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
 
-  static Color _readColour(Object? raw) {
-    if (raw is! String) return const Color(0xFFD9634F);
+  static Color _readColour(
+    Object? raw, {
+    Color fallback = const Color(0xFFD9634F),
+  }) {
+    if (raw is! String) return fallback;
     final digits = raw.startsWith('#') ? raw.substring(1) : raw;
     final value = int.tryParse(digits, radix: 16);
-    if (value == null || digits.length != 6) return const Color(0xFFD9634F);
+    if (value == null || digits.length != 6) return fallback;
     return Color(0xFF000000 | value);
   }
 }

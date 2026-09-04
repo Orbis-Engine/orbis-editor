@@ -1,9 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
+import 'package:orbis_editor/src/editor/outliner.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
@@ -113,10 +115,30 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// A row in the outliner, rather than the same name in the inspector's
-  /// title field or in a menu.
+  /// The hierarchy panel's own count, rather than the viewport's chip.
+  Finder sceneCount(String text) => find.descendant(
+        of: find.byType(Outliner),
+        matching: find.textContaining(text),
+      );
+
+  /// An object's row in the outliner, rather than the same name in the
+  /// inspector's title field or in a menu. Objects are draggable; scenes are
+  /// headings and are not.
   Finder row(String name) => find.descendant(
         of: find.byType(Draggable<String>),
+        matching: find.text(name),
+      );
+
+  /// The whole row a name sits in, rather than just its text — the text is
+  /// centred, so its top-left is halfway down the row.
+  Finder rowBox(String name) => find.ancestor(
+        of: row(name),
+        matching: find.byType(Draggable<String>),
+      );
+
+  /// A scene's own row.
+  Finder sceneRow(String name) => find.descendant(
+        of: find.byType(Outliner),
         matching: find.text(name),
       );
 
@@ -132,11 +154,22 @@ void main() {
   testWidgets('collapsing a parent hides its children', (tester) async {
     await open(tester);
 
-    await tester.tap(find.byIcon(Icons.expand_more).first);
+    // The first chevron belongs to the scene's own row; the second to Props.
+    await tester.tap(find.byIcon(Icons.expand_more).at(1));
     await tester.pumpAndSettle();
 
     expect(row('Props'), findsOneWidget);
     expect(row('Crate'), findsNothing);
+  });
+
+  testWidgets('collapsing the scene hides everything in it', (tester) async {
+    await open(tester);
+
+    await tester.tap(find.byIcon(Icons.expand_more).first);
+    await tester.pumpAndSettle();
+
+    expect(row('Props'), findsNothing);
+    expect(row('Ground'), findsNothing);
   });
 
   testWidgets('selecting shows that object in the inspector', (tester) async {
@@ -397,8 +430,14 @@ void main() {
       File(p.join(root.path, 'scenes', 'main$sceneExtension')).existsSync(),
       isTrue,
     );
-    // Edits now go to the new file.
-    expect(find.textContaining('second$sceneExtension'), findsOneWidget);
+    // Edits now go to the new file, which the status bar names.
+    expect(
+      find.descendant(
+        of: find.byType(Row),
+        matching: find.textContaining('scenes/second$sceneExtension'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('save as refuses to overwrite a scene that exists',
@@ -419,21 +458,38 @@ void main() {
     );
   });
 
-  testWidgets('a new scene starts over and asks before dropping changes',
+  testWidgets('a new scene opens alongside the one already there',
       (tester) async {
+    await open(tester);
+    await save(tester);
+
+    await menu(tester, 'Scene', 'New scene');
+
+    // Two scene rows now, not one replaced by another.
+    expect(sceneCount('2 scenes'), findsOneWidget);
+    expect(sceneRow('main'), findsOneWidget);
+    expect(sceneRow('Untitled'), findsOneWidget);
+  });
+
+  testWidgets('closing a scene with changes asks first', (tester) async {
     await open(tester);
     await save(tester);
     await add(tester, 'Group');
 
-    await menu(tester, 'Scene', 'New scene');
+    // The close action appears on the scene's row when it is hovered.
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: tester.getCenter(sceneRow('main')));
+    addTearDown(mouse.removePointer);
+    await tester.pump();
 
-    expect(find.text('Save changes first?'), findsOneWidget);
+    await tester.tap(find.byTooltip('Close main'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Save main first?'), findsOneWidget);
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
 
-    // A fresh starter scene, and nowhere to save it yet.
-    expect(row('Props'), findsOneWidget);
-    expect(find.textContaining('Unsaved'), findsOneWidget);
+    expect(sceneCount('0 scenes'), findsOneWidget);
   });
 
   testWidgets('a dropped mesh is recorded relative to the project',
@@ -461,5 +517,100 @@ void main() {
         .readAsStringSync();
     expect(written, contains('"assets/crate.glb"'));
     expect(written, isNot(contains(root.path)));
+  });
+
+  testWidgets('the scene is the root, with its objects under it',
+      (tester) async {
+    await open(tester);
+
+    final sceneY = tester.getCenter(sceneRow('main')).dy;
+    // Everything in it is drawn below it and indented.
+    for (final name in ['Sun', 'Ground', 'Props']) {
+      expect(tester.getCenter(row(name)).dy, greaterThan(sceneY));
+      expect(tester.getTopLeft(row(name)).dx,
+          greaterThan(tester.getTopLeft(sceneRow('main')).dx));
+    }
+  });
+
+  testWidgets('selecting the scene shows its own settings', (tester) async {
+    await open(tester);
+    await tester.tap(sceneRow('main'));
+    await tester.pumpAndSettle();
+
+    // The sky belongs to the scene, not to anything in it.
+    expect(find.text('ENVIRONMENT'), findsOneWidget);
+    expect(find.text('Sky'), findsOneWidget);
+    expect(find.text('Ambient'), findsOneWidget);
+    // And not an object's fields.
+    expect(find.text('TRANSFORM'), findsNothing);
+  });
+
+  testWidgets('the scene settings are saved with the scene', (tester) async {
+    await open(tester);
+    await tester.tap(sceneRow('main'));
+    await tester.pumpAndSettle();
+
+    // Pick a sky from the swatches.
+    await tester.tap(find.byType(Slider));
+    await tester.pumpAndSettle();
+    await save(tester);
+
+    final written = File(p.join(root.path, 'scenes', 'main$sceneExtension'))
+        .readAsStringSync();
+    expect(written, contains('"sky"'));
+    expect(written, contains('"ambient"'));
+  });
+
+  testWidgets('dragging a row onto another makes it a child', (tester) async {
+    await open(tester);
+
+    // Onto the middle of the row, which is the reparent band.
+    final gesture = await tester.startGesture(tester.getCenter(row('Ground')));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(row('Props')));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Move Ground'), findsOneWidget);
+  });
+
+  testWidgets('dragging to the edge of a row reorders instead', (tester) async {
+    await open(tester);
+
+    final box = tester.getRect(rowBox('Sun'));
+    final gesture = await tester.startGesture(tester.getCenter(row('Ground')));
+    await tester.pump(const Duration(milliseconds: 200));
+    // The top sliver of the Sun row: before it, as a sibling.
+    await gesture.moveTo(Offset(box.center.dx, box.top + 2));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Reorder Ground'), findsOneWidget);
+  });
+
+  testWidgets('a thing cannot be dropped into its own child', (tester) async {
+    await open(tester);
+
+    final gesture = await tester.startGesture(tester.getCenter(row('Props')));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(row('Cube')));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // Refused before the drop, so nothing happened and nothing was said.
+    expect(find.textContaining('Move Props'), findsNothing);
+    expect(row('Props'), findsOneWidget);
+  });
+
+  testWidgets('both scenes are drawn together', (tester) async {
+    await open(tester);
+    await save(tester);
+    await menu(tester, 'Scene', 'New scene');
+
+    // The viewport counts what is on screen across every open scene.
+    expect(find.textContaining('2 scenes'), findsWidgets);
   });
 }

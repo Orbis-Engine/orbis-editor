@@ -2,32 +2,63 @@ import 'package:flutter/material.dart';
 
 import '../theme/orbis_theme.dart';
 import 'scene.dart';
+import 'workspace.dart';
 
-/// One row of the flattened tree.
-typedef OutlinerRow = ({SceneObject object, int depth, bool hasChildren});
+/// Where a dragged row would land if it were dropped now.
+enum DropKind {
+  /// Above the row it is over, as a sibling.
+  before,
 
-/// What is in the scene, as a tree.
+  /// Inside it, as a child.
+  inside,
+
+  /// Below it, as a sibling.
+  after,
+}
+
+/// Where something is being dropped.
+typedef Drop = ({String sceneId, String? parentId, int index});
+
+/// One row of the flattened tree. A null [object] is a scene's own row.
+typedef OutlinerRow = ({
+  OpenScene open,
+  SceneObject? object,
+  int depth,
+  bool hasChildren,
+});
+
+/// What is in the open scenes, as a tree.
 ///
-/// A tree rather than a list because the hierarchy is what a transform means:
-/// somebody looking for why a crate moved needs to see the thing it hangs off.
+/// Each scene is a root with its objects under it, so several can be worked on
+/// at once and it is always clear which one a thing belongs to — the question
+/// that a flat list of objects from two files cannot answer.
 class Outliner extends StatefulWidget {
   const Outliner({
     super.key,
-    required this.scene,
+    required this.workspace,
     required this.selected,
     required this.onSelect,
-    required this.onReparent,
+    required this.onSelectScene,
+    required this.onMove,
     required this.onDelete,
+    required this.onCloseScene,
   });
 
-  final EditorScene scene;
+  final Workspace workspace;
+
+  /// The selected object, or null when a scene itself is selected.
   final String? selected;
+
   final ValueChanged<String> onSelect;
 
-  /// Called with the object being moved and its new parent, null for a root.
-  final void Function(String id, String? parentId) onReparent;
+  /// Selecting a scene's own row, which also makes it the active one.
+  final ValueChanged<OpenScene> onSelectScene;
+
+  /// Called with what is being moved and where it should land.
+  final void Function(String id, Drop drop) onMove;
 
   final ValueChanged<String> onDelete;
+  final ValueChanged<OpenScene> onCloseScene;
 
   @override
   State<Outliner> createState() => _OutlinerState();
@@ -42,20 +73,66 @@ class _OutlinerState extends State<Outliner> {
   List<OutlinerRow> get _rows {
     final rows = <OutlinerRow>[];
 
-    void walk(List<SceneObject> objects, int depth) {
-      for (final object in objects) {
-        final children = widget.scene.childrenOf(object.id);
-        rows.add((
-          object: object,
-          depth: depth,
-          hasChildren: children.isNotEmpty,
-        ));
-        if (!_collapsed.contains(object.id)) walk(children, depth + 1);
+    for (final open in widget.workspace.scenes) {
+      rows.add((
+        open: open,
+        object: null,
+        depth: 0,
+        hasChildren: open.scene.roots.isNotEmpty,
+      ));
+      if (_collapsed.contains(open.id)) continue;
+
+      void walk(List<SceneObject> objects, int depth) {
+        for (final object in objects) {
+          final children = open.scene.childrenOf(object.id);
+          rows.add((
+            open: open,
+            object: object,
+            depth: depth,
+            hasChildren: children.isNotEmpty,
+          ));
+          if (!_collapsed.contains(object.id)) walk(children, depth + 1);
+        }
       }
+
+      walk(open.scene.roots, 1);
     }
 
-    walk(widget.scene.roots, 0);
     return rows;
+  }
+
+  void _toggle(String key) => setState(() {
+        if (!_collapsed.remove(key)) _collapsed.add(key);
+      });
+
+  /// Turns a drop on a row into a place in the tree.
+  Drop _placeFor(OutlinerRow row, DropKind kind) {
+    final object = row.object;
+    final scene = row.open.scene;
+
+    // Onto a scene's own row: into that scene, at the top level.
+    if (object == null) {
+      return (
+        sceneId: row.open.id,
+        parentId: null,
+        index: kind == DropKind.before ? 0 : scene.roots.length,
+      );
+    }
+
+    if (kind == DropKind.inside) {
+      return (
+        sceneId: row.open.id,
+        parentId: object.id,
+        index: scene.childrenOf(object.id).length,
+      );
+    }
+
+    final at = scene.indexOf(object.id);
+    return (
+      sceneId: row.open.id,
+      parentId: object.parentId,
+      index: kind == DropKind.before ? at : at + 1,
+    );
   }
 
   @override
@@ -63,7 +140,7 @@ class _OutlinerState extends State<Outliner> {
     final rows = _rows;
 
     return Container(
-      width: 240,
+      width: 248,
       decoration: const BoxDecoration(
         color: OrbisColors.surface,
         border: Border(right: BorderSide(color: OrbisColors.lineSoft)),
@@ -73,66 +150,50 @@ class _OutlinerState extends State<Outliner> {
         children: [
           Container(
             height: 32,
-            padding: const EdgeInsets.only(left: Space.md, right: Space.xs),
+            padding: const EdgeInsets.only(left: Space.md, right: Space.sm),
             decoration: const BoxDecoration(
               border: Border(bottom: BorderSide(color: OrbisColors.lineSoft)),
             ),
             child: Row(
               children: [
-                Text('OUTLINER', style: OrbisText.section),
+                Text('HIERARCHY', style: OrbisText.section),
                 const Spacer(),
                 Text(
-                  '${widget.scene.length}',
-                  style: OrbisText.mono.copyWith(fontSize: 11),
+                  '${widget.workspace.scenes.length} '
+                  'scene${widget.workspace.scenes.length == 1 ? '' : 's'}',
+                  style: OrbisText.mono.copyWith(fontSize: 10.5),
                 ),
-                const SizedBox(width: Space.sm),
               ],
             ),
           ),
           Expanded(
-            child: Stack(
-              children: [
-                // Under the rows: dropping in the empty space below the tree
-                // moves something out to the top level, which is otherwise
-                // only reachable by dragging onto nothing.
-                Positioned.fill(
-                  child: DragTarget<String>(
-                    onWillAcceptWithDetails: (details) =>
-                        widget.scene[details.data]?.parentId != null,
-                    onAcceptWithDetails: (details) =>
-                        widget.onReparent(details.data, null),
-                    builder: (context, candidate, _) => ColoredBox(
-                      color: candidate.isEmpty
-                          ? Colors.transparent
-                          : OrbisColors.emberWash,
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
-                ),
-                ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: Space.xs),
-                  itemCount: rows.length,
-                  itemBuilder: (context, index) {
-                    final row = rows[index];
-                    return _Row(
-                      key: ValueKey(row.object.id),
-                      row: row,
-                      scene: widget.scene,
-                      selected: row.object.id == widget.selected,
-                      collapsed: _collapsed.contains(row.object.id),
-                      onTap: () => widget.onSelect(row.object.id),
-                      onToggle: () => setState(() {
-                        if (!_collapsed.remove(row.object.id)) {
-                          _collapsed.add(row.object.id);
-                        }
-                      }),
-                      onDropOn: (id) =>
-                          widget.onReparent(id, row.object.id),
-                      onDelete: () => widget.onDelete(row.object.id),
-                    );
-                  },
-                ),
-              ],
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: Space.xs),
+              itemCount: rows.length,
+              itemBuilder: (context, index) {
+                final row = rows[index];
+                final key = row.object?.id ?? row.open.id;
+
+                return _Row(
+                  key: ValueKey('${row.open.id}/$key'),
+                  row: row,
+                  workspace: widget.workspace,
+                  selected: row.object == null
+                      ? widget.selected == null &&
+                          widget.workspace.active?.id == row.open.id
+                      : row.object!.id == widget.selected,
+                  collapsed: _collapsed.contains(key),
+                  onTap: () => row.object == null
+                      ? widget.onSelectScene(row.open)
+                      : widget.onSelect(row.object!.id),
+                  onToggle: () => _toggle(key),
+                  onDrop: (id, kind) =>
+                      widget.onMove(id, _placeFor(row, kind)),
+                  onDelete: () => row.object == null
+                      ? widget.onCloseScene(row.open)
+                      : widget.onDelete(row.object!.id),
+                );
+              },
             ),
           ),
         ],
@@ -145,22 +206,22 @@ class _Row extends StatefulWidget {
   const _Row({
     super.key,
     required this.row,
-    required this.scene,
+    required this.workspace,
     required this.selected,
     required this.collapsed,
     required this.onTap,
     required this.onToggle,
-    required this.onDropOn,
+    required this.onDrop,
     required this.onDelete,
   });
 
   final OutlinerRow row;
-  final EditorScene scene;
+  final Workspace workspace;
   final bool selected;
   final bool collapsed;
   final VoidCallback onTap;
   final VoidCallback onToggle;
-  final ValueChanged<String> onDropOn;
+  final void Function(String id, DropKind kind) onDrop;
   final VoidCallback onDelete;
 
   @override
@@ -169,97 +230,167 @@ class _Row extends StatefulWidget {
 
 class _RowState extends State<_Row> {
   bool _hovering = false;
+  DropKind? _dropping;
+
+  static const double _height = 26;
+
+  bool get _isScene => widget.row.object == null;
+
+  /// Which of the three the pointer is over.
+  ///
+  /// The edges reorder and the middle reparents, which is how every tree that
+  /// does both distinguishes them — and the reason the bands are a quarter
+  /// each rather than a third is that reparenting is the commoner intent and
+  /// deserves the bigger target.
+  DropKind _kindFor(Offset local) {
+    if (_isScene) return DropKind.inside;
+    if (local.dy < _height * 0.25) return DropKind.before;
+    if (local.dy > _height * 0.75) return DropKind.after;
+    return DropKind.inside;
+  }
 
   /// Whether this row would accept the thing being dragged.
   ///
   /// Refused before the drop rather than after: an editor that lets you drop
   /// and then shows an error has already made you do the work twice.
-  bool _accepts(String id) =>
-      id != widget.row.object.id && !widget.scene.isAncestorOf(id, widget.row.object.id);
+  bool _accepts(String id) {
+    final object = widget.row.object;
+    if (object == null) return true;
+    if (id == object.id) return false;
+
+    // Only within one scene: moving an object between scenes means moving its
+    // whole subtree between two documents, which is a different operation and
+    // not one to trigger by accident.
+    final holder = widget.workspace.sceneHolding(id);
+    if (holder == null || holder.id != widget.row.open.id) return false;
+
+    return !holder.scene.isAncestorOf(id, object.id);
+  }
 
   @override
   Widget build(BuildContext context) {
     final object = widget.row.object;
+    final name = object?.name ?? widget.row.open.title;
+    final icon = object?.icon ?? Icons.public;
+
     final colour = widget.selected
         ? OrbisColors.ember
         : (_hovering ? OrbisColors.ink : OrbisColors.inkMid);
 
-    return DragTarget<String>(
+    final row = DragTarget<String>(
       onWillAcceptWithDetails: (details) => _accepts(details.data),
-      onAcceptWithDetails: (details) => widget.onDropOn(details.data),
+      onMove: (details) {
+        final box = context.findRenderObject() as RenderBox?;
+        if (box == null) return;
+        final kind = _kindFor(box.globalToLocal(details.offset));
+        if (kind != _dropping) setState(() => _dropping = kind);
+      },
+      onLeave: (_) => setState(() => _dropping = null),
+      onAcceptWithDetails: (details) {
+        final kind = _dropping ?? DropKind.inside;
+        setState(() => _dropping = null);
+        widget.onDrop(details.data, kind);
+      },
       builder: (context, candidate, _) {
-        final dropping = candidate.isNotEmpty;
+        final dropping = candidate.isEmpty ? null : _dropping;
 
-        return Draggable<String>(
-          data: object.id,
-          dragAnchorStrategy: pointerDragAnchorStrategy,
-          feedback: _DragLabel(name: object.name, icon: object.icon),
-          child: MouseRegion(
-            cursor: SystemMouseCursors.click,
-            onEnter: (_) => setState(() => _hovering = true),
-            onExit: (_) => setState(() => _hovering = false),
-            child: GestureDetector(
-              onTap: widget.onTap,
-              child: Container(
-                height: 26,
-                padding: EdgeInsets.only(
-                  left: Space.xs + widget.row.depth * 13.0,
-                  right: Space.xs,
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => _hovering = true),
+          onExit: (_) => setState(() => _hovering = false),
+          child: GestureDetector(
+            onTap: widget.onTap,
+            child: Container(
+              height: _height,
+              padding: EdgeInsets.only(
+                left: Space.xs + widget.row.depth * 13.0,
+                right: Space.xs,
+              ),
+              decoration: BoxDecoration(
+                color: widget.selected
+                    ? OrbisColors.emberWash
+                    : (dropping == DropKind.inside
+                        ? OrbisColors.raised
+                        : (_hovering
+                            ? OrbisColors.raised
+                            : Colors.transparent)),
+                // A line for a reorder, a fill for a reparent: the two answers
+                // look different because they are different.
+                border: Border(
+                  top: BorderSide(
+                    color: dropping == DropKind.before
+                        ? OrbisColors.ember
+                        : Colors.transparent,
+                    width: 2,
+                  ),
+                  bottom: BorderSide(
+                    color: dropping == DropKind.after
+                        ? OrbisColors.ember
+                        : Colors.transparent,
+                    width: 2,
+                  ),
                 ),
-                decoration: BoxDecoration(
-                  color: widget.selected
-                      ? OrbisColors.emberWash
-                      : (_hovering ? OrbisColors.raised : Colors.transparent),
-                  border: dropping
-                      ? const Border(
-                          bottom: BorderSide(color: OrbisColors.ember, width: 2),
-                        )
-                      : null,
-                ),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 16,
-                      child: widget.row.hasChildren
-                          ? GestureDetector(
-                              onTap: widget.onToggle,
-                              child: Icon(
-                                widget.collapsed
-                                    ? Icons.chevron_right
-                                    : Icons.expand_more,
-                                size: 15,
-                                color: OrbisColors.inkDim,
-                              ),
-                            )
-                          : null,
-                    ),
-                    Icon(object.icon, size: 14, color: colour),
-                    const SizedBox(width: Space.sm),
-                    Expanded(
-                      child: Text(
-                        object.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: OrbisText.label.copyWith(
-                          color: colour,
-                          fontWeight: widget.selected
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                        ),
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    child: widget.row.hasChildren
+                        ? GestureDetector(
+                            onTap: widget.onToggle,
+                            child: Icon(
+                              widget.collapsed
+                                  ? Icons.chevron_right
+                                  : Icons.expand_more,
+                              size: 15,
+                              color: OrbisColors.inkDim,
+                            ),
+                          )
+                        : null,
+                  ),
+                  Icon(icon, size: 14, color: colour),
+                  const SizedBox(width: Space.sm),
+                  Expanded(
+                    child: Text(
+                      name,
+                      overflow: TextOverflow.ellipsis,
+                      style: OrbisText.label.copyWith(
+                        color: colour,
+                        fontWeight: _isScene || widget.selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
                       ),
                     ),
-                    if (_hovering)
-                      _RowAction(
-                        icon: Icons.close,
-                        tooltip: 'Delete ${object.name}',
-                        onTap: widget.onDelete,
-                      ),
-                  ],
-                ),
+                  ),
+                  if (_isScene && widget.row.open.neverWritten)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Text('•',
+                          style: OrbisText.mono
+                              .copyWith(color: OrbisColors.ember)),
+                    ),
+                  if (_hovering)
+                    _RowAction(
+                      icon: _isScene ? Icons.close : Icons.close,
+                      tooltip: _isScene ? 'Close $name' : 'Delete $name',
+                      onTap: widget.onDelete,
+                    ),
+                ],
               ),
             ),
           ),
         );
       },
+    );
+
+    // A scene's row is a drop target and a heading, not something to drag.
+    if (_isScene) return row;
+
+    return Draggable<String>(
+      data: object!.id,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: _DragLabel(name: name, icon: icon),
+      child: row,
     );
   }
 }

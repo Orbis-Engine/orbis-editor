@@ -6,6 +6,7 @@ import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 void main() {
+  legacyScenes();
   group('a scene survives a trip to disk and back', () {
     test('every object comes back the same', () {
       final before = EditorScene.starter();
@@ -190,6 +191,46 @@ void main() {
       final scene = sceneFor(ProjectTemplate.scene);
       expect(scene.objects.any((o) => o.kind == ObjectKind.light), isTrue);
       expect(scene.objects.any((o) => o.isDrawable), isTrue);
+    });
+  });
+}
+
+void legacyScenes() {
+  group('a scene from before transforms were stored', () {
+    test('an empty one opens as an empty scene, not an error', () {
+      final load = SceneDocument.decode(
+        '{"formatVersion": 1, "name": "main", "entities": []}',
+      );
+      expect(load.scene.length, 0);
+      expect(load.hasProblems, isFalse);
+    });
+
+    test('its objects come back, with what could not be recovered said', () {
+      final load = SceneDocument.decode('''
+{
+  "formatVersion": 1,
+  "name": "main",
+  "entities": [
+    {"name": "Sun", "components": ["DirectionalLight"]},
+    {"name": "Ground", "components": ["Transform", "MeshRenderer"]},
+    {"name": "Follow Camera", "components": ["Transform", "VirtualCamera"]}
+  ]
+}
+''');
+
+      expect(load.scene.length, 3);
+      expect(load.scene.objects[0].kind, ObjectKind.light);
+      expect(load.scene.objects[1].kind, ObjectKind.mesh);
+      expect(load.scene.objects[2].kind, ObjectKind.camera);
+      // Said plainly rather than left as a puzzle about why nothing moved.
+      expect(load.problems.single, contains('at the origin'));
+    });
+
+    test('a file with neither shape is still refused', () {
+      expect(
+        () => SceneDocument.decode('{"formatVersion": 1, "name": "main"}'),
+        throwsA(isA<SceneFormatException>()),
+      );
     });
   });
 }

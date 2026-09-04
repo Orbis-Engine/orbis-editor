@@ -16,6 +16,7 @@ import 'outliner.dart';
 import 'scene.dart';
 import 'scene_document.dart';
 import 'viewport.dart';
+import 'workspace.dart';
 
 /// The editor, once a project is open.
 ///
@@ -39,51 +40,41 @@ class EditorShell extends StatefulWidget {
 }
 
 class _EditorShellState extends State<EditorShell> {
-  late EditorScene _scene;
-  late History _history;
+  late final Workspace _workspace = Workspace(widget.project.directory);
+  late final History _history = History(_workspace);
   late final AssetTree _assets = AssetTree(widget.project.directory);
 
-  /// The file the scene came from, and goes back to. Null for a scene that has
-  /// never been written.
-  String? _scenePath;
-
-  /// Whether this scene has ever reached disk.
-  ///
-  /// Separate from the history's own idea of dirty, which only knows about
-  /// edits. A project opened with no scene file shows the starter scene, and
-  /// that scene exists nowhere — closing would lose it, so it counts as
-  /// unsaved even though nothing has been edited.
-  bool _neverWritten = false;
-
-  bool get _unsaved => _neverWritten || _history.isDirty;
-
+  /// The selected object, or null when the active scene itself is selected.
   String? _selected;
+
   bool _playing = false;
-
-  /// The viewport's camera, owned here so F can frame the selection from
-  /// anywhere and so the outliner and viewport agree about what is in view.
   OrbitCamera _camera = OrbitCamera();
-
-  /// How tall the project browser is, dragged by the bar above it.
   double _browserHeight = 190;
 
   static const _minimumBrowserHeight = 120.0;
 
+  /// Meshes already complained about, so a failure is named once rather than
+  /// on every frame of a drag.
+  final Set<String> _reportedMeshes = {};
+
+  int _nextSceneId = 0;
+
   @override
   void initState() {
     super.initState();
+    _history.addListener(_onChanged);
+    _workspace.addListener(_onChanged);
 
-    // Assigned directly rather than through _load, which disposes the history
-    // it is replacing — there is not one yet.
     final opened = _read(_defaultScenePath(), quiet: true);
-    _scene = opened.scene;
-    _history = History(_scene)..addListener(_onChanged);
-    _scenePath = opened.path;
-    _neverWritten = opened.isNew;
-    _selected = _scene.objects.isEmpty ? null : _scene.objects.last.id;
+    _workspace.add(OpenScene(
+      id: 'scene${_nextSceneId++}',
+      scene: opened.scene,
+      path: opened.path,
+      neverWritten: opened.isNew,
+    ));
+    _selected = null;
 
     if (opened.problems.isNotEmpty) {
-      // After the first frame: there is no ScaffoldMessenger to talk to yet.
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _report(opened.problems),
       );
@@ -95,20 +86,44 @@ class _EditorShellState extends State<EditorShell> {
     _history
       ..removeListener(_onChanged)
       ..dispose();
+    _workspace
+      ..removeListener(_onChanged)
+      ..dispose();
     _assets.dispose();
     super.dispose();
   }
 
   void _onChanged() => setState(() {});
 
-  /// Where a project's scene lives by default.
   String _defaultScenePath() =>
       p.join(widget.project.directory, 'scenes', 'main$sceneExtension');
 
+  /// The scene an edit goes into: the one holding the selection, or the active
+  /// one when nothing is selected.
+  OpenScene? get _current {
+    final id = _selected;
+    if (id != null) {
+      final holder = _workspace.sceneHolding(id);
+      if (holder != null) return holder;
+    }
+    return _workspace.active;
+  }
+
+  /// Whether a scene has changes that are not on disk.
+  bool _isUnsaved(OpenScene open) =>
+      open.neverWritten || _history.stampFor(open.id) != open.savedStamp;
+
+  bool get _anyUnsaved => _workspace.scenes.any(_isUnsaved);
+
+  void _run(EditorCommand command) {
+    try {
+      _history.run(command);
+    } on SceneError catch (error) {
+      _say(error.message);
+    }
+  }
+
   /// Reads a scene file without touching any state.
-  ///
-  /// A missing file is a fresh scene rather than an error, because a project
-  /// that has never been saved is an ordinary thing to open.
   ({EditorScene scene, String? path, bool isNew, List<String> problems}) _read(
     String path, {
     bool quiet = false,
@@ -117,8 +132,6 @@ class _EditorShellState extends State<EditorShell> {
     if (!file.existsSync()) {
       return (
         scene: EditorScene.starter(),
-        // Remembered anyway, so the first save writes where the project
-        // expects its scene rather than asking.
         path: path,
         isNew: true,
         problems: quiet ? const <String>[] : ['There is no scene at $path.'],
@@ -150,32 +163,35 @@ class _EditorShellState extends State<EditorShell> {
     }
   }
 
-  /// Opens a scene file in place of the one being edited.
-  void _load(String path) {
-    final opened = _read(path);
+  /// Opens a scene alongside the ones already open.
+  ///
+  /// Added rather than replacing: several scenes open at once is the point of
+  /// the hierarchy showing them as roots, and a file already open is brought
+  /// forward rather than loaded twice.
+  void _openScene(String path) {
+    final already = _workspace.openedFrom(path);
+    if (already != null) {
+      setState(() {
+        _workspace.active = already;
+        _selected = null;
+      });
+      _say('${already.title} is already open.');
+      return;
+    }
 
-    // A file that could not be read at all leaves the current scene alone —
-    // replacing it with an empty one would lose work to somebody's misclick.
+    final opened = _read(path);
     if (opened.path == null) {
       _report(opened.problems);
       return;
     }
 
-    setState(() {
-      _history
-        ..removeListener(_onChanged)
-        ..dispose();
-      _scene = opened.scene;
-      // One listener rather than a callback threaded through every panel: an
-      // edit made anywhere redraws everything that reads the scene.
-      _history = History(_scene)..addListener(_onChanged);
-      _scenePath = opened.path;
-      _neverWritten = opened.isNew;
-      _selected =
-          _scene.objects.isEmpty ? null : _scene.objects.last.id;
-      _camera = OrbitCamera();
-    });
-
+    _workspace.add(OpenScene(
+      id: 'scene${_nextSceneId++}',
+      scene: opened.scene,
+      path: opened.path,
+      neverWritten: opened.isNew,
+    ));
+    setState(() => _selected = null);
     _report(opened.problems);
   }
 
@@ -189,225 +205,140 @@ class _EditorShellState extends State<EditorShell> {
     );
   }
 
-  /// Writes the scene back to the file it came from.
+  /// Writes one scene back to the file it came from.
   ///
-  /// Synchronous on purpose. A scene file is small, and an awaited write leaves
-  /// a gap between encoding the scene and recording that it was saved — an
-  /// edit landing in that gap is not in the file, but the history would call
-  /// itself clean.
-  void _save() {
-    final path = _scenePath;
+  /// Synchronous on purpose. An awaited write leaves a gap between encoding
+  /// the scene and recording that it was saved — an edit landing in that gap
+  /// is not in the file, but the history would call itself clean.
+  void _save([OpenScene? which]) {
+    final open = which ?? _current;
+    if (open == null) return;
+
+    final path = open.path;
     if (path == null) {
-      // Nowhere to write yet, so Save becomes Save As rather than guessing.
-      _saveAs();
+      _saveAs(open);
       return;
     }
+
     try {
       final file = File(path);
       file.parent.createSync(recursive: true);
-      file.writeAsStringSync(
-        SceneDocument.encode(_scene, name: p.basenameWithoutExtension(path)),
-      );
+      file.writeAsStringSync(SceneDocument.encode(open.scene));
     } on FileSystemException catch (error) {
-      _say('Could not save: ${error.message}');
+      _say('Could not save ${open.title}: ${error.message}');
       return;
     }
 
     setState(() {
-      _scenePath = path;
-      _neverWritten = false;
+      open
+        ..neverWritten = false
+        ..savedStamp = _history.stampFor(open.id);
     });
-    _history.markSaved();
-    _say('Saved to ${_assets.relative(path)}');
+    _say('Saved ${_assets.relative(path)}');
   }
 
-  /// Names meshes the renderer could not load.
-  ///
-  /// Said once per file rather than every frame: the scene is republished on
-  /// every drag, and a failure would otherwise appear a hundred times while
-  /// somebody moves the object it belongs to.
-  final Set<String> _reportedMeshes = {};
-
-  void _reportMeshErrors(Map<String, String> errors) {
-    final fresh = [
-      for (final entry in errors.entries)
-        if (_reportedMeshes.add(entry.key)) entry,
-    ];
-    if (fresh.isEmpty) return;
-
-    final first = fresh.first;
-    _say(fresh.length == 1
-        ? '${p.basename(first.key)}: ${first.value}'
-        : '${fresh.length} meshes could not be loaded. '
-            '${p.basename(first.key)}: ${first.value}');
+  void _saveAll() {
+    for (final open in _workspace.scenes) {
+      if (_isUnsaved(open)) _save(open);
+    }
   }
 
-  /// Writes the scene somewhere new, and edits it there from then on.
-  Future<void> _saveAs() async {
+  Future<void> _saveAs([OpenScene? which]) async {
+    final open = which ?? _current;
+    if (open == null) return;
+
     final name = await promptForName(
       context,
       title: 'Save scene as',
-      initial: _scenePath == null
-          ? 'main'
-          : p.basenameWithoutExtension(_scenePath!),
+      initial: open.title,
       hint: 'Goes in scenes/, as $sceneExtension.',
       action: 'Save',
     );
-    if (!mounted) return;
+    if (!mounted || name == null || name.isEmpty) return;
 
-    final trimmed = name;
-    if (trimmed == null || trimmed.isEmpty) return;
-    if (trimmed.contains(p.separator)) {
+    if (name.contains(p.separator)) {
       _say('A scene name cannot contain a path.');
       return;
     }
 
-    final path = p.join(
-      widget.project.directory,
-      'scenes',
-      trimmed.endsWith(sceneExtension) ? trimmed : '$trimmed$sceneExtension',
-    );
-
-    // Refused rather than merged: overwriting a scene somebody else authored
-    // is not something to do on a name collision.
+    final path = _workspace.pathFor(name);
     if (File(path).existsSync() &&
-        (_scenePath == null || !p.equals(path, _scenePath!))) {
-      _say('There is already a scene called $trimmed.');
+        (open.path == null || !p.equals(path, open.path!))) {
+      _say('There is already a scene called $name.');
       return;
     }
 
-    setState(() => _scenePath = path);
-    _save();
+    setState(() => open.path = path);
+    _save(open);
   }
 
-  /// Starts an empty scene, asking about the current one first.
-  Future<void> _newScene() async {
-    if (_unsaved && !await _confirmDiscard()) return;
-
-    setState(() {
-      _history
-        ..removeListener(_onChanged)
-        ..dispose();
-      _scene = EditorScene.starter();
-      _history = History(_scene)..addListener(_onChanged);
-      // No path: the next save asks where it goes rather than overwriting
-      // whatever was open before.
-      _scenePath = null;
-      _neverWritten = true;
-      _selected = _scene.objects.isEmpty ? null : _scene.objects.last.id;
-      _camera = OrbitCamera();
-      _reportedMeshes.clear();
-    });
+  /// Adds a new empty scene to the workspace.
+  void _newScene() {
+    final name = _workspace.availableName('Untitled');
+    _workspace.add(OpenScene(
+      id: 'scene${_nextSceneId++}',
+      scene: EditorScene.starter()..name = name,
+      neverWritten: true,
+    ));
+    setState(() => _selected = null);
   }
 
-  void _say(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: OrbisColors.raised,
-        behavior: SnackBarBehavior.floating,
-        width: 460,
-        duration: const Duration(seconds: 4),
-      ),
-    );
-  }
-
-  /// Frames whatever is selected, keeping the angle the camera is already at.
-  void _frameSelection() {
-    final id = _selected;
-    if (id == null || !_scene.contains(id)) return;
-    final bounds = _scene.boundsOf(id);
-    setState(() {
-      _camera = _camera.framing(
-        centre: bounds.centre,
-        radius: bounds.radius,
-      );
-    });
-  }
-
-  /// Puts an asset into the scene.
-  void _dropAsset(String path) {
-    final kind = AssetKind.of(path);
-
-    if (kind == AssetKind.scene) {
-      _openScene(path);
-      return;
-    }
-    if (kind != AssetKind.mesh) {
-      _say('${p.basename(path)} is a ${kind.label.toLowerCase()}. '
-          'Only meshes and scenes can be dropped into a scene so far.');
-      return;
+  /// Takes a scene out of the workspace, asking first if it has changes.
+  Future<void> _closeScene(OpenScene open) async {
+    if (_isUnsaved(open)) {
+      final answer = await _confirmDiscard(open);
+      if (answer == null) return;
+      if (answer) _save(open);
     }
 
-    final object = SceneObject(
-      id: 'o${DateTime.now().microsecondsSinceEpoch}',
-      name: _uniqueName(p.basenameWithoutExtension(path)),
-      kind: ObjectKind.mesh,
-      meshAsset: _assets.relative(path),
-    );
-
-    _run(AddObject(object));
-    setState(() => _selected = object.id);
+    // The steps belonging to it go too: undoing into a scene that is no longer
+    // open would be a step that appears to do nothing.
+    _history.forget(open.id);
+    _workspace.remove(open.id);
+    setState(() => _selected = null);
   }
 
-  /// Opens a scene file, asking first if the current one has changes.
-  Future<void> _openScene(String path) async {
-    if (_unsaved && !await _confirmDiscard()) return;
-    _load(path);
-  }
-
-  Future<bool> _confirmDiscard() async {
-    final answer = await showDialog<bool>(
+  /// True to save, false to discard, null to stop.
+  Future<bool?> _confirmDiscard(OpenScene open) async {
+    final answer = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: OrbisColors.surface,
-        title: Text('Save changes first?', style: OrbisText.title),
+        title: Text('Save ${open.title} first?', style: OrbisText.title),
         content: Text(
-          'This scene has changes that have not been written to disk.',
+          'It has changes that have not been written to disk.',
           style: OrbisText.body,
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: () => Navigator.of(context).pop('cancel'),
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
+            onPressed: () => Navigator.of(context).pop('discard'),
             child: const Text('Discard'),
           ),
           TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(context).pop('save'),
             child: const Text('Save'),
           ),
         ],
       ),
     );
 
-    // Cancel means stop; Save writes and continues; Discard carries on.
-    if (answer == false) return false;
-    if (answer == true) _save();
-    return true;
-  }
-
-  /// Runs a command, and says so if the scene refuses it.
-  void _run(EditorCommand command) {
-    try {
-      _history.run(command);
-    } on SceneError catch (error) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error.message),
-          backgroundColor: OrbisColors.raised,
-          behavior: SnackBarBehavior.floating,
-          width: 380,
-        ),
-      );
-    }
+    if (answer == 'save') return true;
+    if (answer == 'discard') return false;
+    return null;
   }
 
   void _add(ObjectKind kind) {
-    final name = _uniqueName(switch (kind) {
+    final open = _current;
+    if (open == null) {
+      _say('There is no scene open to add to.');
+      return;
+    }
+
+    final name = _uniqueName(open.scene, switch (kind) {
       ObjectKind.mesh => 'Cube',
       ObjectKind.light => 'Light',
       ObjectKind.camera => 'Camera',
@@ -426,48 +357,168 @@ class _EditorShellState extends State<EditorShell> {
 
     // Added inside whatever is selected when that can hold things, which is
     // what somebody building a hierarchy means by "add" most of the time.
-    final selected = _selected == null ? null : _scene[_selected!];
+    final selected = _selected == null ? null : open.scene[_selected!];
     final parent = selected == null
         ? null
         : (selected.kind == ObjectKind.group ? selected.id : selected.parentId);
 
-    _run(AddObject(object, parentId: parent));
+    _run(AddObject(object, sceneId: open.id, parentId: parent));
     setState(() => _selected = object.id);
   }
 
-  /// A name nothing else in the scene is using.
-  String _uniqueName(String base) {
-    final taken = {for (final o in _scene.objects) o.name};
+  String _uniqueName(EditorScene scene, String base) {
+    final taken = {for (final o in scene.objects) o.name};
     if (!taken.contains(base)) return base;
     for (var i = 2;; i++) {
-      final candidate = '$base $i';
-      if (!taken.contains(candidate)) return candidate;
+      if (!taken.contains('$base $i')) return '$base $i';
     }
   }
 
   void _delete(String id) {
-    final object = _scene[id];
-    if (object == null) return;
-    _run(DeleteObject(id: id, name: object.name));
-    if (_selected == id || !_scene.contains(_selected ?? '')) {
-      setState(() => _selected = null);
-    }
+    final open = _workspace.sceneHolding(id);
+    final object = open?.scene[id];
+    if (open == null || object == null) return;
+
+    _run(DeleteObject(sceneId: open.id, id: id, name: object.name));
+    if (_selected == id) setState(() => _selected = null);
   }
 
-  void _reparent(String id, String? parentId) {
-    final object = _scene[id];
-    if (object == null || object.parentId == parentId) return;
-    _run(Reparent(
+  /// Moves an object in the tree, by reparenting, reordering, or both.
+  void _move(String id, Drop drop) {
+    final open = _workspace.sceneHolding(id);
+    final object = open?.scene[id];
+    if (open == null || object == null) return;
+
+    // Between scenes is a different operation — moving a subtree between two
+    // documents — and not one to trigger by dragging.
+    if (drop.sceneId != open.id) {
+      _say('Objects cannot be dragged between scenes yet.');
+      return;
+    }
+
+    final fromIndex = open.scene.indexOf(id);
+    var toIndex = drop.index;
+    // Removing it first shifts everything after it down by one, so an index
+    // taken from the tree as drawn is one too many when moving down.
+    if (object.parentId == drop.parentId && fromIndex < toIndex) toIndex -= 1;
+    if (object.parentId == drop.parentId && fromIndex == toIndex) return;
+
+    _run(MoveObject(
+      sceneId: open.id,
       id: id,
       name: object.name,
       from: object.parentId,
-      to: parentId,
+      to: drop.parentId,
+      fromIndex: fromIndex,
+      toIndex: toIndex,
     ));
+  }
+
+  void _reportMeshErrors(Map<String, String> errors) {
+    final fresh = [
+      for (final entry in errors.entries)
+        if (_reportedMeshes.add(entry.key)) entry,
+    ];
+    if (fresh.isEmpty) return;
+
+    final first = fresh.first;
+    _say(fresh.length == 1
+        ? '${p.basename(first.key)}: ${first.value}'
+        : '${fresh.length} meshes could not be loaded. '
+            '${p.basename(first.key)}: ${first.value}');
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: OrbisColors.raised,
+        behavior: SnackBarBehavior.floating,
+        width: 460,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _frameSelection() {
+    final id = _selected;
+    final open = _current;
+    if (open == null) return;
+
+    final bounds = id == null || !open.scene.contains(id)
+        ? open.scene.boundsOfEverything()
+        : open.scene.boundsOf(id);
+
+    setState(() {
+      _camera = _camera.framing(
+        centre: bounds.centre,
+        radius: bounds.radius,
+      );
+    });
+  }
+
+  void _dropAsset(String path) {
+    final kind = AssetKind.of(path);
+
+    if (kind == AssetKind.scene) {
+      _openScene(path);
+      return;
+    }
+    if (kind != AssetKind.mesh) {
+      _say('${p.basename(path)} is a ${kind.label.toLowerCase()}. '
+          'Only meshes and scenes can be dropped into a scene so far.');
+      return;
+    }
+
+    final open = _current;
+    if (open == null) {
+      _say('There is no scene open to add to.');
+      return;
+    }
+
+    final object = SceneObject(
+      id: 'o${DateTime.now().microsecondsSinceEpoch}',
+      name: _uniqueName(open.scene, p.basenameWithoutExtension(path)),
+      kind: ObjectKind.mesh,
+      meshAsset: _assets.relative(path),
+    );
+
+    _run(AddObject(object, sceneId: open.id));
+    setState(() => _selected = object.id);
+  }
+
+  /// Undo, then show what it changed, so a step in another scene is not
+  /// invisible.
+  void _undo() {
+    final sceneId = _history.undoSceneId;
+    _history.undo();
+    _reveal(sceneId);
+  }
+
+  void _redo() {
+    final sceneId = _history.redoSceneId;
+    _history.redo();
+    _reveal(sceneId);
+  }
+
+  void _reveal(String? sceneId) {
+    if (sceneId == null) return;
+    final open = _workspace[sceneId];
+    if (open == null) return;
+    setState(() {
+      _workspace.active = open;
+      if (_selected != null && !open.scene.contains(_selected!)) {
+        _selected = null;
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final selected = _selected == null ? null : _scene[_selected!];
+    final open = _current;
+    final selected =
+        _selected == null ? null : open?.scene[_selected!];
 
     return Shortcuts(
       shortcuts: {
@@ -490,12 +541,8 @@ class _EditorShellState extends State<EditorShell> {
       },
       child: Actions(
         actions: {
-          _UndoIntent: CallbackAction<_UndoIntent>(
-            onInvoke: (_) => _history.undo(),
-          ),
-          _RedoIntent: CallbackAction<_RedoIntent>(
-            onInvoke: (_) => _history.redo(),
-          ),
+          _UndoIntent: CallbackAction<_UndoIntent>(onInvoke: (_) => _undo()),
+          _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
           _DeleteIntent: CallbackAction<_DeleteIntent>(
             onInvoke: (_) {
               final id = _selected;
@@ -539,24 +586,36 @@ class _EditorShellState extends State<EditorShell> {
                   project: widget.project,
                   playing: _playing,
                   history: _history,
-                  dirty: _unsaved,
+                  dirty: _anyUnsaved,
                   onPlay: () => setState(() => _playing = !_playing),
                   onClose: widget.onClose,
                   onAdd: _add,
                   onSave: _save,
                   onSaveAs: _saveAs,
+                  onSaveAll: _saveAll,
                   onNewScene: _newScene,
+                  onUndo: _undo,
+                  onRedo: _redo,
                 ),
                 Expanded(
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Outliner(
-                        scene: _scene,
+                        workspace: _workspace,
                         selected: _selected,
-                        onSelect: (id) => setState(() => _selected = id),
-                        onReparent: _reparent,
+                        onSelect: (id) => setState(() {
+                          _selected = id;
+                          final holder = _workspace.sceneHolding(id);
+                          if (holder != null) _workspace.active = holder;
+                        }),
+                        onSelectScene: (open) => setState(() {
+                          _selected = null;
+                          _workspace.active = open;
+                        }),
+                        onMove: _move,
                         onDelete: _delete,
+                        onCloseScene: _closeScene,
                       ),
                       Expanded(
                         child: Column(
@@ -564,7 +623,7 @@ class _EditorShellState extends State<EditorShell> {
                           children: [
                             Expanded(
                               child: SceneViewport(
-                                scene: _scene,
+                                workspace: _workspace,
                                 camera: _camera,
                                 onCameraChanged: (camera) =>
                                     setState(() => _camera = camera),
@@ -576,8 +635,6 @@ class _EditorShellState extends State<EditorShell> {
                             ),
                             _Splitter(
                               onDrag: (delta) => setState(() {
-                                // Dragging up grows the browser, so the height
-                                // moves against the pointer.
                                 _browserHeight = (_browserHeight - delta).clamp(
                                   _minimumBrowserHeight,
                                   MediaQuery.sizeOf(context).height - 320,
@@ -598,7 +655,7 @@ class _EditorShellState extends State<EditorShell> {
                         ),
                       ),
                       Inspector(
-                        scene: _scene,
+                        open: open,
                         object: selected,
                         history: _history,
                       ),
@@ -606,14 +663,17 @@ class _EditorShellState extends State<EditorShell> {
                   ),
                 ),
                 _StatusBar(
-                  objects: _scene.length,
+                  objects: _workspace.scenes
+                      .fold(0, (total, open) => total + open.scene.length),
                   message: _history.undoLabel == null
                       ? 'Ready'
                       : 'Last change: ${_history.undoLabel}',
-                  file: _scenePath == null
-                      ? 'Unsaved scene'
-                      : _assets.relative(_scenePath!),
-                  dirty: _unsaved,
+                  file: open == null
+                      ? 'No scene'
+                      : (open.path == null
+                          ? '${open.title} (unsaved)'
+                          : _assets.relative(open.path!)),
+                  dirty: open != null && _isUnsaved(open),
                 ),
               ],
             ),
@@ -679,7 +739,10 @@ class _TopBar extends StatelessWidget {
     required this.onAdd,
     required this.onSave,
     required this.onSaveAs,
+    required this.onSaveAll,
     required this.onNewScene,
+    required this.onUndo,
+    required this.onRedo,
   });
 
   final Project project;
@@ -691,7 +754,10 @@ class _TopBar extends StatelessWidget {
   final ValueChanged<ObjectKind> onAdd;
   final VoidCallback onSave;
   final VoidCallback onSaveAs;
+  final VoidCallback onSaveAll;
   final VoidCallback onNewScene;
+  final VoidCallback onUndo;
+  final VoidCallback onRedo;
 
   @override
   Widget build(BuildContext context) {
@@ -715,6 +781,7 @@ class _TopBar extends StatelessWidget {
             dirty: dirty,
             onSave: onSave,
             onSaveAs: onSaveAs,
+            onSaveAll: onSaveAll,
             onNewScene: onNewScene,
           ),
           const SizedBox(width: Space.xs),
@@ -729,7 +796,7 @@ class _TopBar extends StatelessWidget {
                 : 'Undo ${history.undoLabel}',
             active: false,
             enabled: history.canUndo,
-            onTap: history.undo,
+            onTap: onUndo,
           ),
           const SizedBox(width: Space.xs),
           _TransportButton(
@@ -739,7 +806,7 @@ class _TopBar extends StatelessWidget {
                 : 'Redo ${history.redoLabel}',
             active: false,
             enabled: history.canRedo,
-            onTap: history.redo,
+            onTap: onRedo,
           ),
           const Spacer(),
           // Transport in the centre, where it is in every editor that has one,
@@ -927,12 +994,14 @@ class _SceneMenu extends StatelessWidget {
     required this.dirty,
     required this.onSave,
     required this.onSaveAs,
+    required this.onSaveAll,
     required this.onNewScene,
   });
 
   final bool dirty;
   final VoidCallback onSave;
   final VoidCallback onSaveAs;
+  final VoidCallback onSaveAll;
   final VoidCallback onNewScene;
 
   @override
@@ -966,6 +1035,12 @@ class _SceneMenu extends StatelessWidget {
           leadingIcon: const Icon(Icons.drive_file_move_outline,
               size: 14, color: OrbisColors.inkMid),
           child: Text('Save as…', style: OrbisText.label),
+        ),
+        MenuItemButton(
+          onPressed: onSaveAll,
+          leadingIcon: const Icon(Icons.done_all,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('Save all', style: OrbisText.label),
         ),
       ],
       builder: (context, controller, child) => OrbisButton(

@@ -167,13 +167,71 @@ class SceneError extends StateError {
 /// then one field, ordering survives it, and there is no second copy of the
 /// tree to keep in step with the first.
 class EditorScene {
-  EditorScene(List<SceneObject> objects) : _objects = objects {
+  EditorScene(
+    List<SceneObject> objects, {
+    this.name = 'Scene',
+    Color? skyColour,
+    this.ambient = 28000,
+  })  : _objects = objects,
+        skyColour = skyColour ?? const Color(0xFF1A2029) {
     for (final object in objects) {
       if (_byId.containsKey(object.id)) {
         throw SceneError('Two objects share the id "${object.id}".');
       }
       _byId[object.id] = object;
     }
+  }
+
+  /// Where an object sits among its siblings, for reordering.
+  int indexOf(String id) {
+    final object = _byId[id];
+    if (object == null) return -1;
+    return siblingsOf(object.parentId).indexWhere((o) => o.id == id);
+  }
+
+  /// The objects sharing a parent, in the order they are drawn in the tree.
+  List<SceneObject> siblingsOf(String? parentId) =>
+      [for (final o in _objects) if (o.parentId == parentId) o];
+
+  /// Moves an object to a new parent at a given position among its siblings.
+  ///
+  /// Order is the list's own order rather than a number on each object: an
+  /// index stored per object has to be renumbered on every move, and the
+  /// renumbering is what goes wrong.
+  void moveTo(String id, {String? parentId, required int index}) {
+    final object = _byId[id];
+    if (object == null) return;
+
+    if (parentId != null) {
+      if (parentId == id || isAncestorOf(id, parentId)) {
+        throw SceneError(
+          'Cannot put "${object.name}" inside itself or its own children.',
+        );
+      }
+      if (!_byId.containsKey(parentId)) return;
+    }
+
+    _objects.remove(object);
+    object.parentId = parentId;
+
+    // Placed relative to its new siblings rather than at an absolute position
+    // in the flat list, which is what makes the tree read in the right order.
+    final siblings = siblingsOf(parentId);
+    final at = index.clamp(0, siblings.length);
+    if (at >= siblings.length) {
+      // After the last sibling and everything nested under it, so it does not
+      // land in the middle of somebody else's children.
+      final last = siblings.isEmpty ? null : siblings.last;
+      final tail = last == null
+          ? null
+          : (descendantsOf(last.id).isEmpty ? last : descendantsOf(last.id).last);
+      final anchor = tail == null ? -1 : _objects.indexOf(tail);
+      _objects.insert(anchor + 1, object);
+    } else {
+      _objects.insert(_objects.indexOf(siblings[at]), object);
+    }
+
+    invalidate();
   }
 
   /// A default scene, so a new project opens on something rather than nothing.
@@ -198,6 +256,19 @@ class EditorScene {
         SceneObject(id: 'camera', name: 'Camera', kind: ObjectKind.camera,
             position: Vector3(6, 4, 8), rotation: Vector3(-20, 35, 0)),
       ]);
+
+  /// What the scene is called, which need not match its file name.
+  String name;
+
+  /// The sky, and by the same setting the light it casts.
+  ///
+  /// One property rather than two, because a backdrop that lights nothing
+  /// reads as a photograph behind the scene rather than the sky it stands
+  /// under.
+  Color skyColour;
+
+  /// How much light the sky casts, in lux.
+  double ambient;
 
   final List<SceneObject> _objects;
   final Map<String, SceneObject> _byId = {};
@@ -408,6 +479,35 @@ class EditorScene {
     return (centre: centre, radius: radius);
   }
 
+  /// What the whole scene occupies, for framing with nothing selected.
+  ({Vector3 centre, double radius}) boundsOfEverything() {
+    final roots = this.roots;
+    if (roots.isEmpty) return (centre: Vector3.zero(), radius: 4);
+
+    var minimum = Vector3.all(double.infinity);
+    var maximum = Vector3.all(double.negativeInfinity);
+    for (final root in roots) {
+      final bounds = boundsOf(root.id);
+      final low = bounds.centre - Vector3.all(bounds.radius);
+      final high = bounds.centre + Vector3.all(bounds.radius);
+      minimum = Vector3(
+        math.min(minimum.x, low.x),
+        math.min(minimum.y, low.y),
+        math.min(minimum.z, low.z),
+      );
+      maximum = Vector3(
+        math.max(maximum.x, high.x),
+        math.max(maximum.y, high.y),
+        math.max(maximum.z, high.z),
+      );
+    }
+
+    return (
+      centre: (minimum + maximum)..scale(0.5),
+      radius: math.max((maximum - minimum).length / 2, 1),
+    );
+  }
+
   /// Everything the renderer draws, viewed from [camera].
   ///
   /// The viewport's camera is passed in rather than taken from the scene's
@@ -447,6 +547,7 @@ class EditorScene {
         // number set here means what it means in Blender.
         illuminance: (light?.power ?? 1000) * 683 / 12.566370614359172,
       ),
+      sky: OrbisSky(colour: linearFromColour(skyColour), ambient: ambient),
       camera: camera,
     );
   }

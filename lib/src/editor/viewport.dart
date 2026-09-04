@@ -8,6 +8,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
 import 'scene.dart';
+import 'workspace.dart';
 
 /// Where the viewer is standing, in orbit terms.
 ///
@@ -117,7 +118,7 @@ class OrbitCamera {
 class SceneViewport extends StatefulWidget {
   const SceneViewport({
     super.key,
-    required this.scene,
+    required this.workspace,
     required this.camera,
     required this.onCameraChanged,
     this.selected,
@@ -126,7 +127,10 @@ class SceneViewport extends StatefulWidget {
     this.onMeshErrors,
   });
 
-  final EditorScene scene;
+  /// Every open scene is drawn together, the way several loaded levels sit in
+  /// one world. The sky comes from the active one, because the renderer has a
+  /// single environment and it has to belong to somewhere.
+  final Workspace workspace;
 
   /// Owned by the shell rather than here, so pressing F anywhere can frame the
   /// selection and so the view could later be saved with the scene.
@@ -155,6 +159,56 @@ class _SceneViewportState extends State<SceneViewport> {
 
   bool get _rendererAvailable =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+
+  /// What is on screen, counted across every open scene.
+  String get _summary {
+    final drawn = widget.workspace.scenes.fold(
+      0,
+      (total, open) =>
+          total + open.scene.objects.where((o) => o.isDrawable).length,
+    );
+    final scenes = widget.workspace.scenes.length;
+    return scenes == 1
+        ? '$drawn drawn'
+        : '$drawn drawn · $scenes scenes';
+  }
+
+  /// One render scene from all of them.
+  OrbisScene _combined() {
+    final active = widget.workspace.active;
+    final camera = widget.camera.toRenderCamera();
+
+    // The active scene supplies the sky and the sun; the rest contribute their
+    // geometry. Filament has one environment and one directional light, so
+    // something has to decide, and the scene being worked on is the honest
+    // choice.
+    final base = active == null
+        ? EditorScene([]).toRenderScene(camera)
+        : active.scene.toRenderScene(
+            camera,
+            projectRoot: widget.projectRoot,
+          );
+
+    final objects = <OrbisObject>[];
+    for (final open in widget.workspace.scenes) {
+      if (identical(open, active)) {
+        objects.addAll(base.objects);
+        continue;
+      }
+      objects.addAll(
+        open.scene
+            .toRenderScene(camera, projectRoot: widget.projectRoot)
+            .objects,
+      );
+    }
+
+    return OrbisScene(
+      objects: objects,
+      sun: base.sun,
+      sky: base.sky,
+      camera: camera,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -194,7 +248,7 @@ class _SceneViewportState extends State<SceneViewport> {
             child: IgnorePointer(
               child: CustomPaint(
                 painter: _SelectionPainter(
-                  scene: widget.scene,
+                  workspace: widget.workspace,
                   selected: widget.selected,
                   camera: widget.camera,
                 ),
@@ -209,7 +263,7 @@ class _SceneViewportState extends State<SceneViewport> {
               const SizedBox(width: Space.xs),
               const _ViewportChip('Shaded'),
               const SizedBox(width: Space.xs),
-              _ViewportChip('${widget.scene.objects.length} objects'),
+              _ViewportChip(_summary),
             ]),
           ),
           if (_rendererAvailable)
@@ -247,10 +301,7 @@ class _SceneViewportState extends State<SceneViewport> {
         },
         onPanEnd: (_) => _dragAnchor = null,
         child: OrbisView(
-          scene: widget.scene.toRenderScene(
-            widget.camera.toRenderCamera(),
-            projectRoot: widget.projectRoot,
-          ),
+          scene: _combined(),
           onMeshErrors: widget.onMeshErrors,
         ),
       ),
@@ -332,12 +383,12 @@ class _GridPainter extends CustomPainter {
 /// Draws a box round the selected object.
 class _SelectionPainter extends CustomPainter {
   const _SelectionPainter({
-    required this.scene,
+    required this.workspace,
     required this.selected,
     required this.camera,
   });
 
-  final EditorScene scene;
+  final Workspace workspace;
   final String? selected;
   final OrbitCamera camera;
 
@@ -360,8 +411,9 @@ class _SelectionPainter extends CustomPainter {
     final id = selected;
     if (id == null || size.isEmpty) return;
 
-    final object = scene[id];
-    if (object == null || !object.isDrawable) return;
+    final open = workspace.sceneHolding(id);
+    final object = open?.scene[id];
+    if (open == null || object == null || !object.isDrawable) return;
 
     final view = camera.toRenderCamera();
     final viewMatrix = makeViewMatrix(
@@ -376,7 +428,7 @@ class _SelectionPainter extends CustomPainter {
       1000,
     );
     final clip = projection.multiplied(viewMatrix)
-      ..multiply(scene.worldOf(id));
+      ..multiply(open.scene.worldOf(id));
 
     final points = <Offset>[];
     for (final corner in _corners) {

@@ -5,6 +5,7 @@ import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'scene.dart';
+import 'workspace.dart';
 
 /// Properties of whatever is selected.
 ///
@@ -17,21 +18,22 @@ import 'scene.dart';
 class Inspector extends StatelessWidget {
   const Inspector({
     super.key,
-    required this.scene,
+    required this.open,
     required this.object,
     required this.history,
   });
 
-  final EditorScene scene;
+  /// The scene being looked at, or null when nothing is open.
+  final OpenScene? open;
 
-  /// Null when nothing is selected, which is a state worth drawing rather than
-  /// an impossible one.
+  /// The object selected, or null when the scene itself is.
   final SceneObject? object;
 
   final History history;
 
   @override
   Widget build(BuildContext context) {
+    final open = this.open;
     final selected = object;
 
     return Container(
@@ -53,19 +55,22 @@ class Inspector extends StatelessWidget {
             child: Text('INSPECTOR', style: OrbisText.section),
           ),
           Expanded(
-            child: selected == null
+            child: open == null
                 ? Center(
-                    child: Text(
-                      'Nothing selected.',
-                      style: OrbisText.caption,
-                    ),
+                    child: Text('No scene open.', style: OrbisText.caption),
                   )
-                : _Fields(
-                    key: ValueKey(selected.id),
-                    scene: scene,
-                    object: selected,
-                    history: history,
-                  ),
+                : (selected == null
+                    ? _SceneFields(
+                        key: ValueKey('scene/${open.id}'),
+                        open: open,
+                        history: history,
+                      )
+                    : _Fields(
+                        key: ValueKey(selected.id),
+                        open: open,
+                        object: selected,
+                        history: history,
+                      )),
           ),
         ],
       ),
@@ -73,17 +78,118 @@ class Inspector extends StatelessWidget {
   }
 }
 
+/// The scene's own settings.
+///
+/// A scene is a thing with properties, not just a container — the sky and the
+/// light it casts belong to it rather than to anything in it, and there was
+/// nowhere to put them until it had a row of its own.
+class _SceneFields extends StatelessWidget {
+  const _SceneFields({
+    super.key,
+    required this.open,
+    required this.history,
+  });
+
+  final OpenScene open;
+  final History history;
+
+  @override
+  Widget build(BuildContext context) {
+    final scene = open.scene;
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: Space.sm),
+      children: [
+        _Header(
+          name: scene.name,
+          icon: Icons.public,
+          onRename: (value) {
+            if (value == scene.name) return;
+            history.run(RenameScene(
+              sceneId: open.id,
+              from: scene.name,
+              to: value,
+            ));
+          },
+          onRenameDone: history.seal,
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.sm),
+          child: Text(
+            open.path == null
+                ? 'Not saved to a file yet'
+                : open.path!.split('/').last,
+            overflow: TextOverflow.ellipsis,
+            style: OrbisText.mono.copyWith(fontSize: 11),
+          ),
+        ),
+        _ComponentSection(
+          title: 'Environment',
+          icon: Icons.wb_twilight,
+          child: Column(
+            children: [
+              ColourRow(
+                label: 'Sky',
+                value: scene.skyColour,
+                onChanged: (value) => history
+                  ..run(SetSceneSky(
+                    sceneId: open.id,
+                    fromColour: scene.skyColour,
+                    toColour: value,
+                    fromAmbient: scene.ambient,
+                    toAmbient: scene.ambient,
+                  ))
+                  ..seal(),
+              ),
+              SliderRow(
+                label: 'Ambient',
+                value: scene.ambient,
+                min: 0,
+                max: 120000,
+                unit: ' lx',
+                onChanged: (value) => history.run(SetSceneSky(
+                  sceneId: open.id,
+                  fromColour: scene.skyColour,
+                  toColour: scene.skyColour,
+                  fromAmbient: scene.ambient,
+                  toAmbient: value,
+                )),
+                onSettled: history.seal,
+              ),
+            ],
+          ),
+        ),
+        _ComponentSection(
+          title: 'Contents',
+          icon: Icons.list,
+          child: Column(
+            children: [
+              TextRow(label: 'Objects', value: '${scene.length}'),
+              TextRow(
+                label: 'Drawn',
+                value: '${scene.objects.where((o) => o.isDrawable).length}',
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _Fields extends StatelessWidget {
   const _Fields({
     super.key,
-    required this.scene,
+    required this.open,
     required this.object,
     required this.history,
   });
 
-  final EditorScene scene;
+  final OpenScene open;
   final SceneObject object;
   final History history;
+
+  EditorScene get scene => open.scene;
 
   @override
   Widget build(BuildContext context) {
@@ -97,7 +203,12 @@ class _Fields extends StatelessWidget {
           icon: object.icon,
           onRename: (value) {
             if (value == object.name) return;
-            history.run(Rename(id: object.id, from: object.name, to: value));
+            history.run(Rename(
+              sceneId: open.id,
+              id: object.id,
+              from: object.name,
+              to: value,
+            ));
           },
           onRenameDone: history.seal,
         ),
@@ -133,6 +244,7 @@ class _Fields extends StatelessWidget {
           children: [
             VectorRow(
               label: 'Position',
+              sceneId: open.id,
               object: object,
               field: TransformField.position,
               history: history,
@@ -140,6 +252,7 @@ class _Fields extends StatelessWidget {
             ),
             VectorRow(
               label: 'Rotation',
+              sceneId: open.id,
               object: object,
               field: TransformField.rotation,
               history: history,
@@ -148,6 +261,7 @@ class _Fields extends StatelessWidget {
             ),
             VectorRow(
               label: 'Scale',
+              sceneId: open.id,
               object: object,
               field: TransformField.scale,
               history: history,
@@ -171,6 +285,7 @@ class _Fields extends StatelessWidget {
               value: object.colour,
               onChanged: (value) => history
                 ..run(SetColour(
+                  sceneId: open.id,
                   id: object.id,
                   name: object.name,
                   from: object.colour,
@@ -185,6 +300,7 @@ class _Fields extends StatelessWidget {
               max: 5000,
               unit: 'W',
               onChanged: (value) => history.run(SetPower(
+                sceneId: open.id,
                 id: object.id,
                 name: object.name,
                 from: object.power,
@@ -206,6 +322,7 @@ class _Fields extends StatelessWidget {
               value: object.colour,
               onChanged: (value) => history
                 ..run(SetColour(
+                  sceneId: open.id,
                   id: object.id,
                   name: object.name,
                   from: object.colour,
@@ -222,6 +339,7 @@ class _Fields extends StatelessWidget {
                 if (wanted == object.castShadows) return;
                 history
                   ..run(SetCastShadows(
+                    sceneId: open.id,
                     id: object.id,
                     name: object.name,
                     to: wanted,
@@ -468,6 +586,7 @@ class VectorRow extends StatelessWidget {
   const VectorRow({
     super.key,
     required this.label,
+    required this.sceneId,
     required this.object,
     required this.field,
     required this.history,
@@ -477,6 +596,7 @@ class VectorRow extends StatelessWidget {
   });
 
   final String label;
+  final String sceneId;
   final SceneObject object;
   final TransformField field;
   final History history;
@@ -521,6 +641,7 @@ class VectorRow extends StatelessWidget {
                       : (moved < minimum! ? minimum! : moved);
 
                   history.run(SetTransform(
+                    sceneId: sceneId,
                     id: object.id,
                     field: field,
                     name: object.name,

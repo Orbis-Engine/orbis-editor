@@ -2,19 +2,30 @@ import 'package:flutter/foundation.dart';
 
 import 'scene.dart';
 
+/// Where a command finds the scene it belongs to.
+///
+/// Commands name a scene rather than holding one, so a scene can be closed and
+/// reopened without every step on the undo stack pointing at a dead object.
+abstract interface class SceneHost {
+  EditorScene? sceneFor(String sceneId);
+}
+
 /// One undoable change to the scene.
 ///
 /// Every edit goes through one of these. A widget that mutated the scene
 /// directly would work perfectly and be invisible to undo, which is the kind
 /// of gap nobody finds until they have lost work to it.
 abstract class EditorCommand {
+  /// Which open scene this changes.
+  String get sceneId;
+
   /// What the change is called, as it appears next to Undo. Written as the
   /// action, not the outcome: "Move Cube", so the menu reads "Undo Move Cube".
   String get label;
 
-  void apply(EditorScene scene);
+  void apply(SceneHost host);
 
-  void revert(EditorScene scene);
+  void revert(SceneHost host);
 
   /// Identifies a run of changes that should collapse into one undo step.
   ///
@@ -41,10 +52,16 @@ abstract class EditorCommand {
 ///
 /// Notifies rather than being polled, so the toolbar's Undo button and the
 /// viewport both learn about a change the same way.
+/// One stack across every open scene.
+///
+/// Global rather than one per scene: an editor where undo depends on which
+/// scene happens to be selected undoes the wrong thing exactly when somebody
+/// is moving between two of them, which is the moment they most need it to be
+/// predictable.
 class History extends ChangeNotifier {
-  History(this.scene);
+  History(this.host);
 
-  final EditorScene scene;
+  final SceneHost host;
 
   final List<EditorCommand> _done = [];
   final List<EditorCommand> _undone = [];
@@ -60,21 +77,28 @@ class History extends ChangeNotifier {
   static const int limit = 200;
 
   int _stamps = 0;
-  int _savedDepth = 0;
-  int _savedStamp = 0;
 
   /// Whether anything has changed since the last [markSaved].
   ///
   /// Undoing back to the point the file was written reads as clean again,
   /// which is what somebody who changed their mind expects.
-  bool get isDirty =>
-      _done.length != _savedDepth ||
-      (_done.isEmpty ? 0 : _done.last.stamp) != _savedStamp;
+  /// The stamp of the most recent change to one scene, or zero for none.
+  ///
+  /// What "has this scene changed since it was written" is answered with. A
+  /// scene is unchanged when the last thing done to it is the same thing that
+  /// was there when it was saved, whatever has happened to other scenes since.
+  int stampFor(String sceneId) {
+    for (var i = _done.length - 1; i >= 0; i--) {
+      if (_done[i].sceneId == sceneId) return _done[i].stamp;
+    }
+    return 0;
+  }
 
-  /// Records that the scene as it stands has been written to disk.
-  void markSaved() {
-    _savedDepth = _done.length;
-    _savedStamp = _done.isEmpty ? 0 : _done.last.stamp;
+  /// Forgets every step belonging to a scene, for when one is closed.
+  void forget(String sceneId) {
+    _done.removeWhere((command) => command.sceneId == sceneId);
+    _undone.removeWhere((command) => command.sceneId == sceneId);
+    _sealed = true;
     notifyListeners();
   }
 
@@ -95,7 +119,7 @@ class History extends ChangeNotifier {
     final key = command.mergeKey;
     if (!_sealed && key != null && _done.isNotEmpty &&
         _done.last.mergeKey == key) {
-      command.apply(scene);
+      command.apply(host);
       _done.last
         ..absorb(command)
         ..stamp = ++_stamps;
@@ -103,19 +127,14 @@ class History extends ChangeNotifier {
       return;
     }
 
-    command.apply(scene);
+    command.apply(host);
 
     // Cleared only once the command has applied without throwing. A redo stack
     // discarded by an edit that then failed would lose work for no reason.
     _undone.clear();
     command.stamp = ++_stamps;
     _done.add(command);
-    if (_done.length > limit) {
-      _done.removeAt(0);
-      // The saved point moved down with everything else. Without this, a long
-      // session would report itself clean the moment it overflowed.
-      _savedDepth = _savedDepth > 0 ? _savedDepth - 1 : 0;
-    }
+    if (_done.length > limit) _done.removeAt(0);
     _sealed = key == null;
     notifyListeners();
   }
@@ -126,7 +145,7 @@ class History extends ChangeNotifier {
   void undo() {
     if (_done.isEmpty) return;
     final command = _done.removeLast();
-    command.revert(scene);
+    command.revert(host);
     _undone.add(command);
     _sealed = true;
     notifyListeners();
@@ -135,7 +154,7 @@ class History extends ChangeNotifier {
   void redo() {
     if (_undone.isEmpty) return;
     final command = _undone.removeLast();
-    command.apply(scene);
+    command.apply(host);
     _done.add(command);
     _sealed = true;
     notifyListeners();
@@ -145,8 +164,11 @@ class History extends ChangeNotifier {
     _done.clear();
     _undone.clear();
     _sealed = true;
-    _savedDepth = 0;
-    _savedStamp = 0;
     notifyListeners();
   }
+
+  /// The scene the next undo would change, so the shell can select it.
+  String? get undoSceneId => _done.isEmpty ? null : _done.last.sceneId;
+
+  String? get redoSceneId => _undone.isEmpty ? null : _undone.last.sceneId;
 }

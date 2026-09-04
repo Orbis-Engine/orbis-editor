@@ -29,6 +29,7 @@ enum TransformField {
 /// nudging a thing into place expects.
 class SetTransform extends EditorCommand {
   SetTransform({
+    required this.sceneId,
     required this.id,
     required this.field,
     required this.name,
@@ -36,6 +37,9 @@ class SetTransform extends EditorCommand {
     required Vector3 to,
   })  : _from = from.clone(),
         _to = to.clone();
+
+  @override
+  final String sceneId;
 
   final String id;
   final TransformField field;
@@ -58,14 +62,15 @@ class SetTransform extends EditorCommand {
   }
 
   @override
-  void apply(EditorScene scene) => _set(scene, _to);
+  void apply(SceneHost host) => _set(host, _to);
 
   @override
-  void revert(EditorScene scene) => _set(scene, _from);
+  void revert(SceneHost host) => _set(host, _from);
 
-  void _set(EditorScene scene, Vector3 value) {
-    final object = scene[id];
-    if (object == null) return;
+  void _set(SceneHost host, Vector3 value) {
+    final scene = host.sceneFor(sceneId);
+    final object = scene?[id];
+    if (scene == null || object == null) return;
     field.of(object).setFrom(value);
     scene.invalidate();
   }
@@ -74,11 +79,15 @@ class SetTransform extends EditorCommand {
 /// Changes an object's colour.
 class SetColour extends EditorCommand {
   SetColour({
+    required this.sceneId,
     required this.id,
     required this.name,
     required this.from,
     required this.to,
   });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String name;
@@ -89,20 +98,24 @@ class SetColour extends EditorCommand {
   String get label => 'Recolour $name';
 
   @override
-  void apply(EditorScene scene) => scene[id]?.colour = to;
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.colour = to;
 
   @override
-  void revert(EditorScene scene) => scene[id]?.colour = from;
+  void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.colour = from;
 }
 
 /// Changes a light's power, in watts.
 class SetPower extends EditorCommand {
   SetPower({
+    required this.sceneId,
     required this.id,
     required this.name,
     required this.from,
     required this.to,
   });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String name;
@@ -123,15 +136,23 @@ class SetPower extends EditorCommand {
   }
 
   @override
-  void apply(EditorScene scene) => scene[id]?.power = to;
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.power = to;
 
   @override
-  void revert(EditorScene scene) => scene[id]?.power = from;
+  void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.power = from;
 }
 
 /// Turns shadow casting on or off.
 class SetCastShadows extends EditorCommand {
-  SetCastShadows({required this.id, required this.name, required this.to});
+  SetCastShadows({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String name;
@@ -141,15 +162,24 @@ class SetCastShadows extends EditorCommand {
   String get label => to ? 'Cast shadows from $name' : 'Stop $name casting';
 
   @override
-  void apply(EditorScene scene) => scene[id]?.castShadows = to;
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.castShadows = to;
 
   @override
-  void revert(EditorScene scene) => scene[id]?.castShadows = !to;
+  void revert(SceneHost host) =>
+      host.sceneFor(sceneId)?[id]?.castShadows = !to;
 }
 
 /// Renames an object.
 class Rename extends EditorCommand {
-  Rename({required this.id, required this.from, required this.to});
+  Rename({
+    required this.sceneId,
+    required this.id,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String from;
@@ -169,56 +199,74 @@ class Rename extends EditorCommand {
   }
 
   @override
-  void apply(EditorScene scene) => scene[id]?.name = to;
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.name = to;
 
   @override
-  void revert(EditorScene scene) => scene[id]?.name = from;
+  void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.name = from;
 }
 
-/// Moves an object to a new parent, keeping it where it looks.
+/// Moves an object: to a new parent, to a new place among its siblings, or
+/// both.
+///
+/// One command rather than two, because dragging in a tree is one gesture and
+/// the answer to "where did that go" should be one step of undo.
 ///
 /// The local transform is rewritten so the object does not jump when its
 /// parent changes. Dropping something into a folder should not move it — an
 /// editor that teleported things on reparent would be unusable for layout.
-class Reparent extends EditorCommand {
-  Reparent({
+class MoveObject extends EditorCommand {
+  MoveObject({
+    required this.sceneId,
     required this.id,
     required this.name,
     required this.from,
     required this.to,
+    required this.fromIndex,
+    required this.toIndex,
   });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String name;
   final String? from;
   final String? to;
+  final int fromIndex;
+  final int toIndex;
 
   Vector3? _oldPosition;
   Vector3? _oldRotation;
   Vector3? _oldScale;
 
   @override
-  String get label => 'Reparent $name';
+  String get label => from == to ? 'Reorder $name' : 'Move $name';
 
   @override
-  void apply(EditorScene scene) {
-    final object = scene[id];
-    if (object == null) return;
+  void apply(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    final object = scene?[id];
+    if (scene == null || object == null) return;
 
     _oldPosition = object.position.clone();
     _oldRotation = object.rotation.clone();
     _oldScale = object.scale.clone();
 
     final world = scene.worldOf(id).clone();
-    scene.reparent(id, to);
-    _placeInWorld(scene, object, world);
+    scene.moveTo(id, parentId: to, index: toIndex);
+    // Only when the parent actually changed: a reorder among siblings leaves
+    // the transform alone, and recomposing it would introduce rounding for no
+    // reason.
+    if (from != to) _placeInWorld(scene, object, world);
   }
 
   @override
-  void revert(EditorScene scene) {
-    final object = scene[id];
-    if (object == null) return;
-    scene.reparent(id, from);
+  void revert(SceneHost host) {
+    final scene = host.sceneFor(sceneId);
+    final object = scene?[id];
+    if (scene == null || object == null) return;
+
+    scene.moveTo(id, parentId: from, index: fromIndex);
     object.position.setFrom(_oldPosition ?? object.position);
     object.rotation.setFrom(_oldRotation ?? object.rotation);
     object.scale.setFrom(_oldScale ?? object.scale);
@@ -248,9 +296,88 @@ class Reparent extends EditorCommand {
   }
 }
 
+/// Changes something about the scene itself rather than a thing in it.
+class SetSceneSky extends EditorCommand {
+  SetSceneSky({
+    required this.sceneId,
+    required this.fromColour,
+    required this.toColour,
+    required this.fromAmbient,
+    required this.toAmbient,
+  });
+
+  @override
+  final String sceneId;
+
+  final Color fromColour;
+  final Color toColour;
+  final double fromAmbient;
+  double toAmbient;
+
+  @override
+  String get label => 'Change the sky';
+
+  @override
+  Object? get mergeKey => (sceneId, 'sky');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetSceneSky) toAmbient = later.toAmbient;
+  }
+
+  @override
+  void apply(SceneHost host) => _set(host, toColour, toAmbient);
+
+  @override
+  void revert(SceneHost host) => _set(host, fromColour, fromAmbient);
+
+  void _set(SceneHost host, Color colour, double ambient) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    scene
+      ..skyColour = colour
+      ..ambient = ambient;
+  }
+}
+
+/// Renames the scene itself.
+class RenameScene extends EditorCommand {
+  RenameScene({
+    required this.sceneId,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String from;
+  String to;
+
+  @override
+  String get label => 'Rename $from';
+
+  @override
+  Object? get mergeKey => (sceneId, 'sceneName');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is RenameScene) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) => host.sceneFor(sceneId)?.name = to;
+
+  @override
+  void revert(SceneHost host) => host.sceneFor(sceneId)?.name = from;
+}
+
 /// Adds an object to the scene.
 class AddObject extends EditorCommand {
-  AddObject(this.object, {this.parentId});
+  AddObject(this.object, {required this.sceneId, this.parentId});
+
+  @override
+  final String sceneId;
 
   final SceneObject object;
   final String? parentId;
@@ -259,18 +386,25 @@ class AddObject extends EditorCommand {
   String get label => 'Add ${object.name}';
 
   @override
-  void apply(EditorScene scene) {
+  void apply(SceneHost host) {
     object.parentId = parentId;
-    scene.add(object);
+    host.sceneFor(sceneId)?.add(object);
   }
 
   @override
-  void revert(EditorScene scene) => scene.remove(object.id);
+  void revert(SceneHost host) => host.sceneFor(sceneId)?.remove(object.id);
 }
 
 /// Deletes an object and everything under it.
 class DeleteObject extends EditorCommand {
-  DeleteObject({required this.id, required this.name});
+  DeleteObject({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+  });
+
+  @override
+  final String sceneId;
 
   final String id;
   final String name;
@@ -281,8 +415,9 @@ class DeleteObject extends EditorCommand {
   String get label => 'Delete $name';
 
   @override
-  void apply(EditorScene scene) => _removed = scene.remove(id);
+  void apply(SceneHost host) =>
+      _removed = host.sceneFor(sceneId)?.remove(id) ?? const [];
 
   @override
-  void revert(EditorScene scene) => scene.restore(_removed);
+  void revert(SceneHost host) => host.sceneFor(sceneId)?.restore(_removed);
 }
