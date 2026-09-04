@@ -9,6 +9,7 @@ import '../widgets/controls.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'scene.dart';
+import 'sky.dart';
 import 'workspace.dart';
 
 /// Properties of whatever is selected.
@@ -156,15 +157,63 @@ class _SceneFields extends StatelessWidget {
   final ValueChanged<SceneEntry> onLoad;
 
   /// The fog as it stands, which is every fog command's starting point.
-  ({Color colour, double density, double height, double falloff}) _fogOf(
-    EditorScene scene,
-  ) =>
-      (
+  ({
+    Color colour,
+    double density,
+    double height,
+    double falloff,
+    double mist,
+    double mistSpeed,
+  }) _fogOf(EditorScene scene) => (
         colour: scene.fogColour,
         density: scene.fogDensity,
         height: scene.fogHeight,
         falloff: scene.fogFalloff,
+        mist: scene.mist,
+        mistSpeed: scene.mistSpeed,
       );
+
+  /// The time as it stands, likewise.
+  ({double hour, bool cycle, double speed}) _timeOf(EditorScene scene) => (
+        hour: scene.timeOfDay,
+        cycle: scene.dayCycle,
+        speed: scene.hoursPerSecond,
+      );
+
+  /// One fog edit, keeping every value nobody touched.
+  void _setFog(
+    EditorScene scene, {
+    Color? colour,
+    double? density,
+    double? height,
+    double? falloff,
+    double? mist,
+    double? mistSpeed,
+    bool seal = false,
+  }) {
+    history.run(SetSceneFog(
+      sceneId: entry.id,
+      from: _fogOf(scene),
+      to: (
+        colour: colour ?? scene.fogColour,
+        density: density ?? scene.fogDensity,
+        height: height ?? scene.fogHeight,
+        falloff: falloff ?? scene.fogFalloff,
+        mist: mist ?? scene.mist,
+        mistSpeed: mistSpeed ?? scene.mistSpeed,
+      ),
+    ));
+    if (seal) history.seal();
+  }
+
+  /// An hour as a clock reads it.
+  static String _clock(double hour) {
+    final total = ((hour % 24) * 60).round();
+    final hours = (total ~/ 60) % 24;
+    final minutes = total % 60;
+    return '${hours.toString().padLeft(2, '0')}:'
+        '${minutes.toString().padLeft(2, '0')}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -240,38 +289,131 @@ class _SceneFields extends StatelessWidget {
           ),
         ),
         _ComponentSection(
+          title: 'Sky',
+          icon: Icons.schedule,
+          child: Column(
+            children: [
+              ChoiceRow(
+                label: 'Day cycle',
+                options: const ['Off', 'On'],
+                selected: scene.dayCycle ? 'On' : 'Off',
+                onSelect: (value) {
+                  final wanted = value == 'On';
+                  if (wanted == scene.dayCycle) return;
+                  history
+                    ..run(SetSceneTime(
+                      sceneId: entry.id,
+                      from: _timeOf(scene),
+                      to: (
+                        hour: scene.timeOfDay,
+                        cycle: wanted,
+                        speed: scene.hoursPerSecond,
+                      ),
+                    ))
+                    ..seal();
+                },
+              ),
+              SliderRow(
+                label: 'Time',
+                value: scene.timeOfDay,
+                min: 0,
+                max: 24,
+                decimals: 2,
+                onChanged: (value) => history.run(SetSceneTime(
+                  sceneId: entry.id,
+                  from: _timeOf(scene),
+                  to: (
+                    hour: value,
+                    cycle: scene.dayCycle,
+                    speed: scene.hoursPerSecond,
+                  ),
+                )),
+                onSettled: history.seal,
+              ),
+              TextRow(
+                label: scene.dayCycle ? 'Now' : 'Set to',
+                value: '${_clock(scene.currentTimeOfDay)}'
+                    '  ${scene.activeBody.label}',
+              ),
+              if (scene.dayCycle)
+                SliderRow(
+                  label: 'Speed',
+                  value: scene.hoursPerSecond,
+                  min: 0.05,
+                  max: 6,
+                  decimals: 2,
+                  unit: ' h/s',
+                  onChanged: (value) => history.run(SetSceneTime(
+                    sceneId: entry.id,
+                    from: _timeOf(scene),
+                    to: (
+                      hour: scene.timeOfDay,
+                      cycle: true,
+                      speed: value,
+                    ),
+                  )),
+                  onSettled: history.seal,
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    Space.md, Space.xs, Space.md, 0),
+                child: Text(
+                  scene.dayCycle
+                      ? 'The time runs from where it is set, and the light '
+                          'above the scene is whichever body is up. The scene '
+                          'keeps the hour it was saved at.'
+                      : 'The scene sits at this hour. The light above it is '
+                          'whichever body it is set to be.',
+                  style: OrbisText.caption,
+                ),
+              ),
+            ],
+          ),
+        ),
+        _ComponentSection(
           title: 'Environment',
           icon: Icons.wb_twilight,
           child: Column(
             children: [
-              ColourRow(
-                label: 'Sky',
-                value: scene.skyColour,
-                onChanged: (value) => history
-                  ..run(SetSceneSky(
+              // Under a running day these are answers rather than questions:
+              // a slider that cannot move is worse than a value that says
+              // where it came from.
+              if (scene.dayCycle) ...[
+                TextRow(label: 'Sky', value: 'From the time of day'),
+                TextRow(
+                  label: 'Ambient',
+                  value: '${scene.skyState.ambient.round()} lx',
+                ),
+              ] else ...[
+                ColourRow(
+                  label: 'Sky',
+                  value: scene.skyColour,
+                  onChanged: (value) => history
+                    ..run(SetSceneSky(
+                      sceneId: entry.id,
+                      fromColour: scene.skyColour,
+                      toColour: value,
+                      fromAmbient: scene.ambient,
+                      toAmbient: scene.ambient,
+                    ))
+                    ..seal(),
+                ),
+                SliderRow(
+                  label: 'Ambient',
+                  value: scene.ambient,
+                  min: 0,
+                  max: 120000,
+                  unit: ' lx',
+                  onChanged: (value) => history.run(SetSceneSky(
                     sceneId: entry.id,
                     fromColour: scene.skyColour,
-                    toColour: value,
+                    toColour: scene.skyColour,
                     fromAmbient: scene.ambient,
-                    toAmbient: scene.ambient,
-                  ))
-                  ..seal(),
-              ),
-              SliderRow(
-                label: 'Ambient',
-                value: scene.ambient,
-                min: 0,
-                max: 120000,
-                unit: ' lx',
-                onChanged: (value) => history.run(SetSceneSky(
-                  sceneId: entry.id,
-                  fromColour: scene.skyColour,
-                  toColour: scene.skyColour,
-                  fromAmbient: scene.ambient,
-                  toAmbient: value,
-                )),
-                onSettled: history.seal,
-              ),
+                    toAmbient: value,
+                  )),
+                  onSettled: history.seal,
+                ),
+              ],
             ],
           ),
         ),
@@ -283,18 +425,8 @@ class _SceneFields extends StatelessWidget {
               ColourRow(
                 label: 'Colour',
                 value: scene.fogColour,
-                onChanged: (value) => history
-                  ..run(SetSceneFog(
-                    sceneId: entry.id,
-                    from: _fogOf(scene),
-                    to: (
-                      colour: value,
-                      density: scene.fogDensity,
-                      height: scene.fogHeight,
-                      falloff: scene.fogFalloff,
-                    ),
-                  ))
-                  ..seal(),
+                onChanged: (value) =>
+                    _setFog(scene, colour: value, seal: true),
               ),
               SliderRow(
                 label: 'Density',
@@ -302,20 +434,11 @@ class _SceneFields extends StatelessWidget {
                 min: 0,
                 max: 0.4,
                 decimals: 3,
-                onChanged: (value) => history.run(SetSceneFog(
-                  sceneId: entry.id,
-                  from: _fogOf(scene),
-                  to: (
-                    colour: scene.fogColour,
-                    density: value,
-                    height: scene.fogHeight,
-                    falloff: scene.fogFalloff,
-                  ),
-                )),
+                onChanged: (value) => _setFog(scene, density: value),
                 onSettled: history.seal,
               ),
-              // Only worth showing once there is fog to lie anywhere. A
-              // height for nothing is two controls that do nothing.
+              // Only worth showing once there is fog for them to shape. Four
+              // controls over clear air are four things that do nothing.
               if (scene.fogDensity > 0) ...[
                 SliderRow(
                   label: 'Height',
@@ -324,16 +447,7 @@ class _SceneFields extends StatelessWidget {
                   max: 20,
                   decimals: 1,
                   unit: ' m',
-                  onChanged: (value) => history.run(SetSceneFog(
-                    sceneId: entry.id,
-                    from: _fogOf(scene),
-                    to: (
-                      colour: scene.fogColour,
-                      density: scene.fogDensity,
-                      height: value,
-                      falloff: scene.fogFalloff,
-                    ),
-                  )),
+                  onChanged: (value) => _setFog(scene, height: value),
                   onSettled: history.seal,
                 ),
                 SliderRow(
@@ -342,24 +456,38 @@ class _SceneFields extends StatelessWidget {
                   min: 0,
                   max: 2,
                   decimals: 2,
-                  onChanged: (value) => history.run(SetSceneFog(
-                    sceneId: entry.id,
-                    from: _fogOf(scene),
-                    to: (
-                      colour: scene.fogColour,
-                      density: scene.fogDensity,
-                      height: scene.fogHeight,
-                      falloff: value,
-                    ),
-                  )),
+                  onChanged: (value) => _setFog(scene, falloff: value),
                   onSettled: history.seal,
                 ),
+                SliderRow(
+                  label: 'Mist',
+                  value: scene.mist,
+                  min: 0,
+                  max: 1,
+                  decimals: 2,
+                  onChanged: (value) => _setFog(scene, mist: value),
+                  onSettled: history.seal,
+                ),
+                if (scene.mist > 0)
+                  SliderRow(
+                    label: 'Drift',
+                    value: scene.mistSpeed,
+                    min: 0.01,
+                    max: 0.6,
+                    decimals: 2,
+                    onChanged: (value) => _setFog(scene, mistSpeed: value),
+                    onSettled: history.seal,
+                  ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
                       Space.md, Space.xs, Space.md, 0),
                   child: Text(
-                    'Falloff is how fast the air clears with altitude. Zero '
-                    'fills the world evenly.',
+                    scene.mist > 0
+                        ? 'Mist is the whole layer breathing and drifting. Air '
+                            'with holes in it that move separately needs noise '
+                            'in the fog\'s own pass, which this is not.'
+                        : 'Falloff is how fast the air clears with altitude. '
+                            'Zero fills the world evenly.',
                     style: OrbisText.caption,
                   ),
                 ),
@@ -413,8 +541,8 @@ class _Fields extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: Space.sm),
       children: [
         _Header(
-          name: object.name,
-          icon: object.icon,
+          name: scene.displayNameOf(object),
+          icon: scene.displayIconOf(object),
           onRename: (value) {
             if (value == object.name) return;
             history.run(Rename(
@@ -545,11 +673,55 @@ class _Fields extends StatelessWidget {
     final isSpot = type == LightType.spot;
     final isArea = type == LightType.area;
 
+    // The one light everything is lit from above by. A renderer draws one, so
+    // being that light is a property of the scene rather than of the object:
+    // the first directional light is it.
+    final isCelestial = identical(object, scene.celestial);
+
     return _ComponentSection(
       title: 'Light',
       icon: Icons.wb_sunny_outlined,
       child: Column(
         children: [
+          if (isCelestial && isSun) ...[
+            ChoiceRow(
+              label: 'Body',
+              options: [
+                for (final body in CelestialBody.values) body.label,
+              ],
+              selected: scene.activeBody.label,
+              // Nothing to choose while the day is running: it is above the
+              // horizon or it is not, and a control that fights the clock is
+              // a control that loses.
+              onSelect: scene.dayCycle
+                  ? null
+                  : (value) {
+                      final wanted = CelestialBody.values
+                          .firstWhere((b) => b.label == value);
+                      if (wanted == object.body) return;
+                      history
+                        ..run(SetCelestialBody(
+                          sceneId: sceneId,
+                          id: object.id,
+                          name: object.name,
+                          from: object.body,
+                          to: wanted,
+                        ))
+                        ..seal();
+                    },
+            ),
+            if (scene.dayCycle)
+              Padding(
+                padding:
+                    const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+                child: Text(
+                  'The day cycle is deciding: whichever body is above the '
+                  'horizon lights the scene, and its colour, strength and '
+                  'direction come from the hour.',
+                  style: OrbisText.caption,
+                ),
+              ),
+          ],
           ChoiceRow(
             label: 'Type',
             options: _lightNames.values.toList(),

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
+
+import 'sky.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
@@ -31,6 +33,7 @@ class SceneObject {
     this.spotBlend = 0.15,
     this.sourceRadius = 0.1,
     this.sunAngle = 0.526,
+    this.body = CelestialBody.sun,
     this.castShadows = true,
     this.receiveShadows = true,
     this.visible = true,
@@ -92,6 +95,12 @@ class SceneObject {
   /// surface. What it changes is the shadow — a point source gives a knife
   /// edge, and anything with size gives a penumbra that widens with distance.
   double sourceRadius;
+
+  /// Which body a directional light is, when nothing else is deciding.
+  ///
+  /// A day cycle decides for itself — whatever is above the horizon — and this
+  /// is what the light is between cycles, or in a scene that has none.
+  CelestialBody body;
 
   /// The sun's angular diameter in degrees, which is the same idea for a light
   /// that has no position. Defaults to the real sun's.
@@ -160,6 +169,7 @@ class SceneObject {
         spotBlend: spotBlend,
         sourceRadius: sourceRadius,
         sunAngle: sunAngle,
+        body: body,
         castShadows: castShadows,
         receiveShadows: receiveShadows,
         visible: visible,
@@ -267,6 +277,11 @@ class EditorScene {
     this.fogDensity = 0,
     this.fogHeight = 0,
     this.fogFalloff = 0.2,
+    this.mist = 0,
+    this.mistSpeed = 0.08,
+    this.timeOfDay = 10,
+    this.dayCycle = false,
+    this.hoursPerSecond = 0.5,
   })  : _objects = objects,
         skyColour = skyColour ?? const Color(0xFF1A2029),
         fogColour = fogColour ?? const Color(0xFF7D8794) {
@@ -380,6 +395,86 @@ class EditorScene {
   /// A falloff of zero is fog that fills the world evenly at every altitude.
   double fogHeight;
   double fogFalloff;
+
+  /// How much the fog moves, from nothing to a great deal, and how quickly.
+  ///
+  /// Movement rather than shape: the layer swells and drifts as a whole. Real
+  /// mist has holes in it that move independently, which needs noise sampled
+  /// per pixel in the fog's own pass — this is the half that can be had for
+  /// two sine waves and no shader at all, and at a distance it is most of what
+  /// separates weather from a filter over the lens.
+  double mist;
+  double mistSpeed;
+
+  /// The hour the scene is set at, from zero to twenty-four.
+  ///
+  /// What is authored, not what is showing: with a cycle running, this is
+  /// where the day starts from and [currentTimeOfDay] is where it has got to.
+  /// Keeping them apart means a cycle left running does not quietly rewrite
+  /// the scene somebody saved.
+  double timeOfDay;
+
+  /// Whether the day runs on its own, and how fast.
+  ///
+  /// Off, the scene sits at its hour and the body above it is whichever one
+  /// the light says it is. On, the hour advances and the sky decides.
+  bool dayCycle;
+  double hoursPerSecond;
+
+  /// Seconds since the editor started animating this scene.
+  ///
+  /// Not saved, and not part of the document: it is the editor's clock, and a
+  /// scene reopened tomorrow should be where it was left rather than wherever
+  /// the ticker had got to.
+  double clock = 0;
+
+  /// Whether anything here moves without somebody moving it.
+  bool get isAnimated => dayCycle || mist > 0;
+
+  /// The hour the scene is showing, which is the authored one until a cycle
+  /// starts carrying it forward.
+  double get currentTimeOfDay =>
+      dayCycle ? (timeOfDay + clock * hoursPerSecond) % 24 : timeOfDay;
+
+  /// The sky at that hour.
+  SkyState get skyState => DayCycle.at(currentTimeOfDay);
+
+  /// The light everything is lit from above by, if there is one.
+  ///
+  /// The first directional light in the scene. A renderer draws one, so a
+  /// second is a light that would be quietly ignored — and this is where the
+  /// choice of which is made rather than left to chance.
+  SceneObject? get celestial {
+    for (final object in _objects) {
+      if (object.kind == ObjectKind.light &&
+          object.lightType == LightType.sun) {
+        return object;
+      }
+    }
+    return null;
+  }
+
+  /// Which body is up: the cycle's, or the one the light was told to be.
+  CelestialBody get activeBody =>
+      dayCycle ? skyState.body : (celestial?.body ?? CelestialBody.sun);
+
+  /// What an object is called on screen.
+  ///
+  /// A celestial light that still has a body's name for a name follows the
+  /// body, so a scene that runs into the night says Moon in the tree without
+  /// anybody editing the document. Give it a name of your own and it keeps
+  /// that instead — a rename is somebody saying they want it called that.
+  String displayNameOf(SceneObject object) {
+    if (!identical(object, celestial)) return object.name;
+    final named = CelestialBody.values.any((b) => b.label == object.name);
+    return named ? activeBody.label : object.name;
+  }
+
+  /// The icon that goes with that name.
+  IconData displayIconOf(SceneObject object) =>
+      identical(object, celestial) && activeBody == CelestialBody.moon
+          ? Icons.nightlight_outlined
+          : object.icon;
 
   final List<SceneObject> _objects;
   final Map<String, SceneObject> _byId = {};
@@ -647,6 +742,10 @@ class EditorScene {
   /// project so a scene file survives the folder being moved or shared, and
   /// have to be absolute by the time the renderer opens them.
   OrbisScene toRenderScene(OrbisCamera camera, {String? projectRoot}) {
+    final sky = skyState;
+    final driven = dayCycle;
+    final lit = celestial;
+
     return OrbisScene(
       objects: [
         for (final object in _objects)
@@ -669,14 +768,50 @@ class EditorScene {
           if (object.kind == ObjectKind.light && isShown(object.id))
             _lightFor(object),
       ],
-      sky: OrbisSky(colour: linearFromColour(skyColour), ambient: ambient),
-      fog: OrbisFog(
+      sky: OrbisSky(
+        colour: linearFromColour(driven ? sky.skyColour : skyColour),
+        ambient: driven ? sky.ambient : ambient,
+        // Nothing to draw a disk for if the scene has no light above it, and
+        // one nobody can see should not appear in the sky either.
+        showBody: lit != null && isShown(lit.id),
+      ),
+      fog: _fogNow(),
+      camera: driven
+          ? camera.copyWith(
+              aperture: sky.exposure.aperture,
+              shutterSpeed: sky.exposure.shutterSpeed,
+              sensitivity: sky.exposure.sensitivity,
+            )
+          : camera,
+    );
+  }
+
+  /// The fog as it stands this instant, with whatever movement is in it.
+  ///
+  /// Two waves at rates that do not divide into each other, so the layer never
+  /// returns to exactly where it was. One wave is a pulse, and a pulse reads
+  /// as a fault rather than as weather.
+  OrbisFog _fogNow() {
+    if (mist == 0) {
+      return OrbisFog(
         colour: linearFromColour(fogColour),
         density: fogDensity,
         height: fogHeight,
         heightFalloff: fogFalloff,
-      ),
-      camera: camera,
+      );
+    }
+
+    final phase = clock * mistSpeed * 2 * math.pi;
+    final swell = math.sin(phase);
+    final drift = math.sin(phase * 0.63 + 1.3);
+
+    return OrbisFog(
+      colour: linearFromColour(fogColour),
+      // Never below zero, or the fog would blink out at the bottom of every
+      // breath instead of thinning.
+      density: math.max(0, fogDensity * (1 + 0.45 * mist * swell)),
+      height: fogHeight + 1.8 * mist * drift,
+      heightFalloff: fogFalloff,
     );
   }
 
@@ -689,10 +824,17 @@ class EditorScene {
   OrbisLight _lightFor(SceneObject object) {
     final world = worldOf(object.id);
 
+    // A day cycle owns the one light everything is lit from above by: where it
+    // is, what colour it is and how strong. The object keeps what it was
+    // authored with, so turning the cycle off puts it back rather than leaving
+    // it wherever the clock stopped.
+    final driven = dayCycle && identical(object, celestial);
+    final sky = driven ? skyState : null;
+
     final described = Light(
       type: object.lightType,
-      color: linearFromColour(object.colour),
-      power: object.power,
+      color: linearFromColour(sky?.lightColour ?? object.colour),
+      power: sky?.power ?? object.power,
       radius: object.sourceRadius,
       spotSize: object.spotSize,
       spotBlend: object.spotBlend,
@@ -709,8 +851,14 @@ class EditorScene {
 
     // Down the local -Z axis, which is where a light points: the same
     // convention as a camera, so a light parented to a rig turns with it.
-    final direction = world.getRotation() * Vector3(0, 0, -1)
-      ..normalize();
+    final direction = sky?.direction ??
+        (world.getRotation() * Vector3(0, 0, -1)
+          ..normalize());
+
+    // What tells a sun from a moon at a glance, once both are white discs of
+    // the same width: a sun is wrapped in glare and a moon is not.
+    final body = driven ? sky!.body : object.body;
+    final isMoon = body == CelestialBody.moon;
 
     return OrbisLight(
       key: object.renderKey,
@@ -731,6 +879,8 @@ class EditorScene {
       outerConeAngle: light.outerConeAngle,
       sunAngularRadius: light.sunAngularRadius,
       sourceRadius: light.sourceRadius,
+      haloSize: isMoon ? 3 : 12,
+      haloFalloff: isMoon ? 240 : 70,
       castShadows: light.castShadows,
     );
   }

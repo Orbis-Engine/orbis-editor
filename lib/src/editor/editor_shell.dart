@@ -953,6 +953,11 @@ class _EditorShellState extends State<EditorShell> {
                                 onDropAsset: _dropAsset,
                                 projectRoot: widget.project.directory,
                                 onSceneNotes: _reportSceneNotes,
+                                // The viewport owns the clock; this is how
+                                // the tree and the inspector hear about it.
+                                onClock: () {
+                                  if (mounted) setState(() {});
+                                },
                               ),
                             ),
                             _Splitter(

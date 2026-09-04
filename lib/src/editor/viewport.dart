@@ -1,8 +1,9 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -125,6 +126,7 @@ class SceneViewport extends StatefulWidget {
     this.onDropAsset,
     this.projectRoot,
     this.onSceneNotes,
+    this.onClock,
   });
 
   /// Only the loaded scene is drawn. The others are names and paths until
@@ -151,12 +153,84 @@ class SceneViewport extends StatefulWidget {
   /// give: a mesh that would not load, a light it has no room to shade.
   final ValueChanged<Map<String, String>>? onSceneNotes;
 
+  /// Called a few times a second while a scene is animating, so the panels
+  /// that are not the viewport can keep up.
+  ///
+  /// A few, not sixty: the tree and the inspector show the hour and the name
+  /// of whatever is in the sky, and those change slowly enough to read. The
+  /// viewport draws every frame; the rest of the editor does not have to.
+  final VoidCallback? onClock;
+
   @override
   State<SceneViewport> createState() => _SceneViewportState();
 }
 
-class _SceneViewportState extends State<SceneViewport> {
+class _SceneViewportState extends State<SceneViewport>
+    with SingleTickerProviderStateMixin {
   Offset? _dragAnchor;
+
+  /// Drives anything in the scene that moves on its own — a day running, mist
+  /// drifting.
+  ///
+  /// It lives here rather than in the shell so that a running clock repaints
+  /// the viewport and nothing else. A ticker at the top would rebuild the
+  /// outliner, the inspector and the browser sixty times a second to animate
+  /// a sky none of them draw.
+  late final Ticker _clock = createTicker(_tick);
+
+  /// Where the clock had got to when it was last stopped, so pausing and
+  /// starting again does not jump the sky back to the beginning.
+  Duration _elapsed = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncClock();
+  }
+
+  @override
+  void didUpdateWidget(SceneViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A scene loaded, unloaded, or had its cycle switched on or off.
+    _syncClock();
+  }
+
+  @override
+  void dispose() {
+    _clock.dispose();
+    super.dispose();
+  }
+
+  /// Runs the clock only while something is actually moving.
+  ///
+  /// A ticker that never stops is a viewport that republishes sixty times a
+  /// second to draw a scene that has not changed, and on a laptop that is a
+  /// fan spinning up to animate nothing.
+  void _syncClock() {
+    final scene = widget.workspace.loaded?.scene;
+    final wanted = scene != null && scene.isAnimated;
+    if (wanted == _clock.isActive) return;
+    if (wanted) {
+      _clock.start();
+    } else {
+      _clock.stop();
+    }
+  }
+
+  void _tick(Duration elapsed) {
+    final scene = widget.workspace.loaded?.scene;
+    if (scene == null) return;
+    _elapsed = elapsed;
+    setState(() => scene.clock = _elapsed.inMicroseconds / 1e6);
+
+    if (elapsed - _lastTold >= _tellInterval) {
+      _lastTold = elapsed;
+      widget.onClock?.call();
+    }
+  }
+
+  Duration _lastTold = Duration.zero;
+  static const Duration _tellInterval = Duration(milliseconds: 250);
 
   bool get _rendererAvailable =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;

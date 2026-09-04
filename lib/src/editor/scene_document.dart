@@ -5,6 +5,7 @@ import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'scene.dart';
+import 'sky.dart';
 
 /// The extension a scene file carries.
 const String sceneExtension = '.oscene';
@@ -68,6 +69,16 @@ abstract final class SceneDocument {
         'density': scene.fogDensity,
         'height': scene.fogHeight,
         'falloff': scene.fogFalloff,
+        'mist': scene.mist,
+        'mistSpeed': scene.mistSpeed,
+      },
+      // The hour is what the scene was authored at, not wherever a running
+      // cycle had carried it to. A clock left going should not rewrite
+      // somebody's scene every time it is saved.
+      'time': {
+        'hour': scene.timeOfDay,
+        'cycle': scene.dayCycle,
+        'hoursPerSecond': scene.hoursPerSecond,
       },
       'objects': [
         for (final object in scene.objects) objectToJson(object),
@@ -94,9 +105,10 @@ abstract final class SceneDocument {
             'spotSize': object.spotSize,
             'spotBlend': object.spotBlend,
           },
-          if (object.lightType == LightType.sun)
-            'sunAngle': object.sunAngle
-          else
+          if (object.lightType == LightType.sun) ...{
+            'sunAngle': object.sunAngle,
+            'body': object.body.name,
+          } else
             'sourceRadius': object.sourceRadius,
         },
         if (object.isDrawable) ...{
@@ -158,6 +170,11 @@ abstract final class SceneDocument {
       power = power / (4 * 3.141592653589793);
     }
 
+    final body = CelestialBody.values
+            .cast<CelestialBody?>()
+            .firstWhere((b) => b!.name == entry['body'], orElse: () => null) ??
+        CelestialBody.sun;
+
     return SceneObject(
       id: id,
       name: entry['name'] is String ? entry['name']! as String : id,
@@ -173,6 +190,7 @@ abstract final class SceneDocument {
       spotBlend: number('spotBlend', 0.15),
       sourceRadius: number('sourceRadius', 0.1),
       sunAngle: number('sunAngle', 0.526),
+      body: body,
       castShadows: flag('castShadows'),
       receiveShadows: flag('receiveShadows'),
       visible: flag('visible'),
@@ -297,6 +315,13 @@ abstract final class SceneDocument {
         fogDensity: _fogNumber(parsed, 'density', 0),
         fogHeight: _fogNumber(parsed, 'height', 0),
         fogFalloff: _fogNumber(parsed, 'falloff', 0.2),
+        mist: _fogNumber(parsed, 'mist', 0),
+        mistSpeed: _fogNumber(parsed, 'mistSpeed', 0.08),
+        timeOfDay: _timeNumber(parsed, 'hour', 10),
+        dayCycle: _timeField(parsed, 'cycle') is bool
+            ? _timeField(parsed, 'cycle')! as bool
+            : false,
+        hoursPerSecond: _timeNumber(parsed, 'hoursPerSecond', 0.5),
       ),
       name: name,
       problems: problems,
@@ -370,6 +395,21 @@ abstract final class SceneDocument {
     double fallback,
   ) {
     final value = _fogField(parsed, key);
+    return value is num ? value.toDouble() : fallback;
+  }
+
+  /// One field of the time block, or null when a file predates having one.
+  static Object? _timeField(Map<String, Object?> parsed, String key) {
+    final time = parsed['time'];
+    return time is Map<String, Object?> ? time[key] : null;
+  }
+
+  static double _timeNumber(
+    Map<String, Object?> parsed,
+    String key,
+    double fallback,
+  ) {
+    final value = _timeField(parsed, key);
     return value is num ? value.toDouble() : fallback;
   }
 

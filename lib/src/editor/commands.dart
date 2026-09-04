@@ -4,6 +4,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'history.dart';
 import 'scene.dart';
+import 'sky.dart';
 
 /// Which of an object's three vectors an edit is touching.
 enum TransformField {
@@ -486,10 +487,24 @@ class SetSceneFog extends EditorCommand {
   @override
   final String sceneId;
 
-  final ({Color colour, double density, double height, double falloff}) from;
+  final ({
+    Color colour,
+    double density,
+    double height,
+    double falloff,
+    double mist,
+    double mistSpeed,
+  }) from;
 
   /// Not final: a merged run of drags rewrites where it ends up.
-  ({Color colour, double density, double height, double falloff}) to;
+  ({
+    Color colour,
+    double density,
+    double height,
+    double falloff,
+    double mist,
+    double mistSpeed,
+  }) to;
 
   @override
   String get label => 'Set fog';
@@ -510,7 +525,14 @@ class SetSceneFog extends EditorCommand {
 
   void _write(
     SceneHost host,
-    ({Color colour, double density, double height, double falloff}) values,
+    ({
+      Color colour,
+      double density,
+      double height,
+      double falloff,
+      double mist,
+      double mistSpeed,
+    }) values,
   ) {
     final scene = host.sceneFor(sceneId);
     if (scene == null) return;
@@ -518,7 +540,84 @@ class SetSceneFog extends EditorCommand {
     scene.fogDensity = values.density;
     scene.fogHeight = values.height;
     scene.fogFalloff = values.falloff;
+    scene.mist = values.mist;
+    scene.mistSpeed = values.mistSpeed;
   }
+}
+
+/// Changes the hour a scene is set at, and whether that hour advances.
+class SetSceneTime extends EditorCommand {
+  SetSceneTime({
+    required this.sceneId,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final ({double hour, bool cycle, double speed}) from;
+
+  /// Not final: a merged run of drags rewrites where it ends up.
+  ({double hour, bool cycle, double speed}) to;
+
+  @override
+  String get label => from.cycle != to.cycle
+      ? (to.cycle ? 'Start the day' : 'Stop the day')
+      : 'Set the time';
+
+  @override
+  Object? get mergeKey => (sceneId, 'time');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetSceneTime) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) => _write(host, to);
+
+  @override
+  void revert(SceneHost host) => _write(host, from);
+
+  void _write(SceneHost host, ({double hour, bool cycle, double speed}) v) {
+    final scene = host.sceneFor(sceneId);
+    if (scene == null) return;
+    scene.timeOfDay = v.hour;
+    scene.dayCycle = v.cycle;
+    scene.hoursPerSecond = v.speed;
+    // A cycle that is starting begins at the hour it was set to rather than
+    // wherever the clock had got to before it was last stopped.
+    scene.clock = 0;
+  }
+}
+
+/// Switches a light between being the sun and being the moon.
+class SetCelestialBody extends EditorCommand {
+  SetCelestialBody({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  final CelestialBody from;
+  final CelestialBody to;
+
+  @override
+  String get label => 'Make $name the ${to.label.toLowerCase()}';
+
+  @override
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.body = to;
+
+  @override
+  void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.body = from;
 }
 
 class RenameScene extends EditorCommand {

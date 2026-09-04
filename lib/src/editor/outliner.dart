@@ -318,9 +318,16 @@ class _RowState extends State<_Row> {
   Widget build(BuildContext context) {
     final object = widget.row.object;
     final entry = widget.row.entry;
-    final name = object?.name ?? entry.title;
-    final icon = object?.icon
-        ?? (_isLoaded ? Icons.public : Icons.public_off);
+    final scene = entry.scene;
+
+    // Through the scene rather than off the object, so a light that follows
+    // the sky says Moon here at the same moment the viewport goes dark.
+    final name = object == null
+        ? entry.title
+        : (scene?.displayNameOf(object) ?? object.name);
+    final icon = object == null
+        ? (_isLoaded ? Icons.public : Icons.public_off)
+        : (scene?.displayIconOf(object) ?? object.icon);
 
     final colour = widget.selected
         ? OrbisColors.ember

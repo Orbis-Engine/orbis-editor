@@ -157,6 +157,148 @@ void main() {
     });
   });
 
+  group('a scene with a day running', () {
+    EditorScene withSun({double hour = 12, bool cycle = true}) => EditorScene(
+          [
+            SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light),
+            SceneObject(id: 'cube', name: 'Cube', kind: ObjectKind.mesh),
+          ],
+          timeOfDay: hour,
+          dayCycle: cycle,
+        );
+
+    test('the hour points the light, not the light\'s own rotation', () {
+      final scene = withSun(hour: 12);
+      // Rotated to point sideways, which the cycle is expected to overrule.
+      scene['sun']!.rotation.setValues(0, 90, 0);
+      scene.invalidate();
+
+      final light =
+          scene.toRenderScene(OrbitCamera().toRenderCamera()).lights.single;
+      expect(light.direction.y, lessThan(-0.85));
+    });
+
+    test('with the cycle off the light keeps what it was authored with', () {
+      final scene = withSun(hour: 12, cycle: false);
+      final light =
+          scene.toRenderScene(OrbitCamera().toRenderCamera()).lights.single;
+
+      // Unrotated, which is straight down the view axis rather than down from
+      // the sky. Turning the cycle off puts the scene back the way it was.
+      expect(light.direction.z, closeTo(-1, 1e-9));
+    });
+
+    test('the camera opens up when the scene runs into the night', () {
+      final day = withSun(hour: 12)
+          .toRenderScene(OrbitCamera().toRenderCamera());
+      final night = withSun(hour: 0)
+          .toRenderScene(OrbitCamera().toRenderCamera());
+
+      expect(night.camera.sensitivity, greaterThan(day.camera.sensitivity));
+      expect(night.camera.aperture, lessThan(day.camera.aperture));
+    });
+
+    test('the sky is the scene\'s own until the cycle takes it over', () {
+      final held = withSun(cycle: false)
+        ..skyColour = const Color(0xFF123456);
+      final driven = withSun(hour: 12)
+        ..skyColour = const Color(0xFF123456);
+
+      final camera = OrbitCamera().toRenderCamera();
+      expect(held.toRenderScene(camera).sky.colour.x,
+          EditorScene.linearFromColour(const Color(0xFF123456)).x);
+      expect(driven.toRenderScene(camera).sky.colour.x,
+          isNot(EditorScene.linearFromColour(const Color(0xFF123456)).x));
+    });
+
+    test('the light is named for whatever is above the horizon', () {
+      final scene = withSun(hour: 12);
+      expect(scene.displayNameOf(scene['sun']!), 'Sun');
+
+      scene.timeOfDay = 0;
+      expect(scene.displayNameOf(scene['sun']!), 'Moon');
+    });
+
+    test('a light somebody has named keeps its name', () {
+      final scene = withSun(hour: 0);
+      scene['sun']!.name = 'Key light';
+      expect(scene.displayNameOf(scene['sun']!), 'Key light');
+    });
+
+    test('only the light above the scene follows the sky', () {
+      final scene = withSun(hour: 0);
+      scene.add(SceneObject(
+        id: 'lamp',
+        name: 'Sun',
+        kind: ObjectKind.light,
+        lightType: LightType.point,
+      ));
+
+      // Named the same and of the same mind about it, but it is not the one
+      // lighting the scene from above, so it is left alone.
+      expect(scene.displayNameOf(scene['lamp']!), 'Sun');
+    });
+
+    test('the clock is where the day has got to, not where it was saved', () {
+      final scene = withSun(hour: 6)..hoursPerSecond = 1;
+      scene.clock = 4;
+
+      expect(scene.currentTimeOfDay, closeTo(10, 1e-9));
+      // The authored hour is untouched, so saving does not record wherever a
+      // clock left running happened to reach.
+      expect(scene.timeOfDay, 6);
+    });
+
+    test('a scene with nothing moving does not ask to be animated', () {
+      expect(withSun(cycle: false).isAnimated, isFalse);
+      expect(withSun().isAnimated, isTrue);
+      expect((withSun(cycle: false)..mist = 0.5).isAnimated, isTrue);
+    });
+  });
+
+  group('mist', () {
+    EditorScene foggy({double mist = 0.6}) => EditorScene(
+          [],
+          fogDensity: 0.1,
+          fogHeight: 0,
+          mist: mist,
+        )..mistSpeed = 0.5;
+
+    test('the layer moves as the clock does', () {
+      final scene = foggy();
+      final camera = OrbitCamera().toRenderCamera();
+
+      final first = scene.toRenderScene(camera).fog;
+      scene.clock = 0.9;
+      final later = scene.toRenderScene(camera).fog;
+
+      expect(later.density, isNot(closeTo(first.density, 1e-6)));
+      expect(later.height, isNot(closeTo(first.height, 1e-6)));
+    });
+
+    test('still air stays exactly where it was put', () {
+      final scene = foggy(mist: 0);
+      final camera = OrbitCamera().toRenderCamera();
+
+      final first = scene.toRenderScene(camera).fog;
+      scene.clock = 12.5;
+      final later = scene.toRenderScene(camera).fog;
+
+      expect(later.density, first.density);
+      expect(later.height, first.height);
+    });
+
+    test('it thins and thickens without ever blinking out', () {
+      final scene = foggy(mist: 1);
+      final camera = OrbitCamera().toRenderCamera();
+
+      for (var step = 0; step < 400; step++) {
+        scene.clock = step * 0.05;
+        expect(scene.toRenderScene(camera).fog.density, greaterThan(0));
+      }
+    });
+  });
+
   group('the orbit camera', () {
     test('stops short of the poles, where the view matrix collapses', () {
       // Far more drag than anyone would apply in one gesture.
