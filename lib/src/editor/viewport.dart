@@ -127,9 +127,8 @@ class SceneViewport extends StatefulWidget {
     this.onMeshErrors,
   });
 
-  /// Every open scene is drawn together, the way several loaded levels sit in
-  /// one world. The sky comes from the active one, because the renderer has a
-  /// single environment and it has to belong to somewhere.
+  /// Only the loaded scene is drawn. The others are names and paths until
+  /// somebody opens them.
   final Workspace workspace;
 
   /// Owned by the shell rather than here, so pressing F anywhere can frame the
@@ -160,54 +159,11 @@ class _SceneViewportState extends State<SceneViewport> {
   bool get _rendererAvailable =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
-  /// What is on screen, counted across every open scene.
+  /// What is on screen.
   String get _summary {
-    final drawn = widget.workspace.scenes.fold(
-      0,
-      (total, open) =>
-          total + open.scene.objects.where((o) => o.isDrawable).length,
-    );
-    final scenes = widget.workspace.scenes.length;
-    return scenes == 1
-        ? '$drawn drawn'
-        : '$drawn drawn · $scenes scenes';
-  }
-
-  /// One render scene from all of them.
-  OrbisScene _combined() {
-    final active = widget.workspace.active;
-    final camera = widget.camera.toRenderCamera();
-
-    // The active scene supplies the sky and the sun; the rest contribute their
-    // geometry. Filament has one environment and one directional light, so
-    // something has to decide, and the scene being worked on is the honest
-    // choice.
-    final base = active == null
-        ? EditorScene([]).toRenderScene(camera)
-        : active.scene.toRenderScene(
-            camera,
-            projectRoot: widget.projectRoot,
-          );
-
-    final objects = <OrbisObject>[];
-    for (final open in widget.workspace.scenes) {
-      if (identical(open, active)) {
-        objects.addAll(base.objects);
-        continue;
-      }
-      objects.addAll(
-        open.scene
-            .toRenderScene(camera, projectRoot: widget.projectRoot)
-            .objects,
-      );
-    }
-
-    return OrbisScene(
-      objects: objects,
-      sun: base.sun,
-      sky: base.sky,
-      camera: camera,
-    );
+    final scene = widget.workspace.loaded?.scene;
+    if (scene == null) return 'No scene';
+    return '${scene.objects.where((o) => o.isDrawable).length} drawn';
   }
 
   @override
@@ -224,58 +180,59 @@ class _SceneViewportState extends State<SceneViewport> {
         onWillAcceptWithDetails: (_) => widget.onDropAsset != null,
         onAcceptWithDetails: (details) => widget.onDropAsset?.call(details.data),
         builder: (context, candidate, _) => Stack(
-        children: [
-          Positioned.fill(
-            child: _rendererAvailable ? _buildSurface() : const _Placeholder(),
-          ),
-          if (candidate.isNotEmpty)
+          children: [
+            Positioned.fill(
+              child:
+                  _rendererAvailable ? _buildSurface() : const _Placeholder(),
+            ),
+            if (candidate.isNotEmpty)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: OrbisColors.emberWash,
+                      border: Border.all(color: OrbisColors.ember, width: 2),
+                      borderRadius: BorderRadius.circular(Radii.panel),
+                    ),
+                  ),
+                ),
+              ),
+            // Drawn in Flutter over the texture rather than as a render pass:
+            // an outline pass in Filament is a real piece of work, and a box
+            // projected with the same camera is honest about where the object
+            // is without pretending to be more than it is.
             Positioned.fill(
               child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: OrbisColors.emberWash,
-                    border: Border.all(color: OrbisColors.ember, width: 2),
-                    borderRadius: BorderRadius.circular(Radii.panel),
+                child: CustomPaint(
+                  painter: _SelectionPainter(
+                    workspace: widget.workspace,
+                    selected: widget.selected,
+                    camera: widget.camera,
                   ),
                 ),
               ),
             ),
-          // Drawn in Flutter over the texture rather than as a render pass:
-          // an outline pass in Filament is a real piece of work, and a box
-          // projected with the same camera is honest about where the object
-          // is without pretending to be more than it is.
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _SelectionPainter(
-                  workspace: widget.workspace,
-                  selected: widget.selected,
-                  camera: widget.camera,
+            Positioned(
+              left: Space.md,
+              top: Space.md,
+              child: Row(children: [
+                const _ViewportChip('Perspective'),
+                const SizedBox(width: Space.xs),
+                const _ViewportChip('Shaded'),
+                const SizedBox(width: Space.xs),
+                _ViewportChip(_summary),
+              ]),
+            ),
+            if (_rendererAvailable)
+              const Positioned(
+                right: Space.md,
+                bottom: Space.md,
+                child: _ViewportChip(
+                  'Drag to orbit · scroll to zoom · F to frame',
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            left: Space.md,
-            top: Space.md,
-            child: Row(children: [
-              const _ViewportChip('Perspective'),
-              const SizedBox(width: Space.xs),
-              const _ViewportChip('Shaded'),
-              const SizedBox(width: Space.xs),
-              _ViewportChip(_summary),
-            ]),
-          ),
-          if (_rendererAvailable)
-            const Positioned(
-              right: Space.md,
-              bottom: Space.md,
-              child: _ViewportChip(
-                'Drag to orbit · scroll to zoom · F to frame',
-              ),
-            ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
@@ -301,7 +258,13 @@ class _SceneViewportState extends State<SceneViewport> {
         },
         onPanEnd: (_) => _dragAnchor = null,
         child: OrbisView(
-          scene: _combined(),
+          // One scene at a time, so the viewport shows one document and there
+          // is never a question about which one an object belongs to.
+          scene: (widget.workspace.loaded?.scene ?? EditorScene([]))
+              .toRenderScene(
+            widget.camera.toRenderCamera(),
+            projectRoot: widget.projectRoot,
+          ),
           onMeshErrors: widget.onMeshErrors,
         ),
       ),
@@ -411,9 +374,9 @@ class _SelectionPainter extends CustomPainter {
     final id = selected;
     if (id == null || size.isEmpty) return;
 
-    final open = workspace.sceneHolding(id);
-    final object = open?.scene[id];
-    if (open == null || object == null || !object.isDrawable) return;
+    final scene = workspace.loaded?.scene;
+    final object = scene?[id];
+    if (scene == null || object == null || !object.isDrawable) return;
 
     final view = camera.toRenderCamera();
     final viewMatrix = makeViewMatrix(
@@ -428,7 +391,7 @@ class _SelectionPainter extends CustomPainter {
       1000,
     );
     final clip = projection.multiplied(viewMatrix)
-      ..multiply(open.scene.worldOf(id));
+      ..multiply(scene.worldOf(id));
 
     final points = <Offset>[];
     for (final corner in _corners) {

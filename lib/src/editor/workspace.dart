@@ -5,116 +5,120 @@ import 'history.dart';
 import 'scene.dart';
 import 'scene_document.dart';
 
-/// One scene open in the editor.
+/// A scene the editor knows about, loaded or not.
 ///
-/// A scene is a file, and several can be open at once — which is what makes
-/// dragging something out of one and into another possible, and what lets a
-/// level be split into pieces that load separately.
-class OpenScene {
-  OpenScene({
+/// One scene is loaded at a time. The others are listed so they can be reached
+/// without going hunting in the project browser, and hold nothing but where
+/// they are — an unloaded scene is a name and a path, not a copy of a document
+/// sitting in memory waiting to disagree with the file.
+class SceneEntry {
+  SceneEntry({
     required this.id,
-    required this.scene,
+    required this.name,
     this.path,
+    this.scene,
     this.neverWritten = false,
   });
 
   final String id;
-  final EditorScene scene;
+
+  /// What it is called in the tree.
+  String name;
 
   /// The file it came from and goes back to. Null for one never written.
   String? path;
 
+  /// The document, when it is loaded. Null otherwise.
+  EditorScene? scene;
+
   /// Whether it has ever reached disk.
-  ///
-  /// Separate from the history's idea of changed, which only knows about
-  /// edits: a new scene has been edited zero times and still exists nowhere.
   bool neverWritten;
 
-  /// The stamp the history had for this scene when it was last written.
+  /// The stamp the history had for it when it was last written.
   int savedStamp = 0;
 
-  String get name => scene.name;
+  bool get isLoaded => scene != null;
 
-  /// What to call it in the tree: its file, or its own name if it has none.
-  String get title =>
-      path == null ? scene.name : p.basenameWithoutExtension(path!);
+  /// What to call it: its file, or its own name when it has none.
+  String get title => path == null ? name : p.basenameWithoutExtension(path!);
 }
 
-/// Every scene open at once, and which one new work goes into.
+/// The scenes the editor knows about, and the one being worked on.
 class Workspace extends ChangeNotifier implements SceneHost {
   Workspace(this.projectDirectory);
 
   final String projectDirectory;
 
-  final List<OpenScene> _scenes = [];
-  String? _activeId;
+  final List<SceneEntry> _entries = [];
+  String? _loadedId;
 
-  List<OpenScene> get scenes => List.unmodifiable(_scenes);
+  List<SceneEntry> get entries => List.unmodifiable(_entries);
 
-  bool get isEmpty => _scenes.isEmpty;
+  bool get isEmpty => _entries.isEmpty;
+
+  /// The scene being edited and drawn. Null when none is loaded.
+  SceneEntry? get loaded => _loadedId == null ? null : this[_loadedId!];
 
   @override
-  EditorScene? sceneFor(String sceneId) {
-    for (final open in _scenes) {
-      if (open.id == sceneId) return open.scene;
+  EditorScene? sceneFor(String sceneId) => this[sceneId]?.scene;
+
+  SceneEntry? operator [](String sceneId) {
+    for (final entry in _entries) {
+      if (entry.id == sceneId) return entry;
     }
     return null;
   }
 
-  OpenScene? operator [](String sceneId) {
-    for (final open in _scenes) {
-      if (open.id == sceneId) return open;
+  /// Which scene an object belongs to. Only a loaded scene has objects.
+  SceneEntry? sceneHolding(String objectId) {
+    final open = loaded;
+    if (open?.scene?.contains(objectId) ?? false) return open;
+    return null;
+  }
+
+  SceneEntry? entryFor(String path) {
+    for (final entry in _entries) {
+      final existing = entry.path;
+      if (existing != null && p.equals(existing, path)) return entry;
     }
     return null;
   }
 
-  /// The scene a new object goes into, and whose sky lights the viewport.
-  ///
-  /// Filament renders one environment, so with several scenes open the sky has
-  /// to come from somewhere — the active one, the same way a light setting
-  /// belongs to whichever scene is being worked on.
-  OpenScene? get active => _activeId == null ? null : this[_activeId!];
-
-  set active(OpenScene? open) {
-    if (open == null || _activeId == open.id) return;
-    _activeId = open.id;
+  void add(SceneEntry entry) {
+    _entries.add(entry);
+    if (entry.isLoaded) _loadedId = entry.id;
     notifyListeners();
   }
 
-  /// Which scene an object belongs to.
-  OpenScene? sceneHolding(String objectId) {
-    for (final open in _scenes) {
-      if (open.scene.contains(objectId)) return open;
+  /// Puts a document into an entry and makes it the loaded one.
+  ///
+  /// Whatever was loaded is emptied: only one scene's objects exist at a time,
+  /// so there is never a question about which one an edit or a draw belongs to.
+  void load(SceneEntry entry, EditorScene scene) {
+    for (final other in _entries) {
+      if (!identical(other, entry)) other.scene = null;
     }
-    return null;
+    entry.scene = scene;
+    _loadedId = entry.id;
+    notifyListeners();
   }
 
-  /// Whether a file is already open, so it is shown rather than opened twice.
-  OpenScene? openedFrom(String path) {
-    for (final open in _scenes) {
-      final existing = open.path;
-      if (existing != null && p.equals(existing, path)) return open;
-    }
-    return null;
-  }
-
-  void add(OpenScene open, {bool makeActive = true}) {
-    _scenes.add(open);
-    if (makeActive || _activeId == null) _activeId = open.id;
+  /// Empties an entry without forgetting that it exists.
+  void unload(SceneEntry entry) {
+    entry.scene = null;
+    if (_loadedId == entry.id) _loadedId = null;
     notifyListeners();
   }
 
   void remove(String sceneId) {
-    _scenes.removeWhere((open) => open.id == sceneId);
-    if (_activeId == sceneId) {
-      _activeId = _scenes.isEmpty ? null : _scenes.last.id;
-    }
+    _entries.removeWhere((entry) => entry.id == sceneId);
+    if (_loadedId == sceneId) _loadedId = null;
     notifyListeners();
   }
 
-  /// A scene name nothing else open is using, so two tabs are never the same.
+  /// A name nothing else in the list is using.
   String availableName(String base) {
-    final taken = {for (final open in _scenes) open.title};
+    final taken = {for (final entry in _entries) entry.title};
     if (!taken.contains(base)) return base;
     for (var i = 2;; i++) {
       if (!taken.contains('$base $i')) return '$base $i';

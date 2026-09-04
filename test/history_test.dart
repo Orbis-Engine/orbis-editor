@@ -10,7 +10,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 ({Workspace workspace, EditorScene scene, History history}) open() {
   final scene = EditorScene.starter();
   final workspace = Workspace('/project')
-    ..add(OpenScene(id: 'a', scene: scene));
+    ..add(SceneEntry(id: 'a', name: 'A', scene: scene));
   return (
     workspace: workspace,
     scene: scene,
@@ -391,93 +391,79 @@ void main() {
   });
 
   group('more than one scene', () {
-    ({Workspace workspace, History history}) two() {
+    ({Workspace workspace, History history}) listed() {
       final workspace = Workspace('/project')
-        ..add(OpenScene(id: 'a', scene: EditorScene.starter()))
-        ..add(OpenScene(id: 'b', scene: EditorScene.starter()));
+        ..add(SceneEntry(id: 'a', name: 'A', scene: EditorScene.starter()))
+        ..add(SceneEntry(id: 'b', name: 'B', path: '/project/scenes/b.oscene'));
       return (workspace: workspace, history: History(workspace));
     }
 
-    test('one stack covers both, so undo is not about which is selected', () {
-      final rig = two();
-      final a = rig.workspace['a']!.scene;
-      final b = rig.workspace['b']!.scene;
-
-      rig.history
-        ..run(SetColour(
-          sceneId: 'a', id: 'cube', name: 'Cube',
-          from: a['cube']!.colour, to: Colors.red,
-        ))
-        ..run(SetColour(
-          sceneId: 'b', id: 'cube', name: 'Cube',
-          from: b['cube']!.colour, to: Colors.blue,
-        ));
-
-      // Undo takes back the most recent change wherever it was made.
-      rig.history.undo();
-      expect(b['cube']!.colour, isNot(Colors.blue));
-      expect(a['cube']!.colour, Colors.red);
+    test('only one holds a document at a time', () {
+      final rig = listed();
+      expect(rig.workspace['a']!.isLoaded, isTrue);
+      expect(rig.workspace['b']!.isLoaded, isFalse);
+      expect(rig.workspace.loaded!.id, 'a');
     });
 
-    test('each scene knows separately whether it has changed', () {
-      final rig = two();
-      final a = rig.workspace['a']!;
-      final b = rig.workspace['b']!;
+    test('loading one empties the other', () {
+      final rig = listed();
+      rig.workspace.load(rig.workspace['b']!, EditorScene.starter());
 
+      // Nothing is left of the first but its name and its path, so there is
+      // never a question about which scene an edit or a draw belongs to.
+      expect(rig.workspace['a']!.isLoaded, isFalse);
+      expect(rig.workspace['b']!.isLoaded, isTrue);
+      expect(rig.workspace.loaded!.id, 'b');
+    });
+
+    test('a command for an unloaded scene does nothing rather than throw', () {
+      final rig = listed();
+      // What happens if a step outlives the scene it belongs to.
       rig.history.run(SetColour(
-        sceneId: 'a', id: 'cube', name: 'Cube',
-        from: a.scene['cube']!.colour, to: Colors.red,
+        sceneId: 'b', id: 'cube', name: 'Cube',
+        from: Colors.red, to: Colors.blue,
       ));
-
-      expect(rig.history.stampFor('a'), isNot(a.savedStamp));
-      expect(rig.history.stampFor('b'), b.savedStamp,
-          reason: 'a change in one scene must not mark the other');
+      expect(rig.history.canUndo, isTrue);
+      rig.history.undo();
     });
 
-    test('saving one leaves the other still needing a save', () {
-      final rig = two();
-      final a = rig.workspace['a']!;
-      final b = rig.workspace['b']!;
-
-      for (final open in [a, b]) {
-        rig.history.run(SetColour(
-          sceneId: open.id, id: 'cube', name: 'Cube',
-          from: open.scene['cube']!.colour, to: Colors.red,
-        ));
-      }
-
-      a.savedStamp = rig.history.stampFor('a');
-
-      expect(rig.history.stampFor('a'), a.savedStamp);
-      expect(rig.history.stampFor('b'), isNot(b.savedStamp));
-    });
-
-    test('closing a scene takes its steps with it', () {
-      final rig = two();
+    test('unloading forgets its steps, so undo cannot reach into it', () {
+      final rig = listed();
       final a = rig.workspace['a']!;
 
       rig.history.run(SetColour(
         sceneId: 'a', id: 'cube', name: 'Cube',
-        from: a.scene['cube']!.colour, to: Colors.red,
+        from: a.scene!['cube']!.colour, to: Colors.red,
       ));
       expect(rig.history.canUndo, isTrue);
 
-      // Undoing into a scene that is no longer open would be a step that
-      // appears to do nothing.
+      // Undoing into a scene that is not loaded would be a step that appears
+      // to do nothing.
       rig.history.forget('a');
+      rig.workspace.unload(a);
       expect(rig.history.canUndo, isFalse);
     });
 
-    test('the scene a step belongs to is known, so it can be shown', () {
-      final rig = two();
+    test('an unloaded scene is never reported as having changes', () {
+      final rig = listed();
       final b = rig.workspace['b']!;
+      // It holds nothing to change, so there is nothing to warn about.
+      expect(b.isLoaded, isFalse);
+      expect(rig.history.stampFor('b'), b.savedStamp);
+    });
 
-      rig.history.run(SetColour(
-        sceneId: 'b', id: 'cube', name: 'Cube',
-        from: b.scene['cube']!.colour, to: Colors.blue,
-      ));
+    test('objects are only found in the loaded scene', () {
+      final rig = listed();
+      expect(rig.workspace.sceneHolding('cube')?.id, 'a');
 
-      expect(rig.history.undoSceneId, 'b');
+      rig.workspace.unload(rig.workspace['a']!);
+      expect(rig.workspace.sceneHolding('cube'), isNull);
+    });
+
+    test('a name nothing else is using', () {
+      final rig = listed();
+      expect(rig.workspace.availableName('A'), 'A 2');
+      expect(rig.workspace.availableName('C'), 'C');
     });
   });
 

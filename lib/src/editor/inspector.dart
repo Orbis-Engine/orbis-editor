@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
+import '../widgets/controls.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'scene.dart';
@@ -18,22 +19,26 @@ import 'workspace.dart';
 class Inspector extends StatelessWidget {
   const Inspector({
     super.key,
-    required this.open,
+    required this.entry,
     required this.object,
     required this.history,
+    required this.onLoad,
   });
 
-  /// The scene being looked at, or null when nothing is open.
-  final OpenScene? open;
+  /// The scene being looked at, which need not be the loaded one — a scene can
+  /// be inspected before it is opened.
+  final SceneEntry? entry;
 
   /// The object selected, or null when the scene itself is.
   final SceneObject? object;
 
   final History history;
 
+  final ValueChanged<SceneEntry> onLoad;
+
   @override
   Widget build(BuildContext context) {
-    final open = this.open;
+    final entry = this.entry;
     final selected = object;
 
     return Container(
@@ -55,19 +60,21 @@ class Inspector extends StatelessWidget {
             child: Text('INSPECTOR', style: OrbisText.section),
           ),
           Expanded(
-            child: open == null
+            child: entry == null
                 ? Center(
-                    child: Text('No scene open.', style: OrbisText.caption),
+                    child: Text('No scene loaded.', style: OrbisText.caption),
                   )
                 : (selected == null
                     ? _SceneFields(
-                        key: ValueKey('scene/${open.id}'),
-                        open: open,
+                        key: ValueKey('scene/${entry.id}'),
+                        entry: entry,
                         history: history,
+                        onLoad: onLoad,
                       )
                     : _Fields(
                         key: ValueKey(selected.id),
-                        open: open,
+                        sceneId: entry.id,
+                        scene: entry.scene!,
                         object: selected,
                         history: history,
                       )),
@@ -86,16 +93,61 @@ class Inspector extends StatelessWidget {
 class _SceneFields extends StatelessWidget {
   const _SceneFields({
     super.key,
-    required this.open,
+    required this.entry,
     required this.history,
+    required this.onLoad,
   });
 
-  final OpenScene open;
+  final SceneEntry entry;
   final History history;
+  final ValueChanged<SceneEntry> onLoad;
 
   @override
   Widget build(BuildContext context) {
-    final scene = open.scene;
+    final scene = entry.scene;
+
+    // An unloaded scene has no document to show settings from. Saying where it
+    // is and offering to open it beats a panel of fields that would edit
+    // nothing.
+    if (scene == null) {
+      return ListView(
+        padding: const EdgeInsets.symmetric(vertical: Space.sm),
+        children: [
+          _Header(
+            name: entry.title,
+            icon: Icons.public_off,
+            onRename: (_) {},
+            onRenameDone: () {},
+            editable: false,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.md),
+            child: Text(
+              entry.path ?? 'Never saved',
+              overflow: TextOverflow.ellipsis,
+              style: OrbisText.mono.copyWith(fontSize: 11),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Space.md),
+            child: OrbisButton(
+              label: 'Load scene',
+              icon: Icons.folder_open,
+              expand: true,
+              onPressed: () => onLoad(entry),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(Space.md),
+            child: Text(
+              'Loading a scene replaces the one open. Only one scene is in the '
+              'viewport at a time.',
+              style: OrbisText.caption,
+            ),
+          ),
+        ],
+      );
+    }
 
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: Space.sm),
@@ -106,7 +158,7 @@ class _SceneFields extends StatelessWidget {
           onRename: (value) {
             if (value == scene.name) return;
             history.run(RenameScene(
-              sceneId: open.id,
+              sceneId: entry.id,
               from: scene.name,
               to: value,
             ));
@@ -116,9 +168,9 @@ class _SceneFields extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.sm),
           child: Text(
-            open.path == null
+            entry.path == null
                 ? 'Not saved to a file yet'
-                : open.path!.split('/').last,
+                : entry.path!.split('/').last,
             overflow: TextOverflow.ellipsis,
             style: OrbisText.mono.copyWith(fontSize: 11),
           ),
@@ -133,7 +185,7 @@ class _SceneFields extends StatelessWidget {
                 value: scene.skyColour,
                 onChanged: (value) => history
                   ..run(SetSceneSky(
-                    sceneId: open.id,
+                    sceneId: entry.id,
                     fromColour: scene.skyColour,
                     toColour: value,
                     fromAmbient: scene.ambient,
@@ -148,7 +200,7 @@ class _SceneFields extends StatelessWidget {
                 max: 120000,
                 unit: ' lx',
                 onChanged: (value) => history.run(SetSceneSky(
-                  sceneId: open.id,
+                  sceneId: entry.id,
                   fromColour: scene.skyColour,
                   toColour: scene.skyColour,
                   fromAmbient: scene.ambient,
@@ -180,16 +232,16 @@ class _SceneFields extends StatelessWidget {
 class _Fields extends StatelessWidget {
   const _Fields({
     super.key,
-    required this.open,
+    required this.sceneId,
+    required this.scene,
     required this.object,
     required this.history,
   });
 
-  final OpenScene open;
+  final String sceneId;
+  final EditorScene scene;
   final SceneObject object;
   final History history;
-
-  EditorScene get scene => open.scene;
 
   @override
   Widget build(BuildContext context) {
@@ -204,7 +256,7 @@ class _Fields extends StatelessWidget {
           onRename: (value) {
             if (value == object.name) return;
             history.run(Rename(
-              sceneId: open.id,
+              sceneId: sceneId,
               id: object.id,
               from: object.name,
               to: value,
@@ -244,7 +296,7 @@ class _Fields extends StatelessWidget {
           children: [
             VectorRow(
               label: 'Position',
-              sceneId: open.id,
+              sceneId: sceneId,
               object: object,
               field: TransformField.position,
               history: history,
@@ -252,7 +304,7 @@ class _Fields extends StatelessWidget {
             ),
             VectorRow(
               label: 'Rotation',
-              sceneId: open.id,
+              sceneId: sceneId,
               object: object,
               field: TransformField.rotation,
               history: history,
@@ -261,7 +313,7 @@ class _Fields extends StatelessWidget {
             ),
             VectorRow(
               label: 'Scale',
-              sceneId: open.id,
+              sceneId: sceneId,
               object: object,
               field: TransformField.scale,
               history: history,
@@ -285,7 +337,7 @@ class _Fields extends StatelessWidget {
               value: object.colour,
               onChanged: (value) => history
                 ..run(SetColour(
-                  sceneId: open.id,
+                  sceneId: sceneId,
                   id: object.id,
                   name: object.name,
                   from: object.colour,
@@ -300,7 +352,7 @@ class _Fields extends StatelessWidget {
               max: 5000,
               unit: 'W',
               onChanged: (value) => history.run(SetPower(
-                sceneId: open.id,
+                sceneId: sceneId,
                 id: object.id,
                 name: object.name,
                 from: object.power,
@@ -322,7 +374,7 @@ class _Fields extends StatelessWidget {
               value: object.colour,
               onChanged: (value) => history
                 ..run(SetColour(
-                  sceneId: open.id,
+                  sceneId: sceneId,
                   id: object.id,
                   name: object.name,
                   from: object.colour,
@@ -339,7 +391,7 @@ class _Fields extends StatelessWidget {
                 if (wanted == object.castShadows) return;
                 history
                   ..run(SetCastShadows(
-                    sceneId: open.id,
+                    sceneId: sceneId,
                     id: object.id,
                     name: object.name,
                     to: wanted,
@@ -364,12 +416,14 @@ class _Header extends StatefulWidget {
     required this.icon,
     required this.onRename,
     required this.onRenameDone,
+    this.editable = true,
   });
 
   final String name;
   final IconData icon;
   final ValueChanged<String> onRename;
   final VoidCallback onRenameDone;
+  final bool editable;
 
   @override
   State<_Header> createState() => _HeaderState();
@@ -428,6 +482,7 @@ class _HeaderState extends State<_Header> {
             child: TextField(
               controller: _controller,
               focusNode: _focus,
+              readOnly: !widget.editable,
               style: OrbisText.title.copyWith(fontSize: 13.5),
               cursorColor: OrbisColors.ember,
               decoration: const InputDecoration(

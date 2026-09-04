@@ -458,17 +458,23 @@ void main() {
     );
   });
 
-  testWidgets('a new scene opens alongside the one already there',
+  testWidgets('a new scene is listed and loaded, and the old one is not',
       (tester) async {
     await open(tester);
     await save(tester);
 
     await menu(tester, 'Scene', 'New scene');
 
-    // Two scene rows now, not one replaced by another.
+    // Both are listed, but only the new one holds anything.
     expect(sceneCount('2 scenes'), findsOneWidget);
     expect(sceneRow('main'), findsOneWidget);
     expect(sceneRow('Untitled'), findsOneWidget);
+    expect(find.text('not loaded'), findsOneWidget);
+
+    // The old scene's objects are gone from the tree, because it no longer
+    // holds them.
+    expect(row('Props'), findsOneWidget,
+        reason: 'the new scene has its own Props');
   });
 
   testWidgets('closing a scene with changes asks first', (tester) async {
@@ -535,6 +541,7 @@ void main() {
   testWidgets('selecting the scene shows its own settings', (tester) async {
     await open(tester);
     await tester.tap(sceneRow('main'));
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
 
     // The sky belongs to the scene, not to anything in it.
@@ -548,6 +555,7 @@ void main() {
   testWidgets('the scene settings are saved with the scene', (tester) async {
     await open(tester);
     await tester.tap(sceneRow('main'));
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
 
     // Pick a sky from the swatches.
@@ -605,12 +613,127 @@ void main() {
     expect(row('Props'), findsOneWidget);
   });
 
-  testWidgets('both scenes are drawn together', (tester) async {
+  testWidgets('only the loaded scene has objects in the tree', (tester) async {
+    // A second scene file in the project, listed but not loaded.
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([
+      SceneObject(id: 'barrel', name: 'Barrel', kind: ObjectKind.mesh),
+    ])));
+
+    await open(tester);
+
+    expect(sceneRow('props'), findsOneWidget);
+    expect(find.text('not loaded'), findsOneWidget);
+    // Its object is not in the tree, because the scene is not loaded.
+    expect(row('Barrel'), findsNothing);
+  });
+
+  testWidgets('double-clicking a scene loads it', (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([
+      SceneObject(id: 'barrel', name: 'Barrel', kind: ObjectKind.mesh),
+    ], name: 'Props')));
+
     await open(tester);
     await save(tester);
-    await menu(tester, 'Scene', 'New scene');
 
-    // The viewport counts what is on screen across every open scene.
-    expect(find.textContaining('2 scenes'), findsWidgets);
+    final target = sceneRow('props');
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+
+    // The other scene is now the one with objects.
+    expect(row('Barrel'), findsOneWidget);
+    expect(row('Props'), findsNothing, reason: 'the old scene was unloaded');
+    expect(find.textContaining('props$sceneExtension'), findsWidgets);
+  });
+
+  testWidgets('leaving a scene with changes asks before dropping them',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([])));
+
+    await open(tester);
+    await save(tester);
+    await add(tester, 'Group');
+
+    final target = sceneRow('props');
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Save main first?'), findsOneWidget);
+  });
+
+  testWidgets('cancelling the prompt keeps you where you were',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([])));
+
+    await open(tester);
+    await save(tester);
+    await add(tester, 'Group');
+
+    final target = sceneRow('props');
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    // Still in the first scene, with the change still there.
+    expect(row('Props'), findsOneWidget);
+    expect(row('Group'), findsOneWidget);
+    expect(unsavedMarker(), findsOneWidget);
+  });
+
+  testWidgets('choosing Save writes the change and then moves on',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([
+      SceneObject(id: 'barrel', name: 'Barrel', kind: ObjectKind.mesh),
+    ])));
+
+    await open(tester);
+    await save(tester);
+    await add(tester, 'Group');
+
+    final target = sceneRow('props');
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.text('Save'),
+    ));
+    await tester.pumpAndSettle();
+
+    // The change reached the file it belonged to...
+    final written = File(p.join(root.path, 'scenes', 'main$sceneExtension'))
+        .readAsStringSync();
+    expect(written, contains('"Group"'));
+    // ...and the other scene is now loaded.
+    expect(row('Barrel'), findsOneWidget);
+  });
+
+  testWidgets('an unloaded scene offers to load rather than pretending to edit',
+      (tester) async {
+    File(p.join(root.path, 'scenes', 'props$sceneExtension'))
+        .writeAsStringSync(SceneDocument.encode(EditorScene([])));
+
+    await open(tester);
+    await tester.tap(sceneRow('props'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+
+    // No environment fields to fiddle with — there is no document behind them.
+    expect(find.text('Load scene'), findsOneWidget);
+    expect(find.text('ENVIRONMENT'), findsNothing);
   });
 }

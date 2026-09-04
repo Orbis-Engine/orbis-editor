@@ -21,7 +21,7 @@ typedef Drop = ({String sceneId, String? parentId, int index});
 
 /// One row of the flattened tree. A null [object] is a scene's own row.
 typedef OutlinerRow = ({
-  OpenScene open,
+  SceneEntry entry,
   SceneObject? object,
   int depth,
   bool hasChildren,
@@ -39,6 +39,7 @@ class Outliner extends StatefulWidget {
     required this.selected,
     required this.onSelect,
     required this.onSelectScene,
+    required this.onLoadScene,
     required this.onMove,
     required this.onDelete,
     required this.onCloseScene,
@@ -51,14 +52,17 @@ class Outliner extends StatefulWidget {
 
   final ValueChanged<String> onSelect;
 
-  /// Selecting a scene's own row, which also makes it the active one.
-  final ValueChanged<OpenScene> onSelectScene;
+  /// Selecting a scene's row, which shows what it is without opening it.
+  final ValueChanged<SceneEntry> onSelectScene;
+
+  /// Loading a scene, which unloads whatever was loaded before.
+  final ValueChanged<SceneEntry> onLoadScene;
 
   /// Called with what is being moved and where it should land.
   final void Function(String id, Drop drop) onMove;
 
   final ValueChanged<String> onDelete;
-  final ValueChanged<OpenScene> onCloseScene;
+  final ValueChanged<SceneEntry> onCloseScene;
 
   @override
   State<Outliner> createState() => _OutlinerState();
@@ -69,24 +73,32 @@ class _OutlinerState extends State<Outliner> {
   /// a newly added object is visible rather than hidden inside a closed parent.
   final Set<String> _collapsed = {};
 
+  /// Which scene's row is highlighted, which is not the same as which is
+  /// loaded — a scene can be looked at before it is opened.
+  String? _selectedScene;
+
   /// Rows in draw order, skipping anything inside a collapsed parent.
   List<OutlinerRow> get _rows {
     final rows = <OutlinerRow>[];
 
-    for (final open in widget.workspace.scenes) {
+    for (final entry in widget.workspace.entries) {
+      final scene = entry.scene;
       rows.add((
-        open: open,
+        entry: entry,
         object: null,
         depth: 0,
-        hasChildren: open.scene.roots.isNotEmpty,
+        hasChildren: scene != null && scene.roots.isNotEmpty,
       ));
-      if (_collapsed.contains(open.id)) continue;
+
+      // An unloaded scene has no objects to show. Listing children it does not
+      // hold would suggest they could be edited, and they cannot.
+      if (scene == null || _collapsed.contains(entry.id)) continue;
 
       void walk(List<SceneObject> objects, int depth) {
         for (final object in objects) {
-          final children = open.scene.childrenOf(object.id);
+          final children = scene.childrenOf(object.id);
           rows.add((
-            open: open,
+            entry: entry,
             object: object,
             depth: depth,
             hasChildren: children.isNotEmpty,
@@ -95,7 +107,7 @@ class _OutlinerState extends State<Outliner> {
         }
       }
 
-      walk(open.scene.roots, 1);
+      walk(scene.roots, 1);
     }
 
     return rows;
@@ -108,12 +120,12 @@ class _OutlinerState extends State<Outliner> {
   /// Turns a drop on a row into a place in the tree.
   Drop _placeFor(OutlinerRow row, DropKind kind) {
     final object = row.object;
-    final scene = row.open.scene;
+    final scene = row.entry.scene!;
 
     // Onto a scene's own row: into that scene, at the top level.
     if (object == null) {
       return (
-        sceneId: row.open.id,
+        sceneId: row.entry.id,
         parentId: null,
         index: kind == DropKind.before ? 0 : scene.roots.length,
       );
@@ -121,7 +133,7 @@ class _OutlinerState extends State<Outliner> {
 
     if (kind == DropKind.inside) {
       return (
-        sceneId: row.open.id,
+        sceneId: row.entry.id,
         parentId: object.id,
         index: scene.childrenOf(object.id).length,
       );
@@ -129,7 +141,7 @@ class _OutlinerState extends State<Outliner> {
 
     final at = scene.indexOf(object.id);
     return (
-      sceneId: row.open.id,
+      sceneId: row.entry.id,
       parentId: object.parentId,
       index: kind == DropKind.before ? at : at + 1,
     );
@@ -159,8 +171,8 @@ class _OutlinerState extends State<Outliner> {
                 Text('HIERARCHY', style: OrbisText.section),
                 const Spacer(),
                 Text(
-                  '${widget.workspace.scenes.length} '
-                  'scene${widget.workspace.scenes.length == 1 ? '' : 's'}',
+                  '${widget.workspace.entries.length} '
+                  'scene${widget.workspace.entries.length == 1 ? '' : 's'}',
                   style: OrbisText.mono.copyWith(fontSize: 10.5),
                 ),
               ],
@@ -172,25 +184,33 @@ class _OutlinerState extends State<Outliner> {
               itemCount: rows.length,
               itemBuilder: (context, index) {
                 final row = rows[index];
-                final key = row.object?.id ?? row.open.id;
+                final key = row.object?.id ?? row.entry.id;
 
                 return _Row(
-                  key: ValueKey('${row.open.id}/$key'),
+                  key: ValueKey('${row.entry.id}/$key'),
                   row: row,
                   workspace: widget.workspace,
                   selected: row.object == null
                       ? widget.selected == null &&
-                          widget.workspace.active?.id == row.open.id
+                          _selectedScene == row.entry.id
                       : row.object!.id == widget.selected,
                   collapsed: _collapsed.contains(key),
-                  onTap: () => row.object == null
-                      ? widget.onSelectScene(row.open)
-                      : widget.onSelect(row.object!.id),
+                  onTap: () {
+                    if (row.object != null) {
+                      widget.onSelect(row.object!.id);
+                      return;
+                    }
+                    setState(() => _selectedScene = row.entry.id);
+                    widget.onSelectScene(row.entry);
+                  },
+                  onDoubleTap: row.object == null
+                      ? () => widget.onLoadScene(row.entry)
+                      : null,
                   onToggle: () => _toggle(key),
                   onDrop: (id, kind) =>
                       widget.onMove(id, _placeFor(row, kind)),
                   onDelete: () => row.object == null
-                      ? widget.onCloseScene(row.open)
+                      ? widget.onCloseScene(row.entry)
                       : widget.onDelete(row.object!.id),
                 );
               },
@@ -210,6 +230,7 @@ class _Row extends StatefulWidget {
     required this.selected,
     required this.collapsed,
     required this.onTap,
+    required this.onDoubleTap,
     required this.onToggle,
     required this.onDrop,
     required this.onDelete,
@@ -220,6 +241,7 @@ class _Row extends StatefulWidget {
   final bool selected;
   final bool collapsed;
   final VoidCallback onTap;
+  final VoidCallback? onDoubleTap;
   final VoidCallback onToggle;
   final void Function(String id, DropKind kind) onDrop;
   final VoidCallback onDelete;
@@ -235,6 +257,8 @@ class _RowState extends State<_Row> {
   static const double _height = 26;
 
   bool get _isScene => widget.row.object == null;
+
+  bool get _isLoaded => widget.row.entry.isLoaded;
 
   /// Which of the three the pointer is over.
   ///
@@ -254,28 +278,35 @@ class _RowState extends State<_Row> {
   /// Refused before the drop rather than after: an editor that lets you drop
   /// and then shows an error has already made you do the work twice.
   bool _accepts(String id) {
+    // Nothing can be dropped into a scene that is not loaded — there is no
+    // document there to put it in.
+    if (!_isLoaded) return false;
+
     final object = widget.row.object;
     if (object == null) return true;
     if (id == object.id) return false;
 
-    // Only within one scene: moving an object between scenes means moving its
-    // whole subtree between two documents, which is a different operation and
-    // not one to trigger by accident.
     final holder = widget.workspace.sceneHolding(id);
-    if (holder == null || holder.id != widget.row.open.id) return false;
+    if (holder == null || holder.id != widget.row.entry.id) return false;
 
-    return !holder.scene.isAncestorOf(id, object.id);
+    return !holder.scene!.isAncestorOf(id, object.id);
   }
 
   @override
   Widget build(BuildContext context) {
     final object = widget.row.object;
-    final name = object?.name ?? widget.row.open.title;
-    final icon = object?.icon ?? Icons.public;
+    final entry = widget.row.entry;
+    final name = object?.name ?? entry.title;
+    final icon = object?.icon
+        ?? (_isLoaded ? Icons.public : Icons.public_off);
 
     final colour = widget.selected
         ? OrbisColors.ember
-        : (_hovering ? OrbisColors.ink : OrbisColors.inkMid);
+        // An unloaded scene is dimmer, because it is a place rather than a
+        // thing you can currently change.
+        : (_isScene && !_isLoaded
+            ? OrbisColors.inkDim
+            : (_hovering ? OrbisColors.ink : OrbisColors.inkMid));
 
     final row = DragTarget<String>(
       onWillAcceptWithDetails: (details) => _accepts(details.data),
@@ -298,9 +329,11 @@ class _RowState extends State<_Row> {
           cursor: SystemMouseCursors.click,
           onEnter: (_) => setState(() => _hovering = true),
           onExit: (_) => setState(() => _hovering = false),
-          child: GestureDetector(
-            onTap: widget.onTap,
-            child: Container(
+          // The disclosure arrow sits outside the tap area rather than inside
+          // it. A double-tap handler above the arrow makes every single tap on
+          // it wait for the double-tap timeout, which is a real lag on the
+          // commonest thing anybody does in a tree.
+          child: Container(
               height: _height,
               padding: EdgeInsets.only(
                 left: Space.xs + widget.row.depth * 13.0,
@@ -337,6 +370,7 @@ class _RowState extends State<_Row> {
                     width: 16,
                     child: widget.row.hasChildren
                         ? GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: widget.onToggle,
                             child: Icon(
                               widget.collapsed
@@ -348,21 +382,37 @@ class _RowState extends State<_Row> {
                           )
                         : null,
                   ),
-                  Icon(icon, size: 14, color: colour),
-                  const SizedBox(width: Space.sm),
                   Expanded(
-                    child: Text(
-                      name,
-                      overflow: TextOverflow.ellipsis,
-                      style: OrbisText.label.copyWith(
-                        color: colour,
-                        fontWeight: _isScene || widget.selected
-                            ? FontWeight.w600
-                            : FontWeight.w400,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: widget.onTap,
+                      onDoubleTap: widget.onDoubleTap,
+                      child: Row(
+                        children: [
+                          Icon(icon, size: 14, color: colour),
+                          const SizedBox(width: Space.sm),
+                          Expanded(
+                            child: Text(
+                              name,
+                              overflow: TextOverflow.ellipsis,
+                              style: OrbisText.label.copyWith(
+                                color: colour,
+                                fontWeight: _isScene || widget.selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                  if (_isScene && widget.row.open.neverWritten)
+                  if (_isScene && !_isLoaded && !_hovering)
+                    Text(
+                      'not loaded',
+                      style: OrbisText.caption.copyWith(fontSize: 10),
+                    ),
+                  if (_isScene && _isLoaded && entry.neverWritten)
                     Padding(
                       padding: const EdgeInsets.only(right: 4),
                       child: Text('•',
@@ -371,20 +421,27 @@ class _RowState extends State<_Row> {
                     ),
                   if (_hovering)
                     _RowAction(
-                      icon: _isScene ? Icons.close : Icons.close,
+                      icon: Icons.close,
                       tooltip: _isScene ? 'Close $name' : 'Delete $name',
                       onTap: widget.onDelete,
                     ),
                 ],
               ),
             ),
-          ),
         );
       },
     );
 
     // A scene's row is a drop target and a heading, not something to drag.
-    if (_isScene) return row;
+    if (_isScene) {
+      return Tooltip(
+        message: _isLoaded
+            ? name
+            : 'Double-click to load $name',
+        waitDuration: const Duration(milliseconds: 700),
+        child: row,
+      );
+    }
 
     return Draggable<String>(
       data: object!.id,
