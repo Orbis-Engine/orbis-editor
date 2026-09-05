@@ -43,6 +43,12 @@ class SceneEntry {
   String get title => path == null ? name : p.basenameWithoutExtension(path!);
 }
 
+/// What every scene in a project has in it.
+const String sharedSceneId = 'shared';
+
+/// What the shared set is written to, under the project.
+const String sharedFileName = 'shared$sceneExtension';
+
 /// The scenes the editor knows about, and the one being worked on.
 class Workspace extends ChangeNotifier implements SceneHost {
   Workspace(this.projectDirectory);
@@ -51,6 +57,24 @@ class Workspace extends ChangeNotifier implements SceneHost {
 
   final List<SceneEntry> _entries = [];
   String? _loadedId;
+
+  /// The objects every scene has, whichever one is open.
+  ///
+  /// A scene of its own, held apart from the list rather than in it: it is
+  /// never loaded, never closed and never one of the things somebody is
+  /// choosing between. What makes it worth having is that everything else
+  /// already works on scenes — a command names one, the outliner draws one,
+  /// the inspector edits one — so the managers and the props that belong to
+  /// the whole project need no machinery of their own.
+  late final SceneEntry sharedEntry = SceneEntry(
+    id: sharedSceneId,
+    name: 'Shared',
+    path: p.join(projectDirectory, sharedFileName),
+    scene: EditorScene([], name: 'Shared'),
+    neverWritten: true,
+  );
+
+  EditorScene get shared => sharedEntry.scene!;
 
   List<SceneEntry> get entries => List.unmodifiable(_entries);
 
@@ -63,16 +87,19 @@ class Workspace extends ChangeNotifier implements SceneHost {
   EditorScene? sceneFor(String sceneId) => this[sceneId]?.scene;
 
   SceneEntry? operator [](String sceneId) {
+    if (sceneId == sharedSceneId) return sharedEntry;
     for (final entry in _entries) {
       if (entry.id == sceneId) return entry;
     }
     return null;
   }
 
-  /// Which scene an object belongs to. Only a loaded scene has objects.
+  /// Which scene an object belongs to. Only a loaded scene has objects, and
+  /// the shared set, which is always there.
   SceneEntry? sceneHolding(String objectId) {
     final open = loaded;
     if (open?.scene?.contains(objectId) ?? false) return open;
+    if (shared.contains(objectId)) return sharedEntry;
     return null;
   }
 
@@ -98,6 +125,9 @@ class Workspace extends ChangeNotifier implements SceneHost {
     for (final other in _entries) {
       if (!identical(other, entry)) other.scene = null;
     }
+    // The shared set is not one of the things being swapped out. It is what
+    // both scenes have in common, and unloading it with the scene would make
+    // it the opposite of shared.
     entry.scene = scene;
     _loadedId = entry.id;
     notifyListeners();
@@ -105,6 +135,7 @@ class Workspace extends ChangeNotifier implements SceneHost {
 
   /// Empties an entry without forgetting that it exists.
   void unload(SceneEntry entry) {
+    if (identical(entry, sharedEntry)) return;
     entry.scene = null;
     if (_loadedId == entry.id) _loadedId = null;
     notifyListeners();

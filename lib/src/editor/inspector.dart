@@ -225,6 +225,61 @@ class _SceneFields extends StatelessWidget {
       );
     }
 
+    // What every scene has is a scene, and almost nothing about a scene
+    // applies to it: it has no sky of its own, and no weather, because it is
+    // in whatever sky the open scene has.
+    if (entry.id == sharedSceneId) {
+      return ListView(
+        padding: const EdgeInsets.symmetric(vertical: Space.sm),
+        children: [
+          _Header(
+            name: 'Shared',
+            icon: Icons.inventory_2_outlined,
+            onRename: (_) {},
+            onRenameDone: () {},
+            editable: false,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.md),
+            child: Text(
+              'What every scene in this project has in it. Objects here are '
+              'drawn and lit alongside whichever scene is open, and saved '
+              'beside it.',
+              style: OrbisText.caption,
+            ),
+          ),
+          _ComponentSection(
+            title: 'Contents',
+            icon: Icons.list,
+            child: Column(
+              children: [
+                TextRow(label: 'Objects', value: '${scene.length}'),
+                TextRow(
+                  label: 'Drawn',
+                  value: '${scene.objects.where((o) => o.isDrawable).length}',
+                ),
+                TextRow(
+                  label: 'Lights',
+                  value: '${scene.objects.where(
+                        (o) => o.kind == ObjectKind.light,
+                      ).length}',
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(Space.md),
+            child: Text(
+              'A scene of its own overrules it: a sun or a Weather object in '
+              'the open scene is used instead of the one here, so a level can '
+              'have its own without the shared one being in the way.',
+              style: OrbisText.caption,
+            ),
+          ),
+        ],
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: Space.sm),
       children: [

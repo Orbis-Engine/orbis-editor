@@ -208,9 +208,26 @@ class _SceneViewportState extends State<SceneViewport>
   final Map<String, Vector3> _before = {};
   final Map<String, Matrix3> _beforeWorld = {};
 
+  /// The scene the handles are working in.
+  ///
+  /// Whichever holds what is selected: the open scene, or the shared set. A
+  /// manager put in the shared set is dragged the same way everything else is.
+  EditorScene? get _editing {
+    final id = widget.primary;
+    if (id == null) return widget.workspace.loaded?.scene;
+    return widget.workspace.sceneHolding(id)?.scene;
+  }
+
+  /// The id of that scene, for the command a drag runs.
+  String? get _editingId {
+    final id = widget.primary;
+    if (id == null) return widget.workspace.loaded?.id;
+    return widget.workspace.sceneHolding(id)?.id;
+  }
+
   /// The gizmo as it stands, or null when there is nothing to put it on.
   Gizmo? get _gizmo {
-    final scene = widget.workspace.loaded?.scene;
+    final scene = _editing;
     final id = widget.primary;
     final size = _surface;
     if (scene == null || id == null || size == null || size.isEmpty) {
@@ -229,11 +246,13 @@ class _SceneViewportState extends State<SceneViewport>
   /// Everything a drag moves: the whole selection, or just the one the handles
   /// are on when the selection is empty for some reason.
   List<String> get _targets {
-    final scene = widget.workspace.loaded?.scene;
+    final scene = _editing;
     if (scene == null) return const [];
     final ids = widget.selected.isEmpty
         ? [if (widget.primary != null) widget.primary!]
         : widget.selected.toList();
+    // Only what lives in the same scene as the one the handles are on: a
+    // drag is one command, and a command changes one scene.
     return [
       for (final id in ids)
         if (scene[id] != null && scene[id]!.kind != ObjectKind.scene) id,
@@ -254,7 +273,12 @@ class _SceneViewportState extends State<SceneViewport>
 
     final ray = ViewportProjection(camera: widget.camera, size: size)
         .rayThrough(local);
-    final hit = scene.objectAlong(ray.origin, ray.direction);
+    // The open scene first, then what every scene has. A shared prop standing
+    // in front of a scene's own is the uncommon way round, and picking the
+    // thing somebody is working on when both are under the pointer is the
+    // better answer of the two.
+    final hit = scene.objectAlong(ray.origin, ray.direction) ??
+        widget.workspace.shared.objectAlong(ray.origin, ray.direction);
 
     final modifiers = {
       LogicalKeyboardKey.shiftLeft,
@@ -271,7 +295,7 @@ class _SceneViewportState extends State<SceneViewport>
   /// Takes hold of a handle, remembering where everything was.
   bool _grab(Offset local) {
     final gizmo = _gizmo;
-    final scene = widget.workspace.loaded?.scene;
+    final scene = _editing;
     final axis = gizmo?.axisAt(local);
     if (gizmo == null || scene == null || axis == null) return false;
     if (widget.history == null) return false;
@@ -304,11 +328,11 @@ class _SceneViewportState extends State<SceneViewport>
   /// Applies the drag as it stands: one command, however many objects.
   void _dragTo(Offset local) {
     final gizmo = _gizmo;
-    final scene = widget.workspace.loaded?.scene;
+    final scene = _editing;
     final axis = _dragging;
     final grabbed = _grabbed;
     final history = widget.history;
-    final sceneId = widget.workspace.loaded?.id;
+    final sceneId = _editingId;
     if (gizmo == null ||
         scene == null ||
         axis == null ||
@@ -623,6 +647,9 @@ class _SceneViewportState extends State<SceneViewport>
               .toRenderScene(
             widget.camera.toRenderCamera(),
             projectRoot: widget.projectRoot,
+            // What every scene in the project has in it, drawn alongside
+            // whichever one is open.
+            shared: widget.workspace.shared,
           ),
           onSceneNotes: widget.onSceneNotes,
         ),

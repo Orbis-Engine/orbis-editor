@@ -88,7 +88,12 @@ class _OutlinerState extends State<Outliner> {
   List<OutlinerRow> get _rows {
     final rows = <OutlinerRow>[];
 
-    for (final entry in widget.workspace.entries) {
+    // Shared first, because what every scene has comes before whichever one
+    // is open.
+    for (final entry in [
+      widget.workspace.sharedEntry,
+      ...widget.workspace.entries,
+    ]) {
       final scene = entry.scene;
       rows.add((
         entry: entry,

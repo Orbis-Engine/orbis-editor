@@ -860,55 +860,78 @@ class EditorScene {
   /// [projectRoot] resolves mesh references, which are stored relative to the
   /// project so a scene file survives the folder being moved or shared, and
   /// have to be absolute by the time the renderer opens them.
-  OrbisScene toRenderScene(OrbisCamera camera, {String? projectRoot}) {
+  /// Everything the renderer draws, viewed from [camera].
+  ///
+  /// [shared] is what every scene in the project has in it: its objects and
+  /// its lights are drawn alongside this scene's own, and its weather and its
+  /// sun stand in where this scene has none. The loaded scene wins wherever
+  /// both have something to say, which is the rule that makes a shared set
+  /// useful rather than something to work around — put a manager there once
+  /// and every scene has it, and any scene can still overrule it.
+  OrbisScene toRenderScene(
+    OrbisCamera camera, {
+    String? projectRoot,
+    EditorScene? shared,
+  }) {
     final sky = skyState;
     final driven = dayCycle;
-    final lit = celestial;
+
+    // What is above the scene, and what the air is doing, from whichever of
+    // the two has one.
+    final lit = celestial ?? shared?.celestial;
+    final air = weatherNow ?? shared?.weatherNow;
+    final flash = air == null || air.lightning <= 0
+        ? 0.0
+        : WeatherState.flashAt(clock, air.lightning);
 
     final lights = [
-      for (final object in _objects)
-        // A hidden light is left out rather than sent dark. Filament shades
-        // one directional light and a budget of punctual ones, and a light
-        // nobody can see should not be the one that fills the budget.
-        if (object.kind == ObjectKind.light && isShown(object.id))
-          _lightFor(object),
+      for (final scene in [this, ?shared])
+        for (final object in scene._objects)
+          // A hidden light is left out rather than sent dark. Filament shades
+          // one directional light and a budget of punctual ones, and a light
+          // nobody can see should not be the one that fills the budget.
+          if (object.kind == ObjectKind.light && scene.isShown(object.id))
+            scene._lightFor(
+              object,
+              sky: driven && identical(object, lit) ? sky : null,
+              air: identical(object, lit) ? air : null,
+              flash: identical(object, lit) ? flash : 0,
+            ),
     ];
 
-    final now = weatherNow;
-    final flash = _flash;
     // A covered sky is one enormous diffuser: less of the light arrives from
     // one direction and more of it from everywhere. A strike lights the whole
     // of it at once, which is why lightning has no shadows worth the name.
-    final ambientLux = (driven ? sky.ambient : ambient) *
-        (now?.scattered ?? 1) *
-        (1 + flash * 40);
+    final ambientLux =
+        (driven ? sky.ambient : ambient) * (air?.scattered ?? 1) * (1 + flash * 40);
 
     return OrbisScene(
       objects: [
-        for (final object in _objects)
-          if (object.isDrawable)
-            OrbisObject(
-              key: object.renderKey,
-              transform: worldOf(object.id),
-              colour: linearFromColour(object.colour),
-              mesh: _resolveMesh(object.meshAsset, projectRoot),
-              castShadows: object.castShadows,
-              receiveShadows: object.receiveShadows,
-              visible: isShown(object.id),
-            ),
+        for (final scene in [this, ?shared])
+          for (final object in scene._objects)
+            if (object.isDrawable)
+              OrbisObject(
+                key: object.renderKey,
+                transform: scene.worldOf(object.id),
+                colour: linearFromColour(object.colour),
+                mesh: _resolveMesh(object.meshAsset, projectRoot),
+                castShadows: object.castShadows,
+                receiveShadows: object.receiveShadows,
+                visible: scene.isShown(object.id),
+              ),
       ],
       lights: lights,
       sky: OrbisSky(
         colour: linearFromColour(
-          _greyed(driven ? sky.skyColour : skyColour, (now?.greying ?? 0) * 0.8),
+          _greyed(driven ? sky.skyColour : skyColour, (air?.greying ?? 0) * 0.8),
         ),
         ambient: ambientLux,
         // Nothing to draw a disk for if the scene has no light above it, and
         // one nobody can see should not appear in the sky either.
-        showBody: lit != null && isShown(lit.id),
+        showBody: lit != null,
       ),
-      fog: _fogNow(),
-      precipitation: _precipitationNow(),
+      fog: _fogFrom(air, weather ?? shared?.weather),
+      precipitation: _precipitationFrom(air, weather ?? shared?.weather),
       camera: driven ? _metered(camera, lights, ambientLux) : camera,
     );
   }
@@ -957,9 +980,7 @@ class EditorScene {
   /// like; the sheets are what a bank of cloud looks like lying in a valley.
   /// A condition asks for both, because weather with no haze behind it reads
   /// as cut-outs hanging in clear air.
-  OrbisFog _fogNow() {
-    final now = weatherNow;
-    final object = weather;
+  OrbisFog _fogFrom(WeatherState? now, SceneObject? object) {
     if (now == null || object == null) return OrbisFog.none;
 
     final heading = WeatherState.windFrom(object.windDirection);
@@ -994,9 +1015,10 @@ class EditorScene {
   /// with some of each — which is what the temperature between them looks
   /// like — is one curtain part of the way from streaks to flakes rather than
   /// two curtains fighting.
-  OrbisPrecipitation _precipitationNow() {
-    final now = weatherNow;
-    final object = weather;
+  OrbisPrecipitation _precipitationFrom(
+    WeatherState? now,
+    SceneObject? object,
+  ) {
     if (now == null || object == null || !now.isWet) {
       return OrbisPrecipitation.none;
     }
@@ -1029,13 +1051,6 @@ class EditorScene {
     );
   }
 
-  /// How bright the lightning is this instant.
-  double get _flash {
-    final now = weatherNow;
-    if (now == null || now.lightning <= 0) return 0;
-    return WeatherState.flashAt(clock, now.lightning);
-  }
-
   /// A colour dragged towards the flat grey of a covered sky.
   static Color _greyed(Color colour, double amount) =>
       Color.lerp(colour, const Color(0xFF9BA3AB), amount.clamp(0.0, 1.0))!;
@@ -1046,20 +1061,30 @@ class EditorScene {
   /// and degrees are what a light is stated in; lumens, lux and radians are
   /// what a renderer is told. Doing that arithmetic in the editor as well
   /// would be a second place for it to drift.
-  OrbisLight _lightFor(SceneObject object) {
+  /// One light, in the units the renderer takes.
+  ///
+  /// Told what is happening to it rather than working it out. Which light the
+  /// sky is standing in for, and what the weather is, are questions about the
+  /// project rather than about the scene this light happens to live in — a sun
+  /// in the shared set is still the sun of whichever scene is open.
+  OrbisLight _lightFor(
+    SceneObject object, {
+    SkyState? sky,
+    WeatherState? air,
+    double flash = 0,
+  }) {
     final world = worldOf(object.id);
 
     // A day cycle owns the one light everything is lit from above by: where it
     // is, what colour it is and how strong. The object keeps what it was
     // authored with, so turning the cycle off puts it back rather than leaving
     // it wherever the clock stopped.
-    final driven = dayCycle && identical(object, celestial);
-    final sky = driven ? skyState : null;
+    final driven = sky != null;
 
     // Cloud sits between the scene and whatever is above it, so it only
     // touches that one light. A lamp indoors does not care what the sky is
     // doing, and neither should a stage light somebody has aimed by hand.
-    final now = identical(object, celestial) ? weatherNow : null;
+    final now = air;
 
     final described = Light(
       type: object.lightType,
@@ -1076,7 +1101,7 @@ class EditorScene {
       // is standing in for.
       power: (sky?.power ?? object.power) *
           (now?.transmitted ?? 1) *
-          (1 + _flash * 60),
+          (1 + flash * 60),
       radius: object.sourceRadius,
       spotSize: object.spotSize,
       spotBlend: object.spotBlend,
@@ -1103,7 +1128,7 @@ class EditorScene {
 
     // What tells a sun from a moon at a glance, once both are white discs of
     // the same width: a sun is wrapped in glare and a moon is not.
-    final body = driven ? sky!.body : object.body;
+    final body = driven ? sky.body : object.body;
     final isMoon = body == CelestialBody.moon;
 
     return OrbisLight(

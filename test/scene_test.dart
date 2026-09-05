@@ -567,6 +567,106 @@ void main() {
     });
   });
 
+  group('what every scene has', () {
+    final camera = OrbitCamera().toRenderCamera();
+
+    EditorScene sharedWith(List<SceneObject> objects) => EditorScene(objects);
+
+    test('shared objects are drawn alongside the open scene', () {
+      final open = EditorScene([
+        SceneObject(id: 'cube', name: 'Cube', kind: ObjectKind.mesh),
+      ]);
+      final shared = sharedWith([
+        SceneObject(id: 'prop', name: 'Prop', kind: ObjectKind.mesh),
+      ]);
+
+      final drawn = open.toRenderScene(camera, shared: shared).objects;
+      expect(drawn.length, 2);
+      // By key, because that is the only thing the renderer knows either of
+      // them by — and two scenes' objects must never collide in it.
+      expect(
+        drawn.map((o) => o.key).toSet(),
+        {open['cube']!.renderKey, shared['prop']!.renderKey},
+      );
+    });
+
+    test('a shared light lights the open scene', () {
+      final open = EditorScene([
+        SceneObject(id: 'cube', name: 'Cube', kind: ObjectKind.mesh),
+      ]);
+      final shared = sharedWith([
+        SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light),
+      ]);
+
+      expect(open.toRenderScene(camera, shared: shared).lights, hasLength(1));
+      // And is what the sky draws its disk for.
+      expect(open.toRenderScene(camera, shared: shared).sky.showBody, isTrue);
+    });
+
+    test('shared weather is what the scene is in, until it has its own', () {
+      final open = EditorScene([]);
+      final shared = sharedWith([
+        SceneObject(
+          id: 'weather',
+          name: 'Weather',
+          kind: ObjectKind.weather,
+          weather: WeatherState.of(WeatherCondition.storm),
+        ),
+      ]);
+
+      expect(
+        open.toRenderScene(camera, shared: shared).precipitation.isVisible,
+        isTrue,
+      );
+
+      // A scene that has its own overrules it, so a level can be dry inside a
+      // project that rains.
+      final dry = EditorScene([
+        SceneObject(
+          id: 'weather',
+          name: 'Weather',
+          kind: ObjectKind.weather,
+          weather: WeatherState.of(WeatherCondition.clear),
+        ),
+      ]);
+      expect(
+        dry.toRenderScene(camera, shared: shared).precipitation.isVisible,
+        isFalse,
+      );
+    });
+
+    test('a scene with its own sun keeps it', () {
+      final open = EditorScene([
+        SceneObject(
+          id: 'stage',
+          name: 'Stage',
+          kind: ObjectKind.light,
+          power: 400,
+        ),
+      ]);
+      final shared = sharedWith([
+        SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light, power: 50),
+      ]);
+
+      final lights = open.toRenderScene(camera, shared: shared).lights;
+      // Both are sent — two lights are two lights — but the scene's own is
+      // the one the sky and the day cycle are about.
+      expect(lights, hasLength(2));
+      expect(lights.first.intensity, greaterThan(lights.last.intensity));
+    });
+
+    test('hiding something shared hides it everywhere', () {
+      final open = EditorScene([]);
+      final shared = sharedWith([
+        SceneObject(id: 'prop', name: 'Prop', kind: ObjectKind.mesh)
+          ..visible = false,
+      ]);
+
+      final drawn = open.toRenderScene(camera, shared: shared).objects;
+      expect(drawn.single.visible, isFalse);
+    });
+  });
+
   group('the orbit camera', () {
     test('stops short of the poles, where the view matrix collapses', () {
       // Far more drag than anyone would apply in one gesture.

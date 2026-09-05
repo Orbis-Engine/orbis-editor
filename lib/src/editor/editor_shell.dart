@@ -87,10 +87,41 @@ class _EditorShellState extends State<EditorShell> {
     // Every other scene in the project is listed but not loaded, so they can
     // be reached without going hunting for them.
     _listSiblingScenes();
+    _readShared();
 
     if (opened.problems.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _report(opened.problems),
+      );
+    }
+  }
+
+  /// Reads what every scene in this project has in it.
+  ///
+  /// A project without one is not a problem — it means nobody has put
+  /// anything there yet, and the empty set behaves exactly like an empty
+  /// scene.
+  void _readShared() {
+    final file = File(p.join(widget.project.directory, sharedFileName));
+    if (!file.existsSync()) return;
+
+    try {
+      final loaded = SceneDocument.decode(file.readAsStringSync());
+      _workspace.sharedEntry
+        ..scene = loaded.scene
+        ..neverWritten = false;
+      if (loaded.problems.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _report(loaded.problems),
+        );
+      }
+    } on SceneFormatException catch (error) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _say('The shared objects could not be read: ${error.message}'),
+      );
+    } on FileSystemException catch (error) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _say('The shared objects could not be read: ${error.message}'),
       );
     }
   }
@@ -371,6 +402,41 @@ class _EditorShellState extends State<EditorShell> {
         ..savedStamp = _history.stampFor(entry.id);
     });
     _say('Saved ${_assets.relative(path)}');
+
+    // What every scene has goes with whichever one was saved. Asking somebody
+    // to save two files to keep one project consistent is asking them to
+    // forget one of them.
+    if (!identical(entry, _workspace.sharedEntry)) _saveShared();
+  }
+
+  /// Writes the shared set, if anything has happened to it.
+  void _saveShared() {
+    final entry = _workspace.sharedEntry;
+    final scene = entry.scene;
+    final path = entry.path;
+    if (scene == null || path == null) return;
+    if (entry.savedStamp == _history.stampFor(entry.id) &&
+        !entry.neverWritten) {
+      return;
+    }
+    // Nothing in it and never written: no reason to leave an empty file in
+    // somebody's repository.
+    if (scene.length == 0 && entry.neverWritten) return;
+
+    try {
+      final file = File(path);
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(SceneDocument.encode(scene));
+    } on FileSystemException catch (error) {
+      _say('Could not save the shared objects: ${error.message}');
+      return;
+    }
+
+    setState(() {
+      entry
+        ..neverWritten = false
+        ..savedStamp = _history.stampFor(entry.id);
+    });
   }
 
   Future<void> _saveAs([SceneEntry? which]) async {
@@ -497,7 +563,12 @@ class _EditorShellState extends State<EditorShell> {
   }
 
   void _add(ObjectKind kind) {
-    final open = _current;
+    // Wherever the selection is. Selecting something in the shared set and
+    // pressing Add means adding to the shared set — anything else would be
+    // the button ignoring where somebody is working.
+    final open = _primary == null
+        ? _current
+        : (_workspace.sceneHolding(_primary!) ?? _current);
     final scene = open?.scene;
     if (open == null || scene == null) {
       _say('There is no scene loaded to add to.');
