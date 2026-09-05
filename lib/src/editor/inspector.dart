@@ -806,7 +806,7 @@ class _Fields extends StatelessWidget {
           ChoiceRow(
             label: 'Condition',
             options: [
-              for (final condition in WeatherCondition.values.take(3))
+              for (final condition in WeatherCondition.values.take(4))
                 condition.label,
             ],
             selected: object.condition.label,
@@ -815,7 +815,7 @@ class _Fields extends StatelessWidget {
           ChoiceRow(
             label: '',
             options: [
-              for (final condition in WeatherCondition.values.skip(3))
+              for (final condition in WeatherCondition.values.skip(4))
                 condition.label,
             ],
             selected: object.condition.label,
@@ -828,6 +828,33 @@ class _Fields extends StatelessWidget {
             max: 1,
             decimals: 2,
             onChanged: (value) => _setAir(air.copyWith(cloudCover: value)),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Rain',
+            value: air.rain,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) => _setAir(air.copyWith(rain: value)),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Snow',
+            value: air.snow,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) => _setAir(air.copyWith(snow: value)),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Lightning',
+            value: air.lightning,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) => _setAir(air.copyWith(lightning: value)),
             onSettled: history.seal,
           ),
           SliderRow(
@@ -867,9 +894,13 @@ class _Fields extends StatelessWidget {
                   ? 'Another Weather object is already deciding what the air '
                       'is doing. This one is ignored — a scene answers that '
                       'question once.'
-                  : 'Cloud takes the strength out of whatever is above the '
-                      'scene and spreads it across the sky. Shadows lose '
-                      'their edges before they lose their depth.',
+                  : air.rain > 0 && air.snow > 0
+                      ? 'Both at once is the temperature where both are '
+                          'falling. The curtain is one thing part of the way '
+                          'from streaks to flakes.'
+                      : 'Cloud takes the strength out of whatever is above '
+                          'the scene and spreads it across the sky. Shadows '
+                          'lose their edges before they lose their depth.',
               style: OrbisText.caption,
             ),
           ),

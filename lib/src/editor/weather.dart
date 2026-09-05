@@ -14,7 +14,9 @@ enum WeatherCondition {
   hazy('Hazy'),
   misty('Misty'),
   overcast('Overcast'),
-  storm('Storm');
+  rain('Rain'),
+  storm('Storm'),
+  snow('Snow');
 
   const WeatherCondition(this.label);
 
@@ -38,6 +40,9 @@ class WeatherState {
     required this.mist,
     required this.mistSize,
     required this.windSpeed,
+    this.rain = 0,
+    this.snow = 0,
+    this.lightning = 0,
   });
 
   /// How much of the sky is covered, from nothing to everything.
@@ -64,6 +69,20 @@ class WeatherState {
   /// Metres a second.
   final double windSpeed;
 
+  /// How much is coming down, from nothing to a downpour.
+  ///
+  /// Two amounts rather than a kind and an amount, so a change from rain to
+  /// snow is one crossing the other rather than a switch — which is what
+  /// happens on the day, at the temperature where both are falling at once.
+  final double rain;
+  final double snow;
+
+  /// How often it strikes, from never to every few seconds.
+  final double lightning;
+
+  /// Whether anything is falling.
+  bool get isWet => rain + snow > 0;
+
   /// The same weather with one thing about it changed.
   WeatherState copyWith({
     double? cloudCover,
@@ -74,6 +93,9 @@ class WeatherState {
     double? mist,
     double? mistSize,
     double? windSpeed,
+    double? rain,
+    double? snow,
+    double? lightning,
   }) => WeatherState(
         cloudCover: cloudCover ?? this.cloudCover,
         fogColour: fogColour ?? this.fogColour,
@@ -83,6 +105,9 @@ class WeatherState {
         mist: mist ?? this.mist,
         mistSize: mistSize ?? this.mistSize,
         windSpeed: windSpeed ?? this.windSpeed,
+        rain: rain ?? this.rain,
+        snow: snow ?? this.snow,
+        lightning: lightning ?? this.lightning,
       );
 
   /// What each condition is made of.
@@ -143,6 +168,17 @@ class WeatherState {
       mistSize: 90,
       windSpeed: 4,
     ),
+    WeatherCondition.rain: WeatherState(
+      cloudCover: 0.85,
+      fogColour: Color(0xFF9AA4AE),
+      fogDensity: 0.035,
+      fogHeight: 0,
+      fogFalloff: 0.12,
+      mist: 0.35,
+      mistSize: 70,
+      windSpeed: 5,
+      rain: 0.65,
+    ),
     WeatherCondition.storm: WeatherState(
       cloudCover: 1,
       fogColour: Color(0xFF7C838C),
@@ -152,6 +188,21 @@ class WeatherState {
       mist: 0.9,
       mistSize: 45,
       windSpeed: 12,
+      rain: 0.95,
+      lightning: 0.6,
+    ),
+    WeatherCondition.snow: WeatherState(
+      cloudCover: 0.82,
+      fogColour: Color(0xFFD3D8DD),
+      fogDensity: 0.04,
+      fogHeight: 0,
+      fogFalloff: 0.1,
+      mist: 0.4,
+      mistSize: 60,
+      // Snow falls in still air more often than not, and wind is what turns
+      // it from weather into a problem.
+      windSpeed: 2.2,
+      snow: 0.75,
     ),
   };
 
@@ -176,7 +227,46 @@ class WeatherState {
       mist: mix(from.mist, to.mist),
       mistSize: mix(from.mistSize, to.mistSize),
       windSpeed: mix(from.windSpeed, to.windSpeed),
+      rain: mix(from.rain, to.rain),
+      snow: mix(from.snow, to.snow),
+      lightning: mix(from.lightning, to.lightning),
     );
+  }
+
+  /// How bright a flash of lightning is this instant, from nothing to one.
+  ///
+  /// Worked out from the clock rather than rolled: the same second of the same
+  /// storm looks the same twice, which is what lets a scene be reopened, a
+  /// frame be compared, and a test hold any of it to account.
+  ///
+  /// Strikes land at most once in a window, and not every window has one — a
+  /// storm that struck on the beat would be a metronome. Each is a stroke and
+  /// then a weaker one a moment behind it, which is what makes it read as
+  /// lightning rather than as a lamp being switched.
+  static double flashAt(double clock, double frequency) {
+    if (frequency <= 0 || clock < 0) return 0;
+
+    final window = 14 / (0.2 + frequency * 3);
+    final index = (clock / window).floor();
+    final into = clock - index * window;
+
+    if (_scatter(index) > 0.3 + frequency * 0.65) return 0;
+
+    final at = _scatter(index * 7 + 3) * math.max(window - 0.8, 0.1);
+    final since = into - at;
+    if (since < 0) return 0;
+
+    final stroke = math.exp(-since * 14) +
+        (since > 0.18 ? 0.45 * math.exp(-(since - 0.18) * 10) : 0);
+
+    return (stroke * (0.6 + 0.4 * _scatter(index * 13 + 5))).clamp(0.0, 1.0);
+  }
+
+  /// A number between zero and one that is always the same for the same
+  /// input. Not a good random source and a perfectly good one for weather.
+  static double _scatter(int step) {
+    final value = math.sin(step * 12.9898) * 43758.5453;
+    return value - value.floorToDouble();
   }
 
   /// How much of what is above the scene still reaches it.

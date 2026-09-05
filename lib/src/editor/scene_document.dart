@@ -218,6 +218,11 @@ abstract final class SceneDocument {
         'mist': air.mist,
         'size': air.mistSize,
         'wind': air.windSpeed,
+        // Left out when there is none, so a dry scene's file says nothing
+        // about rain.
+        if (air.rain > 0) 'rain': air.rain,
+        if (air.snow > 0) 'snow': air.snow,
+        if (air.lightning > 0) 'lightning': air.lightning,
       };
 
   /// And back, falling through to the condition's own values for anything a
@@ -241,6 +246,9 @@ abstract final class SceneDocument {
       mist: number('mist', preset.mist),
       mistSize: number('size', preset.mistSize),
       windSpeed: number('wind', preset.windSpeed),
+      rain: number('rain', 0),
+      snow: number('snow', 0),
+      lightning: number('lightning', 0),
     );
   }
 

@@ -437,6 +437,119 @@ void main() {
       expect(scene.isAnimated, isFalse);
     });
 
+    test('rain falls as streaks and snow as flakes', () {
+      final wet = withWeather(WeatherState.of(WeatherCondition.rain))
+          .toRenderScene(camera)
+          .precipitation;
+      final white = withWeather(WeatherState.of(WeatherCondition.snow))
+          .toRenderScene(camera)
+          .precipitation;
+
+      expect(wet.isVisible, isTrue);
+      expect(white.isVisible, isTrue);
+
+      // How far a drop travels while the shutter is open, which is the whole
+      // difference between the two. A flake is not a point — it has to be
+      // large enough to see — so this is a ratio rather than an order of
+      // magnitude.
+      expect(wet.stretch, greaterThan(white.stretch * 4));
+      expect(wet.fall, greaterThan(white.fall * 5));
+      // And there are more drops in rain than flakes in snow.
+      expect(wet.dropsPerMetre, greaterThan(white.dropsPerMetre));
+    });
+
+    test('dry weather draws no curtain at all', () {
+      final dry = withWeather(WeatherState.of(WeatherCondition.overcast))
+          .toRenderScene(camera)
+          .precipitation;
+      expect(dry.isVisible, isFalse);
+    });
+
+    test('half of each is one curtain halfway between', () {
+      final both = withWeather(
+        WeatherState.of(WeatherCondition.rain).copyWith(rain: 0.4, snow: 0.4),
+      ).toRenderScene(camera).precipitation;
+
+      final rain = withWeather(
+        WeatherState.of(WeatherCondition.rain).copyWith(rain: 0.8, snow: 0),
+      ).toRenderScene(camera).precipitation;
+
+      expect(both.amount, closeTo(rain.amount, 1e-9));
+      // Falling at something between the two speeds rather than at either.
+      expect(both.fall, lessThan(rain.fall));
+      expect(both.fall, greaterThan(1));
+    });
+
+    test('the wind carries snow further than it carries rain', () {
+      final air = WeatherState.of(WeatherCondition.rain).copyWith(windSpeed: 6);
+      final wet =
+          withWeather(air).toRenderScene(camera).precipitation.wind.length;
+      final white = withWeather(air.copyWith(rain: 0, snow: 0.65))
+          .toRenderScene(camera)
+          .precipitation
+          .wind
+          .length;
+
+      expect(white, greaterThan(wet));
+    });
+
+    test('lightning strikes, and most of the time it does not', () {
+      var struck = 0;
+      var brightest = 0.0;
+
+      // Ten minutes of a storm, ten times a second.
+      for (var step = 0; step < 6000; step++) {
+        final flash = WeatherState.flashAt(step / 10, 0.6);
+        if (flash > 0.01) struck++;
+        if (flash > brightest) brightest = flash;
+      }
+
+      expect(brightest, greaterThan(0.5));
+      // Lit for a fraction of the time. A storm that was bright half the
+      // night would be a lamp.
+      expect(struck / 6000, lessThan(0.15));
+      expect(struck, greaterThan(0));
+    });
+
+    test('the same second of the same storm looks the same twice', () {
+      expect(WeatherState.flashAt(42.5, 0.6), WeatherState.flashAt(42.5, 0.6));
+      expect(WeatherState.flashAt(42.5, 0), 0);
+    });
+
+    test('a strike brightens what is above the scene', () {
+      final scene = withWeather(WeatherState.of(WeatherCondition.storm));
+
+      // Walk until one lands, then compare that instant with a dark one.
+      var lit = 0.0;
+      for (var step = 0; step < 4000; step++) {
+        final at = step / 20;
+        if (WeatherState.flashAt(at, WeatherState.of(WeatherCondition.storm)
+                .lightning) >
+            0.5) {
+          lit = at;
+          break;
+        }
+      }
+      expect(lit, greaterThan(0), reason: 'no strike inside three minutes');
+
+      scene.clock = 0.05;
+      final dark = scene.toRenderScene(camera);
+      scene.clock = lit;
+      final flash = scene.toRenderScene(camera);
+
+      expect(flash.lights.single.intensity,
+          greaterThan(dark.lights.single.intensity * 5));
+      expect(flash.sky.ambient, greaterThan(dark.sky.ambient * 5));
+    });
+
+    test('a storm keeps the editor ticking, so the strikes are seen', () {
+      final quiet = withWeather(WeatherState.of(WeatherCondition.overcast));
+      final storm = withWeather(WeatherState.of(WeatherCondition.storm));
+
+      expect(quiet.isAnimated, isFalse);
+      expect(storm.isAnimated, isTrue);
+    });
+
     test('one scene, one answer about the weather', () {
       final scene = withWeather(WeatherState.of(WeatherCondition.storm));
       scene.add(SceneObject(

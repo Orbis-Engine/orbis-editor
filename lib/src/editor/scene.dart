@@ -446,7 +446,8 @@ class EditorScene {
   /// clock, so it keeps going at sixty frames a second without the editor
   /// republishing the scene to say so — which is the difference between mist
   /// costing a message a frame and costing nothing.
-  bool get isAnimated => dayCycle || _weatherIsChanging;
+  bool get isAnimated =>
+      dayCycle || _weatherIsChanging || (weatherNow?.lightning ?? 0) > 0;
 
   /// The object that decides what the air is doing, if there is one.
   ///
@@ -874,9 +875,13 @@ class EditorScene {
     ];
 
     final now = weatherNow;
+    final flash = _flash;
     // A covered sky is one enormous diffuser: less of the light arrives from
-    // one direction and more of it from everywhere.
-    final ambientLux = (driven ? sky.ambient : ambient) * (now?.scattered ?? 1);
+    // one direction and more of it from everywhere. A strike lights the whole
+    // of it at once, which is why lightning has no shadows worth the name.
+    final ambientLux = (driven ? sky.ambient : ambient) *
+        (now?.scattered ?? 1) *
+        (1 + flash * 40);
 
     return OrbisScene(
       objects: [
@@ -903,6 +908,7 @@ class EditorScene {
         showBody: lit != null && isShown(lit.id),
       ),
       fog: _fogNow(),
+      precipitation: _precipitationNow(),
       camera: driven ? _metered(camera, lights, ambientLux) : camera,
     );
   }
@@ -982,6 +988,54 @@ class EditorScene {
     );
   }
 
+  /// What is coming down, if anything is.
+  ///
+  /// Rain and snow are the same curtain at different settings, so a scene
+  /// with some of each — which is what the temperature between them looks
+  /// like — is one curtain part of the way from streaks to flakes rather than
+  /// two curtains fighting.
+  OrbisPrecipitation _precipitationNow() {
+    final now = weatherNow;
+    final object = weather;
+    if (now == null || object == null || !now.isWet) {
+      return OrbisPrecipitation.none;
+    }
+
+    final total = now.rain + now.snow;
+    final asSnow = (now.snow / total).clamp(0.0, 1.0);
+    double between(double wet, double white) => wet + (white - wet) * asSnow;
+
+    final heading = WeatherState.windFrom(object.windDirection);
+
+    return OrbisPrecipitation(
+      colour: linearFromColour(
+        Color.lerp(const Color(0xFFB8C6D6), const Color(0xFFF2F5F8), asSnow)!,
+      ),
+      amount: total.clamp(0.0, 1.0),
+      // Nine metres a second for rain, under one for snow. It is the whole
+      // difference in how the two read.
+      fall: between(9, 0.8),
+      // Snow is taken by the wind far more than rain is: it weighs nothing
+      // and it has all day.
+      wind: Vector2(
+        heading.x * now.windSpeed * between(0.6, 1.6),
+        heading.z * now.windSpeed * between(0.6, 1.6),
+      ),
+      dropsPerMetre: between(8, 3.5),
+      // How far a drop travels while the shutter is open. A streak, or a
+      // flake.
+      stretch: between(30, 5),
+      threshold: between(0.7, 0.55),
+    );
+  }
+
+  /// How bright the lightning is this instant.
+  double get _flash {
+    final now = weatherNow;
+    if (now == null || now.lightning <= 0) return 0;
+    return WeatherState.flashAt(clock, now.lightning);
+  }
+
   /// A colour dragged towards the flat grey of a covered sky.
   static Color _greyed(Color colour, double amount) =>
       Color.lerp(colour, const Color(0xFF9BA3AB), amount.clamp(0.0, 1.0))!;
@@ -1015,7 +1069,14 @@ class EditorScene {
       // Cloud does not switch the sun off. A heavy overcast still passes a
       // good tenth of it, which is why a wet afternoon is grey rather than
       // dark: the camera opens up and the world stays legible.
-      power: (sky?.power ?? object.power) * (now?.transmitted ?? 1),
+      //
+      // A strike goes the other way, briefly and by a lot. It comes through
+      // the light that is already above the scene rather than as a second
+      // one: a flash is the sky lighting up, and the sky is what that light
+      // is standing in for.
+      power: (sky?.power ?? object.power) *
+          (now?.transmitted ?? 1) *
+          (1 + _flash * 60),
       radius: object.sourceRadius,
       spotSize: object.spotSize,
       spotBlend: object.spotBlend,
