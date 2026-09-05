@@ -23,6 +23,53 @@ enum WeatherCondition {
   final String label;
 }
 
+/// The shapes a sky's cloud can take.
+///
+/// A separate choice from the weather, because the same conditions produce
+/// very different skies and a scene should be able to say which it wants. A
+/// fair afternoon can be cauliflower cumulus with blue between them or one
+/// flat sheet of stratocumulus, and those are not the same picture at all.
+///
+/// Each is a real shape rather than a preset of the same shape: they differ in
+/// how high the base sits, how deep the layer is, how large its lumps are and
+/// how far the noise is folded, and folding is what separates a cauliflower
+/// from a sheet.
+enum CloudKind {
+  none('None'),
+
+  /// Flat bases at the condensation level, cauliflower tops, blue between.
+  cumulus('Cumulus'),
+
+  /// The lumps run together into a layer with breaks in it.
+  stratocumulus('Stratocumulus'),
+
+  /// The grey lid: low, shallow, and with almost no shape to it.
+  stratus('Stratus'),
+
+  /// Ice seven kilometres up, drawn into streaks by a wind nothing slows.
+  cirrus('Cirrus'),
+
+  /// Deep enough that its own base is in its own shadow.
+  cumulonimbus('Cumulonimbus');
+
+  const CloudKind(this.label);
+
+  final String label;
+
+  /// What a condition puts in the sky when nobody has said otherwise.
+  static CloudKind forCondition(WeatherCondition condition) =>
+      switch (condition) {
+        WeatherCondition.clear => CloudKind.none,
+        WeatherCondition.fair => CloudKind.cumulus,
+        WeatherCondition.hazy => CloudKind.cirrus,
+        WeatherCondition.misty => CloudKind.stratus,
+        WeatherCondition.overcast => CloudKind.stratocumulus,
+        WeatherCondition.rain => CloudKind.stratus,
+        WeatherCondition.storm => CloudKind.cumulonimbus,
+        WeatherCondition.snow => CloudKind.stratus,
+      };
+}
+
 /// What the air is doing.
 ///
 /// One value class for the whole of it, so a change of weather is one thing
@@ -43,7 +90,7 @@ class WeatherState {
     this.rain = 0,
     this.snow = 0,
     this.lightning = 0,
-    this.cloudHeight = 140,
+    this.cloudHeight = 900,
   });
 
   /// How much of the sky is covered, from nothing to everything.
@@ -146,6 +193,9 @@ class WeatherState {
       mist: 0.15,
       mistSize: 55,
       windSpeed: 2.5,
+      // Where fair-weather cumulus condense on a summer afternoon. It is the
+      // one height everybody has seen and nobody has measured.
+      cloudHeight: 900,
     ),
     WeatherCondition.hazy: WeatherState(
       cloudCover: 0.35,
@@ -156,6 +206,8 @@ class WeatherState {
       mist: 0.3,
       mistSize: 70,
       windSpeed: 2,
+      // Cirrus is ice, and ice needs the cold at seven kilometres.
+      cloudHeight: 7000,
     ),
     WeatherCondition.misty: WeatherState(
       cloudCover: 0.55,
@@ -170,7 +222,7 @@ class WeatherState {
       windSpeed: 1.2,
       // Low, because a misty morning is cloud that has come down to the
       // ground rather than a ceiling a long way off.
-      cloudHeight: 90,
+      cloudHeight: 320,
     ),
     WeatherCondition.overcast: WeatherState(
       cloudCover: 0.92,
@@ -181,6 +233,7 @@ class WeatherState {
       mist: 0.4,
       mistSize: 90,
       windSpeed: 4,
+      cloudHeight: 700,
     ),
     WeatherCondition.rain: WeatherState(
       cloudCover: 0.85,
@@ -192,6 +245,7 @@ class WeatherState {
       mistSize: 70,
       windSpeed: 5,
       rain: 0.65,
+      cloudHeight: 450,
     ),
     WeatherCondition.storm: WeatherState(
       cloudCover: 1,
@@ -204,7 +258,9 @@ class WeatherState {
       windSpeed: 12,
       rain: 0.95,
       lightning: 0.6,
-      cloudHeight: 220,
+      // The base of a thunderhead is low and the top of it is five kilometres
+      // higher. What makes a storm sky dark is its depth, not its height.
+      cloudHeight: 600,
     ),
     WeatherCondition.snow: WeatherState(
       cloudCover: 0.82,
@@ -214,6 +270,7 @@ class WeatherState {
       fogFalloff: 0.1,
       mist: 0.4,
       mistSize: 60,
+      cloudHeight: 500,
       // Snow falls in still air more often than not, and wind is what turns
       // it from weather into a problem.
       windSpeed: 2.2,
@@ -277,6 +334,30 @@ class WeatherState {
 
     return (stroke * (0.6 + 0.4 * _scatter(index * 13 + 5))).clamp(0.0, 1.0);
   }
+
+  /// Which strike the clock is in, lit or not.
+  ///
+  /// [flashAt] says how bright this instant is; this says which strike that
+  /// instant belongs to, which is what a bolt is drawn from. Two strikes of
+  /// the same storm are different shapes because they have different indices,
+  /// and the same strike is the same shape every time it is played.
+  static int strikeIndexAt(double clock, double frequency) {
+    if (frequency <= 0 || clock < 0) return 0;
+    return (clock / (14 / (0.2 + frequency * 3))).floor();
+  }
+
+  /// Where a strike is, as a compass bearing in radians and a height above
+  /// the horizon in radians.
+  ///
+  /// Scattered around the sky rather than always ahead, so a storm is
+  /// something happening around the scene instead of a light on a stand.
+  static ({double bearing, double height}) strikePlace(int index) => (
+    bearing: _scatter(index * 17 + 11) * 2 * math.pi,
+    height: 0.12 + _scatter(index * 23 + 4) * 0.34,
+  );
+
+  /// The seed a bolt's shape is drawn from.
+  static double strikeSeed(int index) => _scatter(index * 31 + 7) * 100;
 
   /// A number between zero and one that is always the same for the same
   /// input. Not a good random source and a perfectly good one for weather.

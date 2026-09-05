@@ -392,9 +392,9 @@ void main() {
       final clear = withWeather(WeatherState.of(WeatherCondition.clear));
       final covered = withWeather(WeatherState.of(WeatherCondition.overcast));
 
-      expect(clear.toRenderScene(camera).clouds.isVisible, isFalse);
+      expect(clear.toRenderScene(camera).sky.clouds.isVisible, isFalse);
 
-      final sky = covered.toRenderScene(camera).clouds;
+      final sky = covered.toRenderScene(camera).sky.clouds;
       expect(sky.isVisible, isTrue);
       expect(sky.cover, greaterThan(0.5));
       // Overhead, in metres, rather than anywhere near the ground.
@@ -406,6 +406,61 @@ void main() {
       );
     });
 
+    test('the cloud is lit from where the light actually comes from', () {
+      // The whole point of the sky being one object: a sun drawn in one
+      // place and a cloud lit from another is the single thing that gives a
+      // sky away, and it can only be got wrong if they are two objects.
+      final scene = withWeather(WeatherState.of(WeatherCondition.fair));
+      final rendered = scene.toRenderScene(camera);
+
+      final beam = rendered.lights
+          .firstWhere((light) => light.kind == OrbisLightKind.directional);
+
+      // Towards the body is away from where its light travels.
+      final towards = -beam.direction..normalize();
+      expect((rendered.sky.bodyDirection - towards).length, lessThan(0.001));
+    });
+
+    test('each shape of cloud is a different shape', () {
+      // Not presets of one shape with the numbers moved: they differ in how
+      // high the base sits and how deep the layer is, and no slider reaches
+      // either.
+      final cumulus = OrbisClouds.cumulus(cover: 0.5);
+      final cirrus = OrbisClouds.cirrus(cover: 0.5);
+      final storm = OrbisClouds.cumulonimbus(cover: 0.5);
+
+      // Ice needs the cold seven kilometres up; cumulus condense far lower.
+      expect(cirrus.altitude, greaterThan(cumulus.altitude * 4));
+      // A thunderhead is deep. That depth is why its base is dark.
+      expect(storm.thickness, greaterThan(cumulus.thickness * 3));
+      // And it is nearly a smooth sheet at one end and a cauliflower at the
+      // other.
+      expect(OrbisClouds.stratus(cover: 0.5).billow, lessThan(0.2));
+      expect(cumulus.billow, greaterThan(0.7));
+    });
+
+    test('a condition brings its own shape, and a choice overrules it', () {
+      final scene = withWeather(WeatherState.of(WeatherCondition.storm));
+      final weather = scene.objects
+          .firstWhere((object) => object.kind == ObjectKind.weather);
+      weather.condition = WeatherCondition.storm;
+
+      // A storm is a thunderhead, and a thunderhead is deep.
+      final automatic = scene.toRenderScene(camera).sky.clouds;
+      expect(automatic.thickness, greaterThan(2000));
+
+      // Until somebody says otherwise, at which point it is a different
+      // shape: streaks of ice rather than a folded cauliflower.
+      weather.cloudKind = CloudKind.cirrus;
+      final chosen = scene.toRenderScene(camera).sky.clouds;
+      expect(chosen.thickness, lessThan(automatic.thickness / 2));
+      expect(chosen.density, lessThan(automatic.density / 3));
+
+      // Including saying there should be none.
+      weather.cloudKind = CloudKind.none;
+      expect(scene.toRenderScene(camera).sky.clouds.isVisible, isFalse);
+    });
+
     test('the ground mist and the sky are set apart', () {
       final scene = withWeather(
         WeatherState.of(WeatherCondition.misty).copyWith(cloudCover: 0),
@@ -415,7 +470,7 @@ void main() {
       // Mist near the ground with a clear sky over it is a real morning, and
       // it has to be possible to ask for it.
       expect(rendered.fog.structure, greaterThan(0));
-      expect(rendered.clouds.isVisible, isFalse);
+      expect(rendered.sky.clouds.isVisible, isFalse);
     });
 
     test('cloud puts that light back as sky', () {

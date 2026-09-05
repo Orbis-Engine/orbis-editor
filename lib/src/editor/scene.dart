@@ -37,6 +37,7 @@ class SceneObject {
     this.body = CelestialBody.sun,
     WeatherState? weather,
     this.condition = WeatherCondition.clear,
+    this.cloudKind,
     this.windDirection = 135,
     this.transitionSeconds = 8,
     this.castShadows = true,
@@ -113,6 +114,15 @@ class SceneObject {
 
   /// The condition last applied, which is what the panel shows as chosen.
   WeatherCondition condition;
+
+  /// Which shape of cloud the sky has, or null to take the condition's own.
+  ///
+  /// Separate from the condition because the same weather makes very
+  /// different skies: a fair afternoon can be cauliflower cumulus with blue
+  /// between them or one flat sheet, and a scene should be able to say which.
+  /// Null rather than a default so that changing the condition still changes
+  /// the sky for anybody who has not made a choice.
+  CloudKind? cloudKind;
 
   /// Which way the wind blows, in degrees. Not part of a condition: a storm
   /// is windy wherever it is, and which way is a fact about the place.
@@ -205,6 +215,7 @@ class SceneObject {
         body: body,
         weather: weather,
         condition: condition,
+        cloudKind: cloudKind,
         windDirection: windDirection,
         transitionSeconds: transitionSeconds,
         castShadows: castShadows,
@@ -921,18 +932,21 @@ class EditorScene {
               ),
       ],
       lights: lights,
-      sky: OrbisSky(
-        colour: linearFromColour(
-          _greyed(driven ? sky.skyColour : skyColour, (air?.greying ?? 0) * 0.8),
+      sky: _skyFrom(
+        base: _greyed(
+          driven ? sky.skyColour : skyColour,
+          (air?.greying ?? 0) * 0.8,
         ),
-        ambient: ambientLux,
-        // Nothing to draw a disk for if the scene has no light above it, and
-        // one nobody can see should not appear in the sky either.
-        showBody: lit != null,
+        ambientLux: ambientLux,
+        lights: lights,
+        lit: lit,
+        body: driven ? sky : null,
+        air: air,
+        weather: weather ?? shared?.weather,
+        flash: flash,
       ),
       fog: _fogFrom(air, weather ?? shared?.weather),
       precipitation: _precipitationFrom(air, weather ?? shared?.weather),
-      clouds: _cloudsFrom(air, weather ?? shared?.weather),
       camera: driven ? _metered(camera, lights, ambientLux) : camera,
     );
   }
@@ -1052,39 +1066,168 @@ class EditorScene {
     );
   }
 
+  /// The sky: its gradient, the body in it, the cloud, and any strike.
+  ///
+  /// One object because it is one shader on one dome. Splitting it was the
+  /// mistake behind two rounds of cloud that did not read as sky: the cloud
+  /// was tinted a colour somebody chose, while the sun was drawn somewhere
+  /// else entirely, and nothing in the picture agreed with anything else.
+  /// Here the cloud is lit by the same direction the scene is.
+  OrbisSky _skyFrom({
+    required Color base,
+    required double ambientLux,
+    required List<OrbisLight> lights,
+    required SceneObject? lit,
+    required SkyState? body,
+    required WeatherState? air,
+    required SceneObject? weather,
+    required double flash,
+  }) {
+    final ground = linearFromColour(base);
+
+    // Which way the body is, taken from the light that is actually lighting
+    // the scene rather than from the clock. A sun drawn in one place and a
+    // cloud lit from another is the single thing that gives a sky away.
+    final beam = lights
+        .where((light) => light.kind == OrbisLightKind.directional)
+        .firstOrNull;
+    final toBody = beam == null
+        ? Vector3(0.35, 0.78, 0.52)
+        : (-beam.direction)
+      ..normalize();
+
+    // The body's own colour, at a brightness that says which body it is. The
+    // moon is the sun's light at a millionth of the strength and the exposure
+    // opens right up for it, so it needs saying here or the night has a
+    // second sun in it.
+    final night = toBody.y < 0.999 && body != null && body.body == CelestialBody.moon;
+    final bodyColour =
+        (beam == null ? Vector3(1.0, 0.96, 0.90) : beam.colour.clone())
+          ..scale(night ? 0.30 : 1.0);
+
+    // Overhead is the deepest part of a sky and the horizon the palest,
+    // because the horizon is where the most air is and every metre of it
+    // scatters. When the body is low the horizon takes its colour, which is
+    // the whole of a sunset.
+    final zenith = ground.clone()..scale(0.82);
+    final glow = body == null
+        ? 0.30
+        : (1 - (body.altitude / 0.45)).clamp(0.0, 1.0).toDouble();
+    final horizon = _mix(
+      _mix(ground, Vector3(0.72, 0.80, 0.92), 0.30),
+      bodyColour,
+      glow * 0.55,
+    );
+
+    return OrbisSky(
+      colour: ground,
+      zenith: zenith,
+      horizon: horizon,
+      ambient: ambientLux,
+      // Nothing to draw a disk for if the scene has no light above it, and
+      // one nobody can see should not appear in the sky either.
+      showBody: lit != null,
+      bodyDirection: toBody,
+      bodyColour: bodyColour,
+      // A degree across rather than the sun's own half-degree. A physically
+      // sized disc is four pixels on a normal screen, and a sun nobody can
+      // pick out of the glare is not worth drawing.
+      bodySize: 0.011,
+      flash: flash,
+      flashDirection: _strikeDirection(air, weather),
+      flashSeed: _strikeSeed(air, weather),
+      clouds: _cloudsFrom(air, weather, bodyColour),
+    );
+  }
+
+  /// Component-wise interpolation, which vector_math does not offer for
+  /// colours and which reads worse written out three times.
+  static Vector3 _mix(Vector3 from, Vector3 to, double t) => Vector3(
+    from.x + (to.x - from.x) * t,
+    from.y + (to.y - from.y) * t,
+    from.z + (to.z - from.z) * t,
+  );
+
+  /// Which way the current strike is, as a direction in the sky.
+  Vector3 _strikeDirection(WeatherState? now, SceneObject? object) {
+    if (now == null || object == null || now.lightning <= 0) {
+      return Vector3(0, 0.35, 1);
+    }
+    final place = WeatherState.strikePlace(
+      WeatherState.strikeIndexAt(clock, now.lightning),
+    );
+    return Vector3(
+      math.cos(place.height) * math.sin(place.bearing),
+      math.sin(place.height),
+      math.cos(place.height) * math.cos(place.bearing),
+    );
+  }
+
+  double _strikeSeed(WeatherState? now, SceneObject? object) =>
+      now == null || object == null || now.lightning <= 0
+      ? 0
+      : WeatherState.strikeSeed(
+          WeatherState.strikeIndexAt(clock, now.lightning),
+        );
+
   /// The cloud in the sky, which is not the same thing as the fog.
   ///
   /// Fog is the air between here and the horizon; cloud is a layer a long way
   /// overhead that the light comes through. A scene can have either without
   /// the other, and one setting doing both would be wrong for every scene
   /// that wants one of them.
-  OrbisClouds _cloudsFrom(WeatherState? now, SceneObject? object) {
+  ///
+  /// The kind is a shape, not a preset: which one is chosen decides how high
+  /// the base sits, how deep the layer is and how far its noise is folded,
+  /// and none of those can be reached by turning a cover slider.
+  OrbisClouds _cloudsFrom(
+    WeatherState? now,
+    SceneObject? object,
+    Vector3 bodyColour,
+  ) {
     if (now == null || object == null || now.cloudCover <= 0.01) {
       return OrbisClouds.none;
     }
 
+    // A condition that has no cloud of its own still gets one if somebody
+    // has turned the cover up, because the alternative is a slider that does
+    // nothing until the condition is changed too. The chosen kind wins over
+    // both, including when it is None.
+    final kind = object.cloudKind ??
+        switch (CloudKind.forCondition(object.condition)) {
+          CloudKind.none => CloudKind.cumulus,
+          final chosen => chosen,
+        };
+    if (kind == CloudKind.none) return OrbisClouds.none;
+
     final heading = WeatherState.windFrom(object.windDirection);
 
-    return OrbisClouds(
-      // What the underside looks like, which is what anybody standing under it
-      // sees: pale when it is thin and slate when it is not.
-      colour: linearFromColour(
-        Color.lerp(
-          const Color(0xFFC8D2DC),
-          const Color(0xFF6E7681),
-          now.cloudCover,
-        )!,
-      ),
-      cover: now.cloudCover,
-      // Carried faster than anything at ground level, because there is
-      // nothing up there to slow the wind down.
-      wind: Vector2(
-        heading.x * now.windSpeed * 2.5,
-        heading.z * now.windSpeed * 2.5,
-      ),
-      // Three hundred metres across, which is a summer's afternoon.
-      featureSize: 1 / 320,
+    // Carried faster than anything at ground level, because there is nothing
+    // up there to slow the wind down.
+    final wind = Vector2(
+      heading.x * now.windSpeed * 2.5,
+      heading.z * now.windSpeed * 2.5,
+    );
+
+    final clouds = switch (kind) {
+      CloudKind.none => OrbisClouds.none,
+      CloudKind.cumulus => OrbisClouds.cumulus(cover: now.cloudCover, wind: wind),
+      CloudKind.stratocumulus =>
+        OrbisClouds.stratocumulus(cover: now.cloudCover, wind: wind),
+      CloudKind.stratus => OrbisClouds.stratus(cover: now.cloudCover, wind: wind),
+      CloudKind.cirrus => OrbisClouds.cirrus(cover: now.cloudCover, wind: wind),
+      CloudKind.cumulonimbus =>
+        OrbisClouds.cumulonimbus(cover: now.cloudCover, wind: wind),
+    };
+
+    // The kind is the shape; the height is a setting on top of it, and the
+    // scene always has one.
+    return clouds.copyWith(
       altitude: now.cloudHeight,
+      // What the sky puts back into the shadowed side, warmed by whatever is
+      // above it. A cloud lit only from one side has a black underside, and
+      // no real one does.
+      colour: _mix(clouds.colour, bodyColour, 0.18),
     );
   }
 

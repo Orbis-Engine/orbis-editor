@@ -112,6 +112,10 @@ abstract final class SceneDocument {
         if (object.kind == ObjectKind.light) 'castShadows': object.castShadows,
         if (object.kind == ObjectKind.weather) ...{
           'condition': object.condition.name,
+          // Only written when somebody has chosen one, so a scene that
+          // follows its condition keeps following it when the mapping
+          // changes rather than being frozen at whatever it was.
+          if (object.cloudKind != null) 'cloudKind': object.cloudKind!.name,
           'windDirection': object.windDirection,
           'transition': object.transitionSeconds,
           'air': _airToJson(object.weather),
@@ -181,6 +185,10 @@ abstract final class SceneDocument {
                 orElse: () => null) ??
         WeatherCondition.clear;
 
+    final cloudKind = CloudKind.values
+        .cast<CloudKind?>()
+        .firstWhere((k) => k!.name == entry['cloudKind'], orElse: () => null);
+
     return SceneObject(
       id: id,
       name: entry['name'] is String ? entry['name']! as String : id,
@@ -198,6 +206,7 @@ abstract final class SceneDocument {
       sunAngle: number('sunAngle', 0.526),
       body: body,
       condition: condition,
+      cloudKind: cloudKind,
       weather: _airFromJson(entry['air'], condition),
       windDirection: number('windDirection', 135),
       transitionSeconds: number('transition', 8),

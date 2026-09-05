@@ -629,6 +629,54 @@ class SetCelestialBody extends EditorCommand {
 /// The values come with the name, because a condition is a set of them rather
 /// than a mode: once it has been applied, every one of them is free to be
 /// moved, and the name is only a record of where they started.
+/// Chooses which shape of cloud a sky has.
+///
+/// Separate from the condition because it is a separate decision: the same
+/// weather makes very different skies, and somebody who has asked for cirrus
+/// over a fair afternoon should keep it when they nudge the cover.
+class SetCloudKind extends EditorCommand {
+  SetCloudKind({
+    required this.sceneId,
+    required this.id,
+    required this.from,
+    required this.to,
+    required this.fromHeight,
+    required this.toHeight,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final CloudKind? from;
+  final CloudKind? to;
+
+  /// Where the base sits, which moves with the shape.
+  ///
+  /// Cirrus is ice seven kilometres up and cumulus condense below one, so a
+  /// shape that arrived without its height would arrive in the wrong place.
+  /// The slider still moves it afterwards; this is only where it starts.
+  final double fromHeight;
+  final double toHeight;
+
+  @override
+  String get label =>
+      to == null ? 'Follow the condition' : 'Set the cloud to ${to!.label.toLowerCase()}';
+
+  @override
+  void apply(SceneHost host) => _set(host, to, toHeight);
+
+  @override
+  void revert(SceneHost host) => _set(host, from, fromHeight);
+
+  void _set(SceneHost host, CloudKind? kind, double height) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    object.cloudKind = kind;
+    object.weather = object.weather.copyWith(cloudHeight: height);
+  }
+}
+
 class SetWeatherCondition extends EditorCommand {
   SetWeatherCondition({
     required this.sceneId,

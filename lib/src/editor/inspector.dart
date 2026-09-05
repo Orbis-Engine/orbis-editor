@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -885,17 +886,34 @@ class _Fields extends StatelessWidget {
             onChanged: (value) => _setAir(air.copyWith(cloudCover: value)),
             onSettled: history.seal,
           ),
-          if (air.cloudCover > 0.01)
+          if (air.cloudCover > 0.01) ...[
+            // What shape it is, which is a different question from how much
+            // of it there is. Automatic follows the condition, so somebody
+            // who has not made a choice still gets a new sky when the
+            // weather changes.
+            ChoiceRow(
+              label: 'Cloud',
+              options: const ['Auto', 'Cumulus', 'Stratocumulus'],
+              selected: _cloudLabel(object.cloudKind, 0),
+              onSelect: _setCloudKind,
+            ),
+            ChoiceRow(
+              label: '',
+              options: const ['Stratus', 'Cirrus', 'Cumulonimbus'],
+              selected: _cloudLabel(object.cloudKind, 1),
+              onSelect: _setCloudKind,
+            ),
             SliderRow(
               label: 'Cloud height',
               value: air.cloudHeight,
               min: 40,
-              max: 900,
+              max: 8000,
               decimals: 0,
               unit: ' m',
               onChanged: (value) => _setAir(air.copyWith(cloudHeight: value)),
               onSettled: history.seal,
             ),
+          ],
           SliderRow(
             label: 'Rain',
             value: air.rain,
@@ -1057,6 +1075,45 @@ class _Fields extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// Which of the two rows shows a tick, so the chosen one is lit and the
+  /// other is not — a row that always answers would show two.
+  String _cloudLabel(CloudKind? kind, int row) {
+    final name = kind == null ? 'Auto' : kind.label;
+    const rows = [
+      ['Auto', 'Cumulus', 'Stratocumulus'],
+      ['Stratus', 'Cirrus', 'Cumulonimbus'],
+    ];
+    return rows[row].contains(name) ? name : '';
+  }
+
+  /// Where a shape starts out, read off the shape itself rather than written
+  /// down twice.
+  double _heightFor(CloudKind? kind) => switch (kind) {
+    null || CloudKind.none => 900,
+    CloudKind.cumulus => OrbisClouds.cumulus().altitude,
+    CloudKind.stratocumulus => OrbisClouds.stratocumulus().altitude,
+    CloudKind.stratus => OrbisClouds.stratus().altitude,
+    CloudKind.cirrus => OrbisClouds.cirrus().altitude,
+    CloudKind.cumulonimbus => OrbisClouds.cumulonimbus().altitude,
+  };
+
+  void _setCloudKind(String label) {
+    final wanted = label == 'Auto'
+        ? null
+        : CloudKind.values.firstWhere((kind) => kind.label == label);
+    if (wanted == object.cloudKind) return;
+    history
+      ..run(SetCloudKind(
+        sceneId: sceneId,
+        id: object.id,
+        from: object.cloudKind,
+        to: wanted,
+        fromHeight: object.weather.cloudHeight,
+        toHeight: _heightFor(wanted),
+      ))
+      ..seal();
   }
 
   void _setCondition(String label) {
