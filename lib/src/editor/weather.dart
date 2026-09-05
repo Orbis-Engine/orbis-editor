@@ -43,6 +43,7 @@ class WeatherState {
     this.rain = 0,
     this.snow = 0,
     this.lightning = 0,
+    this.cloudHeight = 140,
   });
 
   /// How much of the sky is covered, from nothing to everything.
@@ -80,6 +81,12 @@ class WeatherState {
   /// How often it strikes, from never to every few seconds.
   final double lightning;
 
+  /// How high the cloud hangs, in metres.
+  ///
+  /// Low cloud is weather sitting on top of you and high cloud is a ceiling a
+  /// long way off; the same cover at two heights is two different days.
+  final double cloudHeight;
+
   /// Whether anything is falling.
   bool get isWet => rain + snow > 0;
 
@@ -96,6 +103,7 @@ class WeatherState {
     double? rain,
     double? snow,
     double? lightning,
+    double? cloudHeight,
   }) => WeatherState(
         cloudCover: cloudCover ?? this.cloudCover,
         fogColour: fogColour ?? this.fogColour,
@@ -108,6 +116,7 @@ class WeatherState {
         rain: rain ?? this.rain,
         snow: snow ?? this.snow,
         lightning: lightning ?? this.lightning,
+        cloudHeight: cloudHeight ?? this.cloudHeight,
       );
 
   /// What each condition is made of.
@@ -117,7 +126,9 @@ class WeatherState {
   /// under it reads as a sky that has nothing to do with the ground.
   static const Map<WeatherCondition, WeatherState> presets = {
     WeatherCondition.clear: WeatherState(
-      cloudCover: 0.02,
+      // None at all. A wisp of cover was in here as a nicety, and now that
+      // cover draws something it made a clear sky one with cloud in it.
+      cloudCover: 0,
       fogColour: Color(0xFFAFC2D6),
       fogDensity: 0.004,
       fogHeight: 0,
@@ -157,6 +168,9 @@ class WeatherState {
       mist: 0.75,
       mistSize: 22,
       windSpeed: 1.2,
+      // Low, because a misty morning is cloud that has come down to the
+      // ground rather than a ceiling a long way off.
+      cloudHeight: 90,
     ),
     WeatherCondition.overcast: WeatherState(
       cloudCover: 0.92,
@@ -190,6 +204,7 @@ class WeatherState {
       windSpeed: 12,
       rain: 0.95,
       lightning: 0.6,
+      cloudHeight: 220,
     ),
     WeatherCondition.snow: WeatherState(
       cloudCover: 0.82,
@@ -230,6 +245,7 @@ class WeatherState {
       rain: mix(from.rain, to.rain),
       snow: mix(from.snow, to.snow),
       lightning: mix(from.lightning, to.lightning),
+      cloudHeight: mix(from.cloudHeight, to.cloudHeight),
     );
   }
 

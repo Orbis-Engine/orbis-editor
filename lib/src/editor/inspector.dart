@@ -885,6 +885,17 @@ class _Fields extends StatelessWidget {
             onChanged: (value) => _setAir(air.copyWith(cloudCover: value)),
             onSettled: history.seal,
           ),
+          if (air.cloudCover > 0.01)
+            SliderRow(
+              label: 'Cloud height',
+              value: air.cloudHeight,
+              min: 40,
+              max: 900,
+              decimals: 0,
+              unit: ' m',
+              onChanged: (value) => _setAir(air.copyWith(cloudHeight: value)),
+              onSettled: history.seal,
+            ),
           SliderRow(
             label: 'Rain',
             value: air.rain,
@@ -1010,7 +1021,7 @@ class _Fields extends StatelessWidget {
               onSettled: history.seal,
             ),
             SliderRow(
-              label: 'Mist',
+              label: 'Ground mist',
               value: air.mist,
               min: 0,
               max: 1,
@@ -1020,7 +1031,7 @@ class _Fields extends StatelessWidget {
             ),
             if (air.mist > 0)
               SliderRow(
-                label: 'Cloud size',
+                label: 'Mist size',
                 value: air.mistSize,
                 min: 2,
                 max: 120,
@@ -1034,11 +1045,11 @@ class _Fields extends StatelessWidget {
                   const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
               child: Text(
                 air.mist > 0
-                    ? 'Mist draws the same air as banks of cloud, at the size '
-                        'you set, moving with the wind. Set the size to what '
-                        'the weather in this scene is measured in.'
+                    ? 'Mist is the air at ground level given a shape, moving '
+                        'with the wind. The cloud in the sky is the setting '
+                        'above — these are two different pieces of weather.'
                     : 'Density is the even haze that distance looks like. '
-                        'Mist gives it a shape.',
+                        'Mist gives it a shape near the ground.',
                 style: OrbisText.caption,
               ),
             ),

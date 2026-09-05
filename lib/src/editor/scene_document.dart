@@ -223,6 +223,7 @@ abstract final class SceneDocument {
         if (air.rain > 0) 'rain': air.rain,
         if (air.snow > 0) 'snow': air.snow,
         if (air.lightning > 0) 'lightning': air.lightning,
+        'cloudHeight': air.cloudHeight,
       };
 
   /// And back, falling through to the condition's own values for anything a
@@ -249,6 +250,7 @@ abstract final class SceneDocument {
       rain: number('rain', 0),
       snow: number('snow', 0),
       lightning: number('lightning', 0),
+      cloudHeight: number('cloudHeight', preset.cloudHeight),
     );
   }
 

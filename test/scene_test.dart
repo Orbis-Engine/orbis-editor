@@ -385,6 +385,39 @@ void main() {
       expect(dull.sunAngularRadius, greaterThan(bright.sunAngularRadius * 10));
     });
 
+    test('cloud is drawn in the sky, not in the fog', () {
+      // The two are different weather and were being confused: what was
+      // called cloud only dimmed the light, and what was drawn was the mist
+      // at ground level. Cover now puts something overhead.
+      final clear = withWeather(WeatherState.of(WeatherCondition.clear));
+      final covered = withWeather(WeatherState.of(WeatherCondition.overcast));
+
+      expect(clear.toRenderScene(camera).clouds.isVisible, isFalse);
+
+      final sky = covered.toRenderScene(camera).clouds;
+      expect(sky.isVisible, isTrue);
+      expect(sky.cover, greaterThan(0.5));
+      // Overhead, in metres, rather than anywhere near the ground.
+      expect(sky.altitude, greaterThan(40));
+      // And carried faster than anything at ground level is.
+      expect(
+        sky.wind.length,
+        greaterThan(covered.toRenderScene(camera).fog.wind.length),
+      );
+    });
+
+    test('the ground mist and the sky are set apart', () {
+      final scene = withWeather(
+        WeatherState.of(WeatherCondition.misty).copyWith(cloudCover: 0),
+      );
+      final rendered = scene.toRenderScene(camera);
+
+      // Mist near the ground with a clear sky over it is a real morning, and
+      // it has to be possible to ask for it.
+      expect(rendered.fog.structure, greaterThan(0));
+      expect(rendered.clouds.isVisible, isFalse);
+    });
+
     test('cloud puts that light back as sky', () {
       final clear = withWeather(WeatherState.of(WeatherCondition.clear));
       final covered = withWeather(WeatherState.of(WeatherCondition.overcast));

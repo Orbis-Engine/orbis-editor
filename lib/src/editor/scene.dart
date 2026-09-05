@@ -932,6 +932,7 @@ class EditorScene {
       ),
       fog: _fogFrom(air, weather ?? shared?.weather),
       precipitation: _precipitationFrom(air, weather ?? shared?.weather),
+      clouds: _cloudsFrom(air, weather ?? shared?.weather),
       camera: driven ? _metered(camera, lights, ambientLux) : camera,
     );
   }
@@ -1048,6 +1049,42 @@ class EditorScene {
       // flake.
       stretch: between(30, 5),
       threshold: between(0.7, 0.55),
+    );
+  }
+
+  /// The cloud in the sky, which is not the same thing as the fog.
+  ///
+  /// Fog is the air between here and the horizon; cloud is a layer a long way
+  /// overhead that the light comes through. A scene can have either without
+  /// the other, and one setting doing both would be wrong for every scene
+  /// that wants one of them.
+  OrbisClouds _cloudsFrom(WeatherState? now, SceneObject? object) {
+    if (now == null || object == null || now.cloudCover <= 0.01) {
+      return OrbisClouds.none;
+    }
+
+    final heading = WeatherState.windFrom(object.windDirection);
+
+    return OrbisClouds(
+      // What the underside looks like, which is what anybody standing under it
+      // sees: pale when it is thin and slate when it is not.
+      colour: linearFromColour(
+        Color.lerp(
+          const Color(0xFFC8D2DC),
+          const Color(0xFF6E7681),
+          now.cloudCover,
+        )!,
+      ),
+      cover: now.cloudCover,
+      // Carried faster than anything at ground level, because there is
+      // nothing up there to slow the wind down.
+      wind: Vector2(
+        heading.x * now.windSpeed * 2.5,
+        heading.z * now.windSpeed * 2.5,
+      ),
+      // Three hundred metres across, which is a summer's afternoon.
+      featureSize: 1 / 320,
+      altitude: now.cloudHeight,
     );
   }
 
