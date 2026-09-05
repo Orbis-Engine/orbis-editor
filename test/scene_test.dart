@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
+import 'package:orbis_editor/src/editor/weather.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -294,47 +295,36 @@ void main() {
     test('a scene with nothing moving does not ask to be animated', () {
       expect(withSun(cycle: false).isAnimated, isFalse);
       expect(withSun().isAnimated, isTrue);
-      expect((withSun(cycle: false)..mist = 0.5).isAnimated, isTrue);
     });
   });
 
-  group('mist', () {
-    EditorScene foggy({double mist = 0.6}) => EditorScene(
-          [],
-          fogDensity: 0.1,
-          fogHeight: 0,
-          mist: mist,
-        )..mistSpeed = 0.5;
+  group('weather', () {
+    EditorScene withWeather(
+      WeatherState air, {
+      double bearing = 90,
+      double transition = 8,
+    }) =>
+        EditorScene([
+          SceneObject(
+            id: 'weather',
+            name: 'Weather',
+            kind: ObjectKind.weather,
+            weather: air,
+            windDirection: bearing,
+            transitionSeconds: transition,
+          ),
+          SceneObject(id: 'sun', name: 'Sun', kind: ObjectKind.light),
+        ]);
 
-    test('the layer moves as the clock does', () {
-      final scene = foggy();
-      final camera = OrbitCamera().toRenderCamera();
-
-      final first = scene.toRenderScene(camera).fog;
-      scene.clock = 0.9;
-      final later = scene.toRenderScene(camera).fog;
-
-      expect(later.density, isNot(closeTo(first.density, 1e-6)));
-      expect(later.height, isNot(closeTo(first.height, 1e-6)));
-    });
-
-    test('still air stays exactly where it was put', () {
-      final scene = foggy(mist: 0);
-      final camera = OrbitCamera().toRenderCamera();
-
-      final first = scene.toRenderScene(camera).fog;
-      scene.clock = 12.5;
-      final later = scene.toRenderScene(camera).fog;
-
-      expect(later.density, first.density);
-      expect(later.height, first.height);
-    });
+    final camera = OrbitCamera().toRenderCamera();
 
     test('mist asks for shape as well as haze', () {
-      final scene = foggy(mist: 0.8)..mistSize = 40;
-      final fog = scene.toRenderScene(OrbitCamera().toRenderCamera()).fog;
+      final scene = withWeather(
+        WeatherState.of(WeatherCondition.misty).copyWith(mistSize: 40),
+      );
+      final fog = scene.toRenderScene(camera).fog;
 
-      expect(fog.structure, 0.8);
+      expect(fog.structure, greaterThan(0));
       // Stated in metres and sent as turns per metre.
       expect(fog.featureSize, closeTo(1 / 40, 1e-9));
       // The even haze is still under it: banks with no haze behind them read
@@ -343,21 +333,124 @@ void main() {
       expect(fog.thickness, greaterThan(0));
     });
 
-    test('still air asks for no shape at all', () {
-      final fog = foggy(mist: 0)
-          .toRenderScene(OrbitCamera().toRenderCamera())
+    test('clear weather asks for no shape at all', () {
+      final fog = withWeather(WeatherState.of(WeatherCondition.clear))
+          .toRenderScene(camera)
           .fog;
       expect(fog.structure, 0);
     });
 
-    test('it thins and thickens without ever blinking out', () {
-      final scene = foggy(mist: 1);
-      final camera = OrbitCamera().toRenderCamera();
+    test('a scene with no weather in it has clear air', () {
+      final scene = EditorScene([
+        SceneObject(id: 'cube', name: 'Cube', kind: ObjectKind.mesh),
+      ]);
+      expect(scene.toRenderScene(camera).fog.isVisible, isFalse);
+    });
 
-      for (var step = 0; step < 400; step++) {
-        scene.clock = step * 0.05;
-        expect(scene.toRenderScene(camera).fog.density, greaterThan(0));
-      }
+    test('hiding the weather clears the air', () {
+      final scene = withWeather(WeatherState.of(WeatherCondition.storm));
+      scene['weather']!.visible = false;
+
+      expect(scene.toRenderScene(camera).fog.isVisible, isFalse);
+    });
+
+    test('the wind blows the way the bearing says', () {
+      final east = withWeather(
+        WeatherState.of(WeatherCondition.storm),
+        bearing: 90,
+      ).toRenderScene(camera).fog.wind;
+      final north = withWeather(
+        WeatherState.of(WeatherCondition.storm),
+        bearing: 0,
+      ).toRenderScene(camera).fog.wind;
+
+      expect(east.x, greaterThan(east.y.abs()));
+      expect(north.y, greaterThan(north.x.abs()));
+      // And it carries the speed of the weather it belongs to.
+      expect(
+        east.length,
+        closeTo(WeatherState.of(WeatherCondition.storm).windSpeed, 1e-9),
+      );
+    });
+
+    test('cloud takes the strength out of what is above the scene', () {
+      final clear = withWeather(WeatherState.of(WeatherCondition.clear));
+      final covered = withWeather(WeatherState.of(WeatherCondition.overcast));
+
+      final bright = clear.toRenderScene(camera).lights.single;
+      final dull = covered.toRenderScene(camera).lights.single;
+
+      expect(dull.intensity, lessThan(bright.intensity * 0.3));
+      // And widens it, which is what softens the shadows.
+      expect(dull.sunAngularRadius, greaterThan(bright.sunAngularRadius * 10));
+    });
+
+    test('cloud puts that light back as sky', () {
+      final clear = withWeather(WeatherState.of(WeatherCondition.clear));
+      final covered = withWeather(WeatherState.of(WeatherCondition.overcast));
+
+      expect(
+        covered.toRenderScene(camera).sky.ambient,
+        greaterThan(clear.toRenderScene(camera).sky.ambient * 2),
+      );
+    });
+
+    test('a change of condition arrives over time rather than at once', () {
+      final scene = withWeather(
+        WeatherState.of(WeatherCondition.clear),
+        transition: 10,
+      );
+      final object = scene['weather']!;
+
+      object.blendFrom = WeatherState.of(WeatherCondition.clear);
+      object.blendSince = 0;
+      object.weather = WeatherState.of(WeatherCondition.storm);
+
+      scene.clock = 0;
+      expect(scene.weatherNow!.cloudCover,
+          closeTo(WeatherState.of(WeatherCondition.clear).cloudCover, 1e-9));
+
+      scene.clock = 5;
+      final half = scene.weatherNow!.cloudCover;
+      expect(half, greaterThan(0.4));
+      expect(half, lessThan(0.6));
+
+      scene.clock = 11;
+      expect(scene.weatherNow!.cloudCover, 1);
+    });
+
+    test('a scene in the middle of changing its weather is animated', () {
+      final scene = withWeather(
+        WeatherState.of(WeatherCondition.clear),
+        transition: 10,
+      );
+      scene['weather']!
+        ..blendFrom = WeatherState.of(WeatherCondition.storm)
+        ..blendSince = 0;
+
+      scene.clock = 2;
+      expect(scene.isAnimated, isTrue);
+
+      // Settled: the renderer moves the cloud on its own clock from here, so
+      // the editor has nothing left to tick for.
+      scene.clock = 20;
+      expect(scene.isAnimated, isFalse);
+    });
+
+    test('one scene, one answer about the weather', () {
+      final scene = withWeather(WeatherState.of(WeatherCondition.storm));
+      scene.add(SceneObject(
+        id: 'second',
+        name: 'Weather',
+        kind: ObjectKind.weather,
+        weather: WeatherState.of(WeatherCondition.clear),
+      ));
+
+      expect(scene.hasSpareWeather, isTrue);
+      // The first one is it, and the second is ignored rather than blended
+      // with or fought over.
+      expect(scene.weatherNow!.mist,
+          WeatherState.of(WeatherCondition.storm).mist);
     });
   });
 

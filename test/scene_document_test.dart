@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
+import 'package:orbis_editor/src/editor/weather.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -120,41 +121,79 @@ void main() {
   });
 
   group('what the scene itself holds', () {
-    test('the fog comes back as it was set', () {
-      final before = EditorScene(
-        [],
+    test('the weather comes back as it was set', () {
+      final air = WeatherState.of(WeatherCondition.misty).copyWith(
+        cloudCover: 0.43,
         fogColour: const Color(0xFF334455),
-        fogDensity: 0.12,
-        fogHeight: -3,
-        fogFalloff: 0.75,
+        mistSize: 45,
+        windSpeed: 7.5,
       );
+      final before = EditorScene([
+        SceneObject(
+          id: 'weather',
+          name: 'Weather',
+          kind: ObjectKind.weather,
+          condition: WeatherCondition.misty,
+          weather: air,
+          windDirection: 210,
+          transitionSeconds: 14,
+        ),
+      ]);
 
-      final after = SceneDocument.decode(SceneDocument.encode(before)).scene;
+      final after =
+          SceneDocument.decode(SceneDocument.encode(before)).scene['weather']!;
 
-      expect(after.fogColour.toARGB32(), 0xFF334455);
-      expect(after.fogDensity, 0.12);
-      expect(after.fogHeight, -3);
-      expect(after.fogFalloff, 0.75);
+      expect(after.condition, WeatherCondition.misty);
+      expect(after.windDirection, 210);
+      expect(after.transitionSeconds, 14);
+      expect(after.weather.cloudCover, 0.43);
+      expect(after.weather.fogColour.toARGB32(), 0xFF334455);
+      expect(after.weather.mistSize, 45);
+      expect(after.weather.windSpeed, 7.5);
     });
 
-    test('the weather in the fog comes back too', () {
-      final before = EditorScene([], fogDensity: 0.1)
-        ..mist = 0.7
-        ..mistSpeed = 0.22
-        ..mistSize = 45;
-
-      final after = SceneDocument.decode(SceneDocument.encode(before)).scene;
-
-      expect(after.mist, 0.7);
-      expect(after.mistSpeed, 0.22);
-      expect(after.mistSize, 45);
-    });
-
-    test('a scene from before fog existed is clear rather than grey', () {
+    test('a scene that had fog of its own gets an object to hold it', () {
+      // Version two kept the air on the scene. Weather is a thing that
+      // changes, and a set of fields can only hold one end of a change, so an
+      // old scene's fog becomes the object that can hold both.
       const text = '''
-{"formatVersion": 1, "name": "Old", "objects": []}
+{
+  "formatVersion": 2,
+  "name": "Old",
+  "fog": {
+    "colour": "#C9D2DA",
+    "density": 0.05,
+    "height": -1.5,
+    "falloff": 0.4,
+    "mist": 0.6,
+    "mistSpeed": 0.25,
+    "mistSize": 22
+  },
+  "objects": []
+}
 ''';
-      expect(SceneDocument.decode(text).scene.fogDensity, 0);
+
+      final loaded = SceneDocument.decode(text);
+      final weather = loaded.scene.weather;
+
+      expect(weather, isNotNull);
+      expect(weather!.weather.fogDensity, 0.05);
+      expect(weather.weather.fogHeight, -1.5);
+      expect(weather.weather.mist, 0.6);
+      expect(weather.weather.mistSize, 22);
+      // The old drift was a rate the layer breathed at; wind is a speed
+      // across the ground.
+      expect(weather.weather.windSpeed, closeTo(1.0, 1e-9));
+      // Said out loud, because a scene that quietly grew an object is a
+      // scene somebody will wonder about.
+      expect(loaded.problems, isNotEmpty);
+    });
+
+    test('a scene that had no fog does not grow an object for it', () {
+      const text = '''
+{"formatVersion": 2, "name": "Old", "objects": []}
+''';
+      expect(SceneDocument.decode(text).scene.weather, isNull);
     });
 
     test('hidden objects are remembered, shown ones stay out of the file', () {

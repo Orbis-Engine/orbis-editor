@@ -6,6 +6,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'scene.dart';
 import 'sky.dart';
+import 'weather.dart';
 
 /// The extension a scene file carries.
 const String sceneExtension = '.oscene';
@@ -46,11 +47,14 @@ class SceneFormatException implements Exception {
 abstract final class SceneDocument {
   /// Bumped when the shape changes in a way an older editor could misread.
   ///
-  /// Two, because a light's power changed units. Version one stated every
-  /// light in watts and converted them all as if they were bulbs; a sun is
-  /// stated in watts per square metre, and reading an old number as a new one
-  /// would make every outdoor scene about twelve times too bright.
-  static const int formatVersion = 2;
+  /// Two was a light's power changing units: version one stated every light in
+  /// watts and converted them all as if they were bulbs, and a sun is stated
+  /// in watts per square metre.
+  ///
+  /// Three moved the air out of the scene and into an object. Weather is a
+  /// thing that changes, and a change needs somewhere to live that can hold
+  /// both ends of it — a set of fields on the scene can only hold one.
+  static const int formatVersion = 3;
 
   static const JsonEncoder _encoder = JsonEncoder.withIndent('  ');
 
@@ -62,17 +66,6 @@ abstract final class SceneDocument {
       // in it — there was nowhere to put them until it had a row of its own.
       'sky': _hex(scene.skyColour),
       'ambient': scene.ambient,
-      // Written even when there is none, because a scene that has had its fog
-      // turned off should save as fog-free rather than as silent about it.
-      'fog': {
-        'colour': _hex(scene.fogColour),
-        'density': scene.fogDensity,
-        'height': scene.fogHeight,
-        'falloff': scene.fogFalloff,
-        'mist': scene.mist,
-        'mistSpeed': scene.mistSpeed,
-        'mistSize': scene.mistSize,
-      },
       // The hour is what the scene was authored at, not wherever a running
       // cycle had carried it to. A clock left going should not rewrite
       // somebody's scene every time it is saved.
@@ -117,6 +110,12 @@ abstract final class SceneDocument {
           'receiveShadows': object.receiveShadows,
         },
         if (object.kind == ObjectKind.light) 'castShadows': object.castShadows,
+        if (object.kind == ObjectKind.weather) ...{
+          'condition': object.condition.name,
+          'windDirection': object.windDirection,
+          'transition': object.transitionSeconds,
+          'air': _airToJson(object.weather),
+        },
         // Only written when it is false, so the ordinary case stays out of
         // the file and out of everybody's diffs.
         if (!object.visible) 'visible': false,
@@ -176,6 +175,12 @@ abstract final class SceneDocument {
             .firstWhere((b) => b!.name == entry['body'], orElse: () => null) ??
         CelestialBody.sun;
 
+    final condition = WeatherCondition.values
+            .cast<WeatherCondition?>()
+            .firstWhere((c) => c!.name == entry['condition'],
+                orElse: () => null) ??
+        WeatherCondition.clear;
+
     return SceneObject(
       id: id,
       name: entry['name'] is String ? entry['name']! as String : id,
@@ -192,10 +197,50 @@ abstract final class SceneDocument {
       sourceRadius: number('sourceRadius', 0.1),
       sunAngle: number('sunAngle', 0.526),
       body: body,
+      condition: condition,
+      weather: _airFromJson(entry['air'], condition),
+      windDirection: number('windDirection', 135),
+      transitionSeconds: number('transition', 8),
       castShadows: flag('castShadows'),
       receiveShadows: flag('receiveShadows'),
       visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
+    );
+  }
+
+  /// What the air is doing, as JSON.
+  static Map<String, Object?> _airToJson(WeatherState air) => {
+        'cover': air.cloudCover,
+        'colour': _hex(air.fogColour),
+        'density': air.fogDensity,
+        'height': air.fogHeight,
+        'falloff': air.fogFalloff,
+        'mist': air.mist,
+        'size': air.mistSize,
+        'wind': air.windSpeed,
+      };
+
+  /// And back, falling through to the condition's own values for anything a
+  /// file does not say.
+  static WeatherState _airFromJson(
+    Object? raw,
+    WeatherCondition condition,
+  ) {
+    final preset = WeatherState.of(condition);
+    if (raw is! Map<String, Object?>) return preset;
+
+    double number(String key, double fallback) =>
+        raw[key] is num ? (raw[key]! as num).toDouble() : fallback;
+
+    return WeatherState(
+      cloudCover: number('cover', preset.cloudCover),
+      fogColour: _readColour(raw['colour'], fallback: preset.fogColour),
+      fogDensity: number('density', preset.fogDensity),
+      fogHeight: number('height', preset.fogHeight),
+      fogFalloff: number('falloff', preset.fogFalloff),
+      mist: number('mist', preset.mist),
+      mistSize: number('size', preset.mistSize),
+      windSpeed: number('wind', preset.windSpeed),
     );
   }
 
@@ -298,6 +343,42 @@ abstract final class SceneDocument {
 
     _breakCycles(objects, problems);
 
+    // Scenes written while the air was a set of fields on the scene itself.
+    // Weather is a thing that changes, and it now lives in an object that can
+    // hold a change — so the old fields become one.
+    if (version < 3 && _fogNumber(parsed, 'density', 0) > 0) {
+      final mist = _fogNumber(parsed, 'mist', 0);
+      objects.add(SceneObject(
+        id: _freeId(seen, 'weather'),
+        name: 'Weather',
+        kind: ObjectKind.weather,
+        condition:
+            mist > 0 ? WeatherCondition.misty : WeatherCondition.hazy,
+        weather: WeatherState(
+          // Nothing in the old shape said anything about cloud, so a
+          // converted scene starts with a clear sky over its fog.
+          cloudCover: 0,
+          fogColour: _readColour(
+            _fogField(parsed, 'colour'),
+            fallback: const Color(0xFF7D8794),
+          ),
+          fogDensity: _fogNumber(parsed, 'density', 0),
+          fogHeight: _fogNumber(parsed, 'height', 0),
+          fogFalloff: _fogNumber(parsed, 'falloff', 0.2),
+          mist: mist,
+          mistSize: _fogNumber(parsed, 'mistSize', 30),
+          // The old drift was a rate the layer breathed at rather than a
+          // speed across the ground. Four metres a second per unit of it is
+          // what makes a scene look about as windy as it did.
+          windSpeed: _fogNumber(parsed, 'mistSpeed', 0.08) * 4,
+        ),
+      ));
+      problems.add(
+        'The fog in this scene is now a Weather object, which can also do '
+        'cloud and wind.',
+      );
+    }
+
     final name = parsed['name'] is String ? parsed['name']! as String : null;
 
     return SceneLoad(
@@ -309,16 +390,6 @@ abstract final class SceneDocument {
             : _readColour(parsed['sky'], fallback: const Color(0xFF59616F)),
         ambient:
             parsed['ambient'] is num ? (parsed['ambient']! as num).toDouble() : 28000,
-        fogColour: _readColour(
-          _fogField(parsed, 'colour'),
-          fallback: const Color(0xFF7D8794),
-        ),
-        fogDensity: _fogNumber(parsed, 'density', 0),
-        fogHeight: _fogNumber(parsed, 'height', 0),
-        fogFalloff: _fogNumber(parsed, 'falloff', 0.2),
-        mist: _fogNumber(parsed, 'mist', 0),
-        mistSpeed: _fogNumber(parsed, 'mistSpeed', 0.08),
-        mistSize: _fogNumber(parsed, 'mistSize', 30),
         timeOfDay: _timeNumber(parsed, 'hour', 10),
         dayCycle: _timeField(parsed, 'cycle') is bool
             ? _timeField(parsed, 'cycle')! as bool
@@ -398,6 +469,16 @@ abstract final class SceneDocument {
   ) {
     final value = _fogField(parsed, key);
     return value is num ? value.toDouble() : fallback;
+  }
+
+  /// An id nothing is already using, for an object a conversion invents.
+  static String _freeId(Set<String> taken, String wanted) {
+    if (taken.add(wanted)) return wanted;
+    var attempt = 2;
+    while (!taken.add('$wanted$attempt')) {
+      attempt++;
+    }
+    return '$wanted$attempt';
   }
 
   /// One field of the time block, or null when a file predates having one.

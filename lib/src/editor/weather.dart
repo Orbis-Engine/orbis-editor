@@ -1,0 +1,209 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+/// The kinds of weather a scene can be put into.
+///
+/// Named states rather than a pile of sliders, because that is how anybody
+/// thinks about weather: somebody wants an overcast afternoon, not a cloud
+/// cover of 0.9 and a fog density of 0.03. The sliders are still there
+/// underneath — a condition is a place to start from, not a cage.
+enum WeatherCondition {
+  clear('Clear'),
+  fair('Fair'),
+  hazy('Hazy'),
+  misty('Misty'),
+  overcast('Overcast'),
+  storm('Storm');
+
+  const WeatherCondition(this.label);
+
+  final String label;
+}
+
+/// What the air is doing.
+///
+/// One value class for the whole of it, so a change of weather is one thing
+/// that can be interpolated rather than eight that have to be kept in step.
+/// That is the entire reason this is not a handful of fields on the scene:
+/// weather is a thing that *changes*, and a change needs both ends of it in
+/// one place.
+class WeatherState {
+  const WeatherState({
+    required this.cloudCover,
+    required this.fogColour,
+    required this.fogDensity,
+    required this.fogHeight,
+    required this.fogFalloff,
+    required this.mist,
+    required this.mistSize,
+    required this.windSpeed,
+  });
+
+  /// How much of the sky is covered, from nothing to everything.
+  ///
+  /// The setting with the longest reach. Cloud takes the strength out of
+  /// whatever is above the scene, spreads it across the sky instead, and
+  /// widens the source until the shadows go soft and then disappear — which
+  /// is what an overcast day actually is.
+  final double cloudCover;
+
+  final Color fogColour;
+
+  /// How thick the air is, per metre.
+  final double fogDensity;
+
+  /// Where the layer sits, and how quickly it thins going up.
+  final double fogHeight;
+  final double fogFalloff;
+
+  /// How much shape the air has, and how large that shape is in metres.
+  final double mist;
+  final double mistSize;
+
+  /// Metres a second.
+  final double windSpeed;
+
+  /// The same weather with one thing about it changed.
+  WeatherState copyWith({
+    double? cloudCover,
+    Color? fogColour,
+    double? fogDensity,
+    double? fogHeight,
+    double? fogFalloff,
+    double? mist,
+    double? mistSize,
+    double? windSpeed,
+  }) => WeatherState(
+        cloudCover: cloudCover ?? this.cloudCover,
+        fogColour: fogColour ?? this.fogColour,
+        fogDensity: fogDensity ?? this.fogDensity,
+        fogHeight: fogHeight ?? this.fogHeight,
+        fogFalloff: fogFalloff ?? this.fogFalloff,
+        mist: mist ?? this.mist,
+        mistSize: mistSize ?? this.mistSize,
+        windSpeed: windSpeed ?? this.windSpeed,
+      );
+
+  /// What each condition is made of.
+  ///
+  /// Tuned as a set rather than one at a time: fog that is thick without
+  /// being white reads as dirt on the lens, and cloud cover with no haze
+  /// under it reads as a sky that has nothing to do with the ground.
+  static const Map<WeatherCondition, WeatherState> presets = {
+    WeatherCondition.clear: WeatherState(
+      cloudCover: 0.02,
+      fogColour: Color(0xFFAFC2D6),
+      fogDensity: 0.004,
+      fogHeight: 0,
+      fogFalloff: 0.15,
+      mist: 0,
+      mistSize: 40,
+      windSpeed: 1.5,
+    ),
+    WeatherCondition.fair: WeatherState(
+      cloudCover: 0.25,
+      fogColour: Color(0xFFB6C4D2),
+      fogDensity: 0.008,
+      fogHeight: 0,
+      fogFalloff: 0.2,
+      mist: 0.15,
+      mistSize: 55,
+      windSpeed: 2.5,
+    ),
+    WeatherCondition.hazy: WeatherState(
+      cloudCover: 0.35,
+      fogColour: Color(0xFFC8CDD3),
+      fogDensity: 0.022,
+      fogHeight: 1,
+      fogFalloff: 0.12,
+      mist: 0.3,
+      mistSize: 70,
+      windSpeed: 2,
+    ),
+    WeatherCondition.misty: WeatherState(
+      cloudCover: 0.55,
+      fogColour: Color(0xFFDCE0E4),
+      fogDensity: 0.055,
+      // Below the ground the scene stands on, so the bank lies in the low
+      // places and the tops of things come out of it.
+      fogHeight: -1.5,
+      fogFalloff: 0.4,
+      mist: 0.75,
+      mistSize: 22,
+      windSpeed: 1.2,
+    ),
+    WeatherCondition.overcast: WeatherState(
+      cloudCover: 0.92,
+      fogColour: Color(0xFFA8AEB6),
+      fogDensity: 0.03,
+      fogHeight: 0,
+      fogFalloff: 0.1,
+      mist: 0.4,
+      mistSize: 90,
+      windSpeed: 4,
+    ),
+    WeatherCondition.storm: WeatherState(
+      cloudCover: 1,
+      fogColour: Color(0xFF7C838C),
+      fogDensity: 0.07,
+      fogHeight: 0,
+      fogFalloff: 0.14,
+      mist: 0.9,
+      mistSize: 45,
+      windSpeed: 12,
+    ),
+  };
+
+  static WeatherState of(WeatherCondition condition) =>
+      presets[condition] ?? presets[WeatherCondition.clear]!;
+
+  /// Part of the way from one weather to another.
+  ///
+  /// Straight lines through every value. Weather has no business easing: air
+  /// thickens at whatever rate it thickens, and a curve here would only be a
+  /// curve somebody has to undo when they want the plain one.
+  static WeatherState lerp(WeatherState from, WeatherState to, double t) {
+    final at = t.clamp(0.0, 1.0);
+    double mix(double a, double b) => a + (b - a) * at;
+
+    return WeatherState(
+      cloudCover: mix(from.cloudCover, to.cloudCover),
+      fogColour: Color.lerp(from.fogColour, to.fogColour, at)!,
+      fogDensity: mix(from.fogDensity, to.fogDensity),
+      fogHeight: mix(from.fogHeight, to.fogHeight),
+      fogFalloff: mix(from.fogFalloff, to.fogFalloff),
+      mist: mix(from.mist, to.mist),
+      mistSize: mix(from.mistSize, to.mistSize),
+      windSpeed: mix(from.windSpeed, to.windSpeed),
+    );
+  }
+
+  /// How much of what is above the scene still reaches it.
+  ///
+  /// Cloud does not switch the sun off. A heavy overcast still passes a good
+  /// tenth of the light, which is why a rainy afternoon is grey rather than
+  /// dark — the meter opens up and the world stays legible.
+  double get transmitted => 1 - 0.88 * cloudCover;
+
+  /// How much wider the source becomes, as a multiplier on its angle.
+  ///
+  /// This is the whole difference between a bright day and a dull one: the
+  /// sun is a disc a half-degree across, and cloud turns it into a source the
+  /// size of the sky. Shadows lose their edges long before they lose their
+  /// darkness.
+  double get spread => 1 + cloudCover * cloudCover * 60;
+
+  /// How much more of the light arrives from everywhere rather than from one
+  /// direction. A covered sky is one enormous diffuser.
+  double get scattered => 1 + cloudCover * 2.5;
+
+  /// How far towards a flat grey the light and the sky are dragged.
+  double get greying => cloudCover * 0.7;
+
+  /// Which way the wind is blowing, as a direction on the ground.
+  static ({double x, double z}) windFrom(double degrees) {
+    final radians = degrees * math.pi / 180;
+    return (x: math.sin(radians), z: math.cos(radians));
+  }
+}

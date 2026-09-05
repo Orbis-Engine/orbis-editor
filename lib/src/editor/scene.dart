@@ -6,11 +6,12 @@ import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
 
 import 'sky.dart';
+import 'weather.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
 /// therefore what the inspector shows.
-enum ObjectKind { scene, mesh, light, camera, group }
+enum ObjectKind { scene, mesh, light, camera, group, weather }
 
 /// One object in the edited scene.
 ///
@@ -34,11 +35,16 @@ class SceneObject {
     this.sourceRadius = 0.1,
     this.sunAngle = 0.526,
     this.body = CelestialBody.sun,
+    WeatherState? weather,
+    this.condition = WeatherCondition.clear,
+    this.windDirection = 135,
+    this.transitionSeconds = 8,
     this.castShadows = true,
     this.receiveShadows = true,
     this.visible = true,
     this.meshAsset,
-  })  : position = position ?? Vector3.zero(),
+  })  : weather = weather ?? WeatherState.of(condition),
+        position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
         scale = scale ?? Vector3(1, 1, 1);
 
@@ -96,6 +102,32 @@ class SceneObject {
   /// edge, and anything with size gives a penumbra that widens with distance.
   double sourceRadius;
 
+  /// What the air is doing, for the object that is the weather.
+  ///
+  /// The values rather than the name: a condition is where they came from and
+  /// they are free to be moved afterwards. Held as one object because weather
+  /// changes, and a change needs both ends of it in one place — eight fields
+  /// on the object would be eight things to keep in step through a
+  /// transition.
+  WeatherState weather;
+
+  /// The condition last applied, which is what the panel shows as chosen.
+  WeatherCondition condition;
+
+  /// Which way the wind blows, in degrees. Not part of a condition: a storm
+  /// is windy wherever it is, and which way is a fact about the place.
+  double windDirection;
+
+  /// How long a change of condition takes to arrive, in seconds.
+  double transitionSeconds;
+
+  /// The weather this object is on its way from, and when it set off.
+  ///
+  /// Not saved and not part of the document: a scene reopened tomorrow is in
+  /// the weather it was saved in, not halfway into it.
+  WeatherState? blendFrom;
+  double blendSince = 0;
+
   /// Which body a directional light is, when nothing else is deciding.
   ///
   /// A day cycle decides for itself — whatever is above the horizon — and this
@@ -135,6 +167,7 @@ class SceneObject {
         ObjectKind.mesh => Icons.view_in_ar_outlined,
         ObjectKind.light => Icons.wb_sunny_outlined,
         ObjectKind.camera => Icons.videocam_outlined,
+        ObjectKind.weather => Icons.cloud_outlined,
       };
 
   /// Whether this object is drawn.
@@ -170,6 +203,10 @@ class SceneObject {
         sourceRadius: sourceRadius,
         sunAngle: sunAngle,
         body: body,
+        weather: weather,
+        condition: condition,
+        windDirection: windDirection,
+        transitionSeconds: transitionSeconds,
         castShadows: castShadows,
         receiveShadows: receiveShadows,
         visible: visible,
@@ -273,19 +310,11 @@ class EditorScene {
     this.name = 'Scene',
     Color? skyColour,
     this.ambient = 28000,
-    Color? fogColour,
-    this.fogDensity = 0,
-    this.fogHeight = 0,
-    this.fogFalloff = 0.2,
-    this.mist = 0,
-    this.mistSpeed = 0.08,
-    this.mistSize = 30,
     this.timeOfDay = 10,
     this.dayCycle = false,
     this.hoursPerSecond = 0.5,
   })  : _objects = objects,
-        skyColour = skyColour ?? const Color(0xFF1A2029),
-        fogColour = fogColour ?? const Color(0xFF7D8794) {
+        skyColour = skyColour ?? const Color(0xFF1A2029) {
     for (final object in objects) {
       if (_byId.containsKey(object.id)) {
         throw SceneError('Two objects share the id "${object.id}".');
@@ -370,6 +399,10 @@ class EditorScene {
             colour: const Color(0xFFE5B84F)),
         SceneObject(id: 'camera', name: 'Camera', kind: ObjectKind.camera,
             position: Vector3(6, 4, 8), rotation: Vector3(-20, 35, 0)),
+        // A fair day rather than a clear one, so the object in the tree is
+        // visibly doing something the moment somebody selects it.
+        SceneObject(id: 'weather', name: 'Weather',
+            kind: ObjectKind.weather, condition: WeatherCondition.fair),
       ]);
 
   /// What the scene is called, which need not match its file name.
@@ -384,35 +417,6 @@ class EditorScene {
 
   /// How much light the sky casts, in lux.
   double ambient;
-
-  /// The air the scene is seen through.
-  ///
-  /// A density of zero is clear air and costs nothing — the whole computation
-  /// is switched off rather than run with nothing in it.
-  Color fogColour;
-  double fogDensity;
-
-  /// The height the fog's own layer sits at, and how fast it thins going up.
-  /// A falloff of zero is fog that fills the world evenly at every altitude.
-  double fogHeight;
-  double fogFalloff;
-
-  /// How much the fog moves, from nothing to a great deal, and how quickly.
-  ///
-  /// Movement rather than shape: the layer swells and drifts as a whole. Real
-  /// mist has holes in it that move independently, which needs noise sampled
-  /// per pixel in the fog's own pass — this is the half that can be had for
-  /// two sine waves and no shader at all, and at a distance it is most of what
-  /// separates weather from a filter over the lens.
-  double mist;
-  double mistSpeed;
-
-  /// How large the shapes in the mist are, in metres.
-  ///
-  /// The one setting that has to be told about the scene: cloud thirty metres
-  /// across is weather over a valley and haze in a room. Nothing else here
-  /// knows how big anything is.
-  double mistSize;
 
   /// The hour the scene is set at, from zero to twenty-four.
   ///
@@ -437,7 +441,48 @@ class EditorScene {
   double clock = 0;
 
   /// Whether anything here moves without somebody moving it.
-  bool get isAnimated => dayCycle || mist > 0;
+  ///
+  /// Drifting cloud is not in this list. The renderer moves that on its own
+  /// clock, so it keeps going at sixty frames a second without the editor
+  /// republishing the scene to say so — which is the difference between mist
+  /// costing a message a frame and costing nothing.
+  bool get isAnimated => dayCycle || _weatherIsChanging;
+
+  /// The object that decides what the air is doing, if there is one.
+  ///
+  /// The first of them. A scene with two would be two answers to one
+  /// question, and the same rule the light above the scene follows: the first
+  /// one is it, and the rest are reported rather than silently obeyed.
+  SceneObject? get weather {
+    for (final object in _objects) {
+      if (object.kind == ObjectKind.weather) return object;
+    }
+    return null;
+  }
+
+  /// Whether more than one thing is claiming to be the weather.
+  bool get hasSpareWeather =>
+      _objects.where((o) => o.kind == ObjectKind.weather).length > 1;
+
+  /// What the air is doing this instant, part of the way through whatever
+  /// change it is in the middle of.
+  WeatherState? get weatherNow {
+    final object = weather;
+    if (object == null || !isShown(object.id)) return null;
+
+    final from = object.blendFrom;
+    if (from == null || object.transitionSeconds <= 0) return object.weather;
+
+    final t = (clock - object.blendSince) / object.transitionSeconds;
+    if (t >= 1) return object.weather;
+    return WeatherState.lerp(from, object.weather, t);
+  }
+
+  bool get _weatherIsChanging {
+    final object = weather;
+    if (object == null || object.blendFrom == null) return false;
+    return clock - object.blendSince < object.transitionSeconds;
+  }
 
   /// The hour the scene is showing, which is the authored one until a cycle
   /// starts carrying it forward.
@@ -828,7 +873,10 @@ class EditorScene {
           _lightFor(object),
     ];
 
-    final ambientLux = driven ? sky.ambient : ambient;
+    final now = weatherNow;
+    // A covered sky is one enormous diffuser: less of the light arrives from
+    // one direction and more of it from everywhere.
+    final ambientLux = (driven ? sky.ambient : ambient) * (now?.scattered ?? 1);
 
     return OrbisScene(
       objects: [
@@ -846,7 +894,9 @@ class EditorScene {
       ],
       lights: lights,
       sky: OrbisSky(
-        colour: linearFromColour(driven ? sky.skyColour : skyColour),
+        colour: linearFromColour(
+          _greyed(driven ? sky.skyColour : skyColour, (now?.greying ?? 0) * 0.8),
+        ),
         ambient: ambientLux,
         // Nothing to draw a disk for if the scene has no light above it, and
         // one nobody can see should not appear in the sky either.
@@ -895,52 +945,46 @@ class EditorScene {
     return total;
   }
 
-  /// The fog as it stands this instant, and whatever weather is in it.
+  /// The air, as the weather has it this instant.
   ///
   /// Two things through one setting. The even haze is what distance looks
   /// like; the sheets are what a bank of cloud looks like lying in a valley.
-  /// Asking for mist gives both, because weather with no haze behind it reads
+  /// A condition asks for both, because weather with no haze behind it reads
   /// as cut-outs hanging in clear air.
   OrbisFog _fogNow() {
-    if (mist == 0) {
-      return OrbisFog(
-        colour: linearFromColour(fogColour),
-        density: fogDensity,
-        height: fogHeight,
-        heightFalloff: fogFalloff,
-      );
-    }
+    final now = weatherNow;
+    final object = weather;
+    if (now == null || object == null) return OrbisFog.none;
 
-    // The layer as a whole still breathes and drifts, under the shape the
-    // sheets give it. Two waves at rates that do not divide into each other,
-    // so it never returns to exactly where it was — one wave is a pulse, and
-    // a pulse reads as a fault rather than as weather.
-    final phase = clock * mistSpeed * 2 * math.pi;
-    final swell = math.sin(phase);
-    final drift = math.sin(phase * 0.63 + 1.3);
+    final heading = WeatherState.windFrom(object.windDirection);
 
     return OrbisFog(
-      colour: linearFromColour(fogColour),
-      // Never below zero, or the fog would blink out at the bottom of every
-      // breath instead of thinning.
-      density: math.max(0, fogDensity * (1 + 0.45 * mist * swell)),
-      height: fogHeight + 1.8 * mist * drift,
-      heightFalloff: fogFalloff,
-      structure: mist,
-      // Turns of the noise per metre, which is the reciprocal of how big a
-      // shape is — stated the way somebody would measure it rather than the
-      // way the shader wants it.
-      featureSize: 1 / math.max(mistSize, 0.5),
-      // Metres a second. Slow: mist that moves at walking pace looks like
-      // smoke, and smoke is a different weight of thing.
-      drift: mistSpeed * 4,
+      colour: linearFromColour(now.fogColour),
+      density: now.fogDensity,
+      height: now.fogHeight,
+      heightFalloff: now.fogFalloff,
+      structure: now.mist,
+      // Metres a second, which is what wind is measured in. Turning that into
+      // how fast a pattern scrolls is the renderer's business, because only it
+      // knows how big the pattern is.
+      wind: Vector2(
+        heading.x * now.windSpeed,
+        heading.z * now.windSpeed,
+      ),
+      // Turns of the noise per metre: the reciprocal of how big a cloud is,
+      // stated the way somebody would measure it rather than the way the
+      // shader wants it.
+      featureSize: 1 / math.max(now.mistSize, 0.5),
       // How deep the bank is, out of how fast the haze thins with altitude.
       // The two describe the same layer, and authoring them apart would let
-      // somebody set a shallow haze with a bank standing out of the top of
-      // it.
-      thickness: (1 / math.max(fogFalloff, 0.05)).clamp(1.0, 40.0),
+      // somebody set a shallow haze with a bank standing out of the top of it.
+      thickness: (1 / math.max(now.fogFalloff, 0.05)).clamp(1.0, 40.0),
     );
   }
+
+  /// A colour dragged towards the flat grey of a covered sky.
+  static Color _greyed(Color colour, double amount) =>
+      Color.lerp(colour, const Color(0xFF9BA3AB), amount.clamp(0.0, 1.0))!;
 
   /// One authored light, in the units the renderer takes.
   ///
@@ -958,14 +1002,28 @@ class EditorScene {
     final driven = dayCycle && identical(object, celestial);
     final sky = driven ? skyState : null;
 
+    // Cloud sits between the scene and whatever is above it, so it only
+    // touches that one light. A lamp indoors does not care what the sky is
+    // doing, and neither should a stage light somebody has aimed by hand.
+    final now = identical(object, celestial) ? weatherNow : null;
+
     final described = Light(
       type: object.lightType,
-      color: linearFromColour(sky?.lightColour ?? object.colour),
-      power: sky?.power ?? object.power,
+      color: linearFromColour(
+        _greyed(sky?.lightColour ?? object.colour, now?.greying ?? 0),
+      ),
+      // Cloud does not switch the sun off. A heavy overcast still passes a
+      // good tenth of it, which is why a wet afternoon is grey rather than
+      // dark: the camera opens up and the world stays legible.
+      power: (sky?.power ?? object.power) * (now?.transmitted ?? 1),
       radius: object.sourceRadius,
       spotSize: object.spotSize,
       spotBlend: object.spotBlend,
-      sunAngle: object.sunAngle,
+      // The whole difference between a bright day and a dull one. The sun is
+      // a disc half a degree across; cloud turns it into a source the size of
+      // the sky, and shadows lose their edges long before they lose their
+      // depth.
+      sunAngle: object.sunAngle * (now?.spread ?? 1),
       castShadows: object.castShadows,
       // An area light arrives as a point of the same luminous power, so the
       // size it would have emitted from becomes the size of the source that

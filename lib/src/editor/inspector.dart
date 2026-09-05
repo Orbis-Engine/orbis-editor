@@ -10,6 +10,7 @@ import 'commands.dart';
 import 'history.dart';
 import 'scene.dart';
 import 'sky.dart';
+import 'weather.dart';
 import 'workspace.dart';
 
 /// Properties of whatever is selected.
@@ -156,59 +157,12 @@ class _SceneFields extends StatelessWidget {
   final History history;
   final ValueChanged<SceneEntry> onLoad;
 
-  /// The fog as it stands, which is every fog command's starting point.
-  ({
-    Color colour,
-    double density,
-    double height,
-    double falloff,
-    double mist,
-    double mistSpeed,
-    double mistSize,
-  }) _fogOf(EditorScene scene) => (
-        colour: scene.fogColour,
-        density: scene.fogDensity,
-        height: scene.fogHeight,
-        falloff: scene.fogFalloff,
-        mist: scene.mist,
-        mistSpeed: scene.mistSpeed,
-        mistSize: scene.mistSize,
-      );
-
   /// The time as it stands, likewise.
   ({double hour, bool cycle, double speed}) _timeOf(EditorScene scene) => (
         hour: scene.timeOfDay,
         cycle: scene.dayCycle,
         speed: scene.hoursPerSecond,
       );
-
-  /// One fog edit, keeping every value nobody touched.
-  void _setFog(
-    EditorScene scene, {
-    Color? colour,
-    double? density,
-    double? height,
-    double? falloff,
-    double? mist,
-    double? mistSpeed,
-    double? mistSize,
-    bool seal = false,
-  }) {
-    history.run(SetSceneFog(
-      sceneId: entry.id,
-      from: _fogOf(scene),
-      to: (
-        colour: colour ?? scene.fogColour,
-        density: density ?? scene.fogDensity,
-        height: height ?? scene.fogHeight,
-        falloff: falloff ?? scene.fogFalloff,
-        mist: mist ?? scene.mist,
-        mistSpeed: mistSpeed ?? scene.mistSpeed,
-        mistSize: mistSize ?? scene.mistSize,
-      ),
-    ));
-    if (seal) history.seal();
-  }
 
   /// A light level, at a precision that says something at both ends of the
   /// day. A night rounded to the nearest lux is a night that reads as zero.
@@ -427,95 +381,6 @@ class _SceneFields extends StatelessWidget {
           ),
         ),
         _ComponentSection(
-          title: 'Fog',
-          icon: Icons.foggy,
-          child: Column(
-            children: [
-              ColourRow(
-                label: 'Colour',
-                value: scene.fogColour,
-                onChanged: (value) =>
-                    _setFog(scene, colour: value, seal: true),
-              ),
-              SliderRow(
-                label: 'Density',
-                value: scene.fogDensity,
-                min: 0,
-                max: 0.4,
-                decimals: 3,
-                onChanged: (value) => _setFog(scene, density: value),
-                onSettled: history.seal,
-              ),
-              // Only worth showing once there is fog for them to shape. Four
-              // controls over clear air are four things that do nothing.
-              if (scene.fogDensity > 0) ...[
-                SliderRow(
-                  label: 'Height',
-                  value: scene.fogHeight,
-                  min: -20,
-                  max: 20,
-                  decimals: 1,
-                  unit: ' m',
-                  onChanged: (value) => _setFog(scene, height: value),
-                  onSettled: history.seal,
-                ),
-                SliderRow(
-                  label: 'Falloff',
-                  value: scene.fogFalloff,
-                  min: 0,
-                  max: 2,
-                  decimals: 2,
-                  onChanged: (value) => _setFog(scene, falloff: value),
-                  onSettled: history.seal,
-                ),
-                SliderRow(
-                  label: 'Mist',
-                  value: scene.mist,
-                  min: 0,
-                  max: 1,
-                  decimals: 2,
-                  onChanged: (value) => _setFog(scene, mist: value),
-                  onSettled: history.seal,
-                ),
-                if (scene.mist > 0) ...[
-                  SliderRow(
-                    label: 'Drift',
-                    value: scene.mistSpeed,
-                    min: 0.01,
-                    max: 0.6,
-                    decimals: 2,
-                    onChanged: (value) => _setFog(scene, mistSpeed: value),
-                    onSettled: history.seal,
-                  ),
-                  SliderRow(
-                    label: 'Cloud size',
-                    value: scene.mistSize,
-                    min: 2,
-                    max: 120,
-                    decimals: 0,
-                    unit: ' m',
-                    onChanged: (value) => _setFog(scene, mistSize: value),
-                    onSettled: history.seal,
-                  ),
-                ],
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                      Space.md, Space.xs, Space.md, 0),
-                  child: Text(
-                    scene.mist > 0
-                        ? 'Mist draws the same air as banks of cloud, at the '
-                            'size you set, drifting. Set the size to what the '
-                            'weather in this scene is measured in.'
-                        : 'Falloff is how fast the air clears with altitude. '
-                            'Zero fills the world evenly.',
-                    style: OrbisText.caption,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        _ComponentSection(
           title: 'Contents',
           icon: Icons.list,
           child: Column(
@@ -593,9 +458,16 @@ class _Fields extends StatelessWidget {
             ),
           ),
         if (object.kind != ObjectKind.scene) _visibility(scene),
-        if (object.kind != ObjectKind.scene) _transform(),
+        // Weather is everywhere at once, so it has no position to show.
+        if (object.kind != ObjectKind.scene &&
+            object.kind != ObjectKind.weather)
+          _transform(),
         if (object.kind == ObjectKind.light) _light(),
         if (object.kind == ObjectKind.mesh) _mesh(),
+        if (object.kind == ObjectKind.weather) ...[
+          _weather(),
+          _air(),
+        ],
       ],
     );
   }
@@ -917,6 +789,217 @@ class _Fields extends StatelessWidget {
     if (wanted == LightType.sun) return power / sphere;
     if (from == LightType.sun) return power * sphere;
     return power;
+  }
+
+  Widget _weather() {
+    final air = object.weather;
+    final spare = scene.hasSpareWeather && !identical(object, scene.weather);
+
+    return _ComponentSection(
+      title: 'Weather',
+      icon: Icons.cloud_outlined,
+      child: Column(
+        children: [
+          // Six across one row would be six words nobody can read. Split at
+          // the point they split anyway: the ones you can see through, and
+          // the ones you cannot.
+          ChoiceRow(
+            label: 'Condition',
+            options: [
+              for (final condition in WeatherCondition.values.take(3))
+                condition.label,
+            ],
+            selected: object.condition.label,
+            onSelect: (value) => _setCondition(value),
+          ),
+          ChoiceRow(
+            label: '',
+            options: [
+              for (final condition in WeatherCondition.values.skip(3))
+                condition.label,
+            ],
+            selected: object.condition.label,
+            onSelect: (value) => _setCondition(value),
+          ),
+          SliderRow(
+            label: 'Cloud',
+            value: air.cloudCover,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) => _setAir(air.copyWith(cloudCover: value)),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Wind',
+            value: air.windSpeed,
+            min: 0,
+            max: 25,
+            decimals: 1,
+            unit: ' m/s',
+            onChanged: (value) => _setAir(air.copyWith(windSpeed: value)),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Bearing',
+            value: object.windDirection,
+            min: 0,
+            max: 360,
+            unit: '°',
+            onChanged: (value) => _setWind(direction: value),
+            onSettled: history.seal,
+          ),
+          SliderRow(
+            label: 'Changes over',
+            value: object.transitionSeconds,
+            min: 0,
+            max: 60,
+            decimals: 1,
+            unit: ' s',
+            onChanged: (value) => _setWind(transition: value),
+            onSettled: history.seal,
+          ),
+          Padding(
+            padding:
+                const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+            child: Text(
+              spare
+                  ? 'Another Weather object is already deciding what the air '
+                      'is doing. This one is ignored — a scene answers that '
+                      'question once.'
+                  : 'Cloud takes the strength out of whatever is above the '
+                      'scene and spreads it across the sky. Shadows lose '
+                      'their edges before they lose their depth.',
+              style: OrbisText.caption,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _air() {
+    final air = object.weather;
+
+    return _ComponentSection(
+      title: 'Air',
+      icon: Icons.foggy,
+      child: Column(
+        children: [
+          ColourRow(
+            label: 'Colour',
+            value: air.fogColour,
+            onChanged: (value) {
+              _setAir(air.copyWith(fogColour: value));
+              history.seal();
+            },
+          ),
+          SliderRow(
+            label: 'Density',
+            value: air.fogDensity,
+            min: 0,
+            max: 0.4,
+            decimals: 3,
+            onChanged: (value) => _setAir(air.copyWith(fogDensity: value)),
+            onSettled: history.seal,
+          ),
+          if (air.fogDensity > 0) ...[
+            SliderRow(
+              label: 'Height',
+              value: air.fogHeight,
+              min: -20,
+              max: 20,
+              decimals: 1,
+              unit: ' m',
+              onChanged: (value) => _setAir(air.copyWith(fogHeight: value)),
+              onSettled: history.seal,
+            ),
+            SliderRow(
+              label: 'Falloff',
+              value: air.fogFalloff,
+              min: 0.02,
+              max: 2,
+              decimals: 2,
+              onChanged: (value) => _setAir(air.copyWith(fogFalloff: value)),
+              onSettled: history.seal,
+            ),
+            SliderRow(
+              label: 'Mist',
+              value: air.mist,
+              min: 0,
+              max: 1,
+              decimals: 2,
+              onChanged: (value) => _setAir(air.copyWith(mist: value)),
+              onSettled: history.seal,
+            ),
+            if (air.mist > 0)
+              SliderRow(
+                label: 'Cloud size',
+                value: air.mistSize,
+                min: 2,
+                max: 120,
+                decimals: 0,
+                unit: ' m',
+                onChanged: (value) => _setAir(air.copyWith(mistSize: value)),
+                onSettled: history.seal,
+              ),
+            Padding(
+              padding:
+                  const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
+              child: Text(
+                air.mist > 0
+                    ? 'Mist draws the same air as banks of cloud, at the size '
+                        'you set, moving with the wind. Set the size to what '
+                        'the weather in this scene is measured in.'
+                    : 'Density is the even haze that distance looks like. '
+                        'Mist gives it a shape.',
+                style: OrbisText.caption,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _setCondition(String label) {
+    final wanted =
+        WeatherCondition.values.firstWhere((c) => c.label == label);
+    if (wanted == object.condition) return;
+    history
+      ..run(SetWeatherCondition(
+        sceneId: sceneId,
+        id: object.id,
+        from: object.condition,
+        to: wanted,
+        fromState: object.weather,
+        toState: WeatherState.of(wanted),
+      ))
+      ..seal();
+  }
+
+  void _setAir(WeatherState air) {
+    history.run(SetWeatherValues(
+      sceneId: sceneId,
+      id: object.id,
+      from: object.weather,
+      to: air,
+    ));
+  }
+
+  void _setWind({double? direction, double? transition}) {
+    history.run(SetWeatherWind(
+      sceneId: sceneId,
+      id: object.id,
+      from: (
+        direction: object.windDirection,
+        transition: object.transitionSeconds,
+      ),
+      to: (
+        direction: direction ?? object.windDirection,
+        transition: transition ?? object.transitionSeconds,
+      ),
+    ));
   }
 
   Widget _mesh() => _ComponentSection(

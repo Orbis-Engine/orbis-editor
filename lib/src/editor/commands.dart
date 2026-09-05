@@ -5,6 +5,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 import 'history.dart';
 import 'scene.dart';
 import 'sky.dart';
+import 'weather.dart';
 
 /// Which of an object's three vectors an edit is touching.
 enum TransformField {
@@ -548,79 +549,6 @@ class SetSceneSky extends EditorCommand {
 }
 
 /// Renames the scene itself.
-/// Changes the air the scene is seen through.
-class SetSceneFog extends EditorCommand {
-  SetSceneFog({
-    required this.sceneId,
-    required this.from,
-    required this.to,
-  });
-
-  @override
-  final String sceneId;
-
-  final ({
-    Color colour,
-    double density,
-    double height,
-    double falloff,
-    double mist,
-    double mistSpeed,
-    double mistSize,
-  }) from;
-
-  /// Not final: a merged run of drags rewrites where it ends up.
-  ({
-    Color colour,
-    double density,
-    double height,
-    double falloff,
-    double mist,
-    double mistSpeed,
-    double mistSize,
-  }) to;
-
-  @override
-  String get label => 'Set fog';
-
-  @override
-  Object? get mergeKey => (sceneId, 'fog');
-
-  @override
-  void absorb(EditorCommand later) {
-    if (later is SetSceneFog) to = later.to;
-  }
-
-  @override
-  void apply(SceneHost host) => _write(host, to);
-
-  @override
-  void revert(SceneHost host) => _write(host, from);
-
-  void _write(
-    SceneHost host,
-    ({
-      Color colour,
-      double density,
-      double height,
-      double falloff,
-      double mist,
-      double mistSpeed,
-      double mistSize,
-    }) values,
-  ) {
-    final scene = host.sceneFor(sceneId);
-    if (scene == null) return;
-    scene.fogColour = values.colour;
-    scene.fogDensity = values.density;
-    scene.fogHeight = values.height;
-    scene.fogFalloff = values.falloff;
-    scene.mist = values.mist;
-    scene.mistSpeed = values.mistSpeed;
-    scene.mistSize = values.mistSize;
-  }
-}
-
 /// Changes the hour a scene is set at, and whether that hour advances.
 class SetSceneTime extends EditorCommand {
   SetSceneTime({
@@ -694,6 +622,153 @@ class SetCelestialBody extends EditorCommand {
 
   @override
   void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.body = from;
+}
+
+/// Puts the scene into a different sort of weather.
+///
+/// The values come with the name, because a condition is a set of them rather
+/// than a mode: once it has been applied, every one of them is free to be
+/// moved, and the name is only a record of where they started.
+class SetWeatherCondition extends EditorCommand {
+  SetWeatherCondition({
+    required this.sceneId,
+    required this.id,
+    required this.from,
+    required this.to,
+    required this.fromState,
+    required this.toState,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final WeatherCondition from;
+  final WeatherCondition to;
+  final WeatherState fromState;
+  final WeatherState toState;
+
+  @override
+  String get label => 'Set the weather to ${to.label.toLowerCase()}';
+
+  @override
+  void apply(SceneHost host) =>
+      _change(host, condition: to, state: toState);
+
+  @override
+  void revert(SceneHost host) =>
+      _change(host, condition: from, state: fromState);
+
+  /// Sets the weather going rather than switching it.
+  ///
+  /// The change starts from what is on screen this instant, which may itself
+  /// be halfway through an earlier one — otherwise changing your mind during a
+  /// transition snaps back to where it set off from before starting again.
+  void _change(
+    SceneHost host, {
+    required WeatherCondition condition,
+    required WeatherState state,
+  }) {
+    final scene = host.sceneFor(sceneId);
+    final object = scene?[id];
+    if (scene == null || object == null) return;
+
+    object.blendFrom = scene.weatherNow ?? object.weather;
+    object.blendSince = scene.clock;
+    object.condition = condition;
+    object.weather = state;
+  }
+}
+
+/// Adjusts one of the numbers behind the weather.
+class SetWeatherValues extends EditorCommand {
+  SetWeatherValues({
+    required this.sceneId,
+    required this.id,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final WeatherState from;
+
+  /// Not final: a merged run of drags rewrites where it ends up.
+  WeatherState to;
+
+  @override
+  String get label => 'Set the weather';
+
+  @override
+  Object? get mergeKey => (id, 'weather');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetWeatherValues) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) => _write(host, to);
+
+  @override
+  void revert(SceneHost host) => _write(host, from);
+
+  void _write(SceneHost host, WeatherState state) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    object.weather = state;
+    // A slider is somebody's hand on the weather. It arrives as they move it
+    // rather than easing in behind them.
+    object.blendFrom = null;
+  }
+}
+
+/// Sets which way the wind blows, and how long a change of weather takes.
+class SetWeatherWind extends EditorCommand {
+  SetWeatherWind({
+    required this.sceneId,
+    required this.id,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final ({double direction, double transition}) from;
+
+  /// Not final: a merged run of drags rewrites where it ends up.
+  ({double direction, double transition}) to;
+
+  @override
+  String get label => 'Set the wind';
+
+  @override
+  Object? get mergeKey => (id, 'wind');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetWeatherWind) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) => _write(host, to);
+
+  @override
+  void revert(SceneHost host) => _write(host, from);
+
+  void _write(
+    SceneHost host,
+    ({double direction, double transition}) values,
+  ) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    object.windDirection = values.direction;
+    object.transitionSeconds = values.transition;
+  }
 }
 
 class RenameScene extends EditorCommand {

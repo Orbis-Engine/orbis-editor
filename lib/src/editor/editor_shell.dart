@@ -510,6 +510,7 @@ class _EditorShellState extends State<EditorShell> {
       ObjectKind.camera => 'Camera',
       ObjectKind.group => 'Group',
       ObjectKind.scene => 'Scene',
+      ObjectKind.weather => 'Weather',
     });
 
     final object = SceneObject(
@@ -1329,6 +1330,7 @@ class _AddMenu extends StatelessWidget {
     (ObjectKind.light, 'Light', Icons.wb_sunny_outlined),
     (ObjectKind.camera, 'Camera', Icons.videocam_outlined),
     (ObjectKind.group, 'Group', Icons.folder_outlined),
+    (ObjectKind.weather, 'Weather', Icons.cloud_outlined),
   ];
 
   @override
