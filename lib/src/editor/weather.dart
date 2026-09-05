@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:orbis_filament/orbis_filament.dart';
 
 /// The kinds of weather a scene can be put into.
 ///
@@ -308,63 +309,15 @@ class WeatherState {
 
   /// How bright a flash of lightning is this instant, from nothing to one.
   ///
-  /// Worked out from the clock rather than rolled: the same second of the same
-  /// storm looks the same twice, which is what lets a scene be reopened, a
-  /// frame be compared, and a test hold any of it to account.
-  ///
-  /// Strikes land at most once in a window, and not every window has one — a
-  /// storm that struck on the beat would be a metronome. Each is a stroke and
-  /// then a weaker one a moment behind it, which is what makes it read as
-  /// lightning rather than as a lamp being switched.
-  static double flashAt(double clock, double frequency) {
-    if (frequency <= 0 || clock < 0) return 0;
+  /// The strike itself lives in the engine, because when it happens and where
+  /// it stands are the same facts the sky needs to draw the bolt — and two
+  /// implementations of that would be two storms.
+  static double flashAt(double clock, double frequency) =>
+      OrbisStrike.at(clock, frequency).flash;
 
-    final window = 14 / (0.2 + frequency * 3);
-    final index = (clock / window).floor();
-    final into = clock - index * window;
-
-    if (_scatter(index) > 0.3 + frequency * 0.65) return 0;
-
-    final at = _scatter(index * 7 + 3) * math.max(window - 0.8, 0.1);
-    final since = into - at;
-    if (since < 0) return 0;
-
-    final stroke = math.exp(-since * 14) +
-        (since > 0.18 ? 0.45 * math.exp(-(since - 0.18) * 10) : 0);
-
-    return (stroke * (0.6 + 0.4 * _scatter(index * 13 + 5))).clamp(0.0, 1.0);
-  }
-
-  /// Which strike the clock is in, lit or not.
-  ///
-  /// [flashAt] says how bright this instant is; this says which strike that
-  /// instant belongs to, which is what a bolt is drawn from. Two strikes of
-  /// the same storm are different shapes because they have different indices,
-  /// and the same strike is the same shape every time it is played.
-  static int strikeIndexAt(double clock, double frequency) {
-    if (frequency <= 0 || clock < 0) return 0;
-    return (clock / (14 / (0.2 + frequency * 3))).floor();
-  }
-
-  /// Where a strike is, as a compass bearing in radians and a height above
-  /// the horizon in radians.
-  ///
-  /// Scattered around the sky rather than always ahead, so a storm is
-  /// something happening around the scene instead of a light on a stand.
-  static ({double bearing, double height}) strikePlace(int index) => (
-    bearing: _scatter(index * 17 + 11) * 2 * math.pi,
-    height: 0.12 + _scatter(index * 23 + 4) * 0.34,
-  );
-
-  /// The seed a bolt's shape is drawn from.
-  static double strikeSeed(int index) => _scatter(index * 31 + 7) * 100;
-
-  /// A number between zero and one that is always the same for the same
-  /// input. Not a good random source and a perfectly good one for weather.
-  static double _scatter(int step) {
-    final value = math.sin(step * 12.9898) * 43758.5453;
-    return value - value.floorToDouble();
-  }
+  /// The whole strike: how bright, which way, and what shape.
+  static OrbisStrike strikeAt(double clock, double frequency) =>
+      OrbisStrike.at(clock, frequency);
 
   /// How much of what is above the scene still reaches it.
   ///

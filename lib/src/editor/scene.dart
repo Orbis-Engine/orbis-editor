@@ -1084,6 +1084,7 @@ class EditorScene {
     required double flash,
   }) {
     final ground = linearFromColour(base);
+    final strike = _strikeFrom(air, weather);
 
     // Which way the body is, taken from the light that is actually lighting
     // the scene rather than from the clock. A sun drawn in one place and a
@@ -1133,9 +1134,9 @@ class EditorScene {
       // sized disc is four pixels on a normal screen, and a sun nobody can
       // pick out of the glare is not worth drawing.
       bodySize: 0.011,
-      flash: flash,
-      flashDirection: _strikeDirection(air, weather),
-      flashSeed: _strikeSeed(air, weather),
+      flash: strike.flash,
+      flashDirection: strike.direction,
+      flashSeed: strike.seed,
       clouds: _cloudsFrom(air, weather, bodyColour),
     );
   }
@@ -1148,27 +1149,11 @@ class EditorScene {
     from.z + (to.z - from.z) * t,
   );
 
-  /// Which way the current strike is, as a direction in the sky.
-  Vector3 _strikeDirection(WeatherState? now, SceneObject? object) {
-    if (now == null || object == null || now.lightning <= 0) {
-      return Vector3(0, 0.35, 1);
-    }
-    final place = WeatherState.strikePlace(
-      WeatherState.strikeIndexAt(clock, now.lightning),
-    );
-    return Vector3(
-      math.cos(place.height) * math.sin(place.bearing),
-      math.sin(place.height),
-      math.cos(place.height) * math.cos(place.bearing),
-    );
-  }
-
-  double _strikeSeed(WeatherState? now, SceneObject? object) =>
+  /// The strike this instant, or none if the sky is not that kind of sky.
+  OrbisStrike _strikeFrom(WeatherState? now, SceneObject? object) =>
       now == null || object == null || now.lightning <= 0
-      ? 0
-      : WeatherState.strikeSeed(
-          WeatherState.strikeIndexAt(clock, now.lightning),
-        );
+      ? OrbisStrike.none
+      : WeatherState.strikeAt(clock, now.lightning);
 
   /// The cloud in the sky, which is not the same thing as the fog.
   ///
