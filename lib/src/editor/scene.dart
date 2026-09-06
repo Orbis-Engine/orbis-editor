@@ -45,6 +45,7 @@ class SceneObject {
     this.receiveShadows = true,
     this.visible = true,
     this.meshAsset,
+    this.prefab,
   })  : weather = weather ?? WeatherState.of(condition),
         position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
@@ -172,6 +173,17 @@ class SceneObject {
   /// to load it keeps the file honest about what the scene says.
   String? meshAsset;
 
+  /// The prefab this came from, as a path relative to the project.
+  ///
+  /// Null for an ordinary object. Set on every object in an instance, root
+  /// and children alike, because a change three levels down still has to know
+  /// which asset it belongs to. Unpacking clears it, and from then on this is
+  /// an ordinary object that happens to look like a prefab.
+  String? prefab;
+
+  /// Whether this object came from a prefab and still remembers it.
+  bool get isPrefabInstance => prefab != null;
+
   IconData get icon => switch (kind) {
         ObjectKind.scene => Icons.public,
         ObjectKind.group => Icons.folder_outlined,
@@ -223,6 +235,7 @@ class SceneObject {
         receiveShadows: receiveShadows,
         visible: visible,
         meshAsset: meshAsset,
+        prefab: prefab,
       );
 }
 
@@ -304,6 +317,22 @@ void placeInWorld(EditorScene scene, SceneObject object, Matrix4 world) {
   object.rotation.setFrom(eulerDegreesOf(local));
   object.scale.setFrom(scale);
   scene.invalidate();
+}
+
+/// An object being dragged.
+///
+/// A type of its own rather than the bare id, because an asset path is also a
+/// string and the outliner, the viewport and the project browser all take
+/// drops. With one type for both, dragging a crate into the browser would look
+/// exactly like dragging a file, and each target would have to guess.
+class ObjectDrag {
+  const ObjectDrag(this.id, this.name);
+
+  final String id;
+
+  /// What to call it while it is in the air, and what to name the file it
+  /// lands in.
+  final String name;
 }
 
 /// Something an edit could not do, worth saying out loud.

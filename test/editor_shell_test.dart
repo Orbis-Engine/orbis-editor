@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/clipboard.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
+import 'package:orbis_editor/src/editor/inspector.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
@@ -149,7 +150,7 @@ void main() {
   /// inspector's title field or in a menu. Objects are draggable; scenes are
   /// headings and are not.
   Finder row(String name) => find.descendant(
-        of: find.byType(Draggable<String>),
+        of: find.byType(Draggable<ObjectDrag>),
         matching: find.text(name),
       );
 
@@ -157,7 +158,7 @@ void main() {
   /// centred, so its top-left is halfway down the row.
   Finder rowBox(String name) => find.ancestor(
         of: row(name),
-        matching: find.byType(Draggable<String>),
+        matching: find.byType(Draggable<ObjectDrag>),
       );
 
   /// A scene's own row.
@@ -413,7 +414,7 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Only meshes and scenes'), findsOneWidget);
+    expect(find.textContaining('Meshes, prefabs and scenes'), findsOneWidget);
     expect(row('rock'), findsNothing);
   });
 
@@ -1034,5 +1035,149 @@ void main() {
     final load = SceneDocument.decode(written);
     final crate = load.scene.objects.firstWhere((o) => o.name == 'Crate');
     expect(crate.position.x, closeTo(2.2, 1e-6));
+  });
+
+  group('prefabs', () {
+    /// Selects a row and drags it onto the project browser.
+    ///
+    /// Selected first, because making a prefab of something is a thing done
+    /// to the thing in front of you — and the inspector has to be showing it
+    /// for the band that appears afterwards to be worth looking at.
+    Future<void> dragToBrowser(WidgetTester tester, String name) async {
+      await tester.tap(row(name));
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(row(name)),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(kLongPressTimeout);
+      await gesture.moveTo(tester.getCenter(find.byType(GridView)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // What it says stays on screen until its own timer fires, and a snack
+      // bar still showing holds the next one back in the queue.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+    }
+
+    /// The prefab band in the inspector, rather than the tile in the browser
+    /// that carries the same file name.
+    Finder band(String text) => find.descendant(
+          of: find.byType(Inspector),
+          matching: find.text(text),
+        );
+
+    /// The prefab files in the project, whatever folder they landed in.
+    List<File> prefabs() => root
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.oprefab'))
+        .toList();
+
+    testWidgets('dropping an object on the project makes one', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      final made = prefabs();
+      expect(made, hasLength(1));
+      expect(p.basename(made.single.path), 'Cube.oprefab');
+      expect(made.single.readAsStringSync(), contains('orbis.prefab'));
+    });
+
+    testWidgets('what it was made from becomes an instance', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      // The band only appears for an object that remembers a prefab.
+      expect(band('Cube.oprefab'), findsOneWidget);
+      expect(band('Apply'), findsOneWidget);
+      expect(band('Unpack'), findsOneWidget);
+    });
+
+    testWidgets('making one is undoable, link and all', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+      await tester.pumpAndSettle();
+
+      expect(band('Cube.oprefab'), findsNothing);
+      // The file stays: undo covers the scene, not the project folder, and
+      // pretending otherwise would delete somebody's asset behind their back.
+      expect(prefabs(), hasLength(1));
+    });
+
+    testWidgets('unpacking takes the link off', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      await tester.tap(band('Unpack'));
+      await tester.pumpAndSettle();
+
+      expect(band('Cube.oprefab'), findsNothing);
+    });
+
+    testWidgets('a prefab dropped in the viewport comes back', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      final tile = find.descendant(
+        of: find.byType(GridView),
+        matching: find.text('Cube.oprefab'),
+      );
+      final gesture = await tester.startGesture(
+        tester.getCenter(tile),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(kLongPressTimeout);
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // Two cubes now: the one it was made from and the one just placed.
+      expect(row('Cube'), findsOneWidget);
+      expect(row('Cube 2'), findsOneWidget);
+    });
+
+    testWidgets('a change applied reaches the other instances', (tester) async {
+      await open(tester);
+      await dragToBrowser(tester, 'Cube');
+
+      final source = prefabs().single;
+      // Two more instances, placed straight through the dropped file.
+      for (var i = 0; i < 2; i++) {
+        final tile = find.descendant(
+          of: find.byType(GridView),
+          matching: find.text('Cube.oprefab'),
+        );
+        final gesture = await tester.startGesture(
+          tester.getCenter(tile),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pump(kLongPressTimeout);
+        await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+        await tester.pump();
+        await gesture.up();
+        await tester.pumpAndSettle();
+      }
+
+      // Back to the original, and apply from it.
+      await tester.tap(row('Cube'));
+      await tester.pumpAndSettle();
+      await tester.tap(band('Apply'));
+      // Pumped rather than settled: what it says goes in a snack bar, and
+      // settling waits out the four seconds it is on screen for.
+      await tester.pump();
+
+      expect(source.readAsStringSync(), contains('orbis.prefab'));
+      expect(find.textContaining('updated 2 other instances'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
   });
 }

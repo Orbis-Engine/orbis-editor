@@ -124,6 +124,7 @@ abstract final class SceneDocument {
         // the file and out of everybody's diffs.
         if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
+        if (object.prefab != null) 'prefab': object.prefab,
       };
 
   /// One object from JSON, or null if it cannot be read.
@@ -214,6 +215,7 @@ abstract final class SceneDocument {
       receiveShadows: flag('receiveShadows'),
       visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
+      prefab: entry['prefab'] is String ? entry['prefab']! as String : null,
     );
   }
 

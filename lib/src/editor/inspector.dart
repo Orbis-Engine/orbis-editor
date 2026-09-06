@@ -30,6 +30,9 @@ class Inspector extends StatelessWidget {
     required this.history,
     required this.onLoad,
     this.selectionCount = 0,
+    this.onApplyPrefab,
+    this.onRevertPrefab,
+    this.onUnpackPrefab,
   });
 
   /// The scene being looked at, which need not be the loaded one — a scene can
@@ -47,6 +50,12 @@ class Inspector extends StatelessWidget {
   /// saying which beats leaving somebody to guess why their changes only
   /// landed on one thing.
   final int selectionCount;
+
+  /// What the prefab band does, when there is one. Null in a context that has
+  /// no project to write to — a test, or a scene inspected before it is open.
+  final ValueChanged<String>? onApplyPrefab;
+  final ValueChanged<String>? onRevertPrefab;
+  final ValueChanged<String>? onUnpackPrefab;
 
   @override
   Widget build(BuildContext context) {
@@ -91,6 +100,19 @@ class Inspector extends StatelessWidget {
                               count: selectionCount,
                               name: selected.name,
                             ),
+                          if (selected.prefab != null)
+                            _PrefabBand(
+                              source: selected.prefab!,
+                              onApply: onApplyPrefab == null
+                                  ? null
+                                  : () => onApplyPrefab!(selected.id),
+                              onRevert: onRevertPrefab == null
+                                  ? null
+                                  : () => onRevertPrefab!(selected.id),
+                              onUnpack: onUnpackPrefab == null
+                                  ? null
+                                  : () => onUnpackPrefab!(selected.id),
+                            ),
                           Expanded(
                             child: _Fields(
                               key: ValueKey(selected.id),
@@ -104,6 +126,120 @@ class Inspector extends StatelessWidget {
                       )),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Says this object came from a prefab, and offers the three things anybody
+/// wants to do about it.
+///
+/// At the top, above the fields, because it changes what editing a field
+/// *means*: a change here is a change to one lamp post until it is applied,
+/// and then it is a change to every lamp post.
+class _PrefabBand extends StatelessWidget {
+  const _PrefabBand({
+    required this.source,
+    this.onApply,
+    this.onRevert,
+    this.onUnpack,
+  });
+
+  /// The prefab's path, relative to the project.
+  final String source;
+
+  final VoidCallback? onApply;
+  final VoidCallback? onRevert;
+  final VoidCallback? onUnpack;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = source.split('/').last;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Space.md,
+        vertical: Space.sm,
+      ),
+      decoration: const BoxDecoration(
+        color: OrbisColors.raised,
+        border: Border(bottom: BorderSide(color: OrbisColors.lineSoft)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.widgets_outlined,
+                  size: 13, color: OrbisColors.ember),
+              const SizedBox(width: Space.sm),
+              Expanded(
+                child: Tooltip(
+                  message: source,
+                  child: Text(
+                    name,
+                    overflow: TextOverflow.ellipsis,
+                    style: OrbisText.label.copyWith(color: OrbisColors.ember),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: Space.sm),
+          Row(
+            children: [
+              _PrefabAction(
+                label: 'Apply',
+                tooltip: 'Save this back to the prefab, and update its other '
+                    'instances. They keep where they stand and what they are '
+                    'called; everything else comes from the prefab.',
+                onPressed: onApply,
+              ),
+              const SizedBox(width: Space.xs),
+              _PrefabAction(
+                label: 'Revert',
+                tooltip: 'Throw away the changes made to this one and take '
+                    'the prefab again.',
+                onPressed: onRevert,
+              ),
+              const SizedBox(width: Space.xs),
+              _PrefabAction(
+                label: 'Unpack',
+                tooltip: 'Break the link. This becomes an ordinary object and '
+                    'stops following the prefab.',
+                onPressed: onUnpack,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrefabAction extends StatelessWidget {
+  const _PrefabAction({
+    required this.label,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final String label;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Tooltip(
+        message: tooltip,
+        waitDuration: const Duration(milliseconds: 400),
+        child: OrbisButton(
+          label: label,
+          tone: ButtonTone.quiet,
+          expand: true,
+          onPressed: onPressed,
+        ),
       ),
     );
   }

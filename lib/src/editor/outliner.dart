@@ -342,8 +342,8 @@ class _RowState extends State<_Row> {
             ? OrbisColors.inkDim
             : (_hovering ? OrbisColors.ink : OrbisColors.inkMid));
 
-    final row = DragTarget<String>(
-      onWillAcceptWithDetails: (details) => _accepts(details.data),
+    final row = DragTarget<ObjectDrag>(
+      onWillAcceptWithDetails: (details) => _accepts(details.data.id),
       onMove: (details) {
         final box = context.findRenderObject() as RenderBox?;
         if (box == null) return;
@@ -354,7 +354,7 @@ class _RowState extends State<_Row> {
       onAcceptWithDetails: (details) {
         final kind = _dropping ?? DropKind.inside;
         setState(() => _dropping = null);
-        widget.onDrop(details.data, kind);
+        widget.onDrop(details.data.id, kind);
       },
       builder: (context, candidate, _) {
         final dropping = candidate.isEmpty ? null : _dropping;
@@ -489,8 +489,8 @@ class _RowState extends State<_Row> {
       );
     }
 
-    return Draggable<String>(
-      data: object!.id,
+    return Draggable<ObjectDrag>(
+      data: ObjectDrag(object!.id, name),
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: _DragLabel(name: name, icon: icon),
       child: row,

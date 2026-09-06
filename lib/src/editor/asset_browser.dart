@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'assets.dart';
+import 'scene.dart';
 
 /// The project's files, along the bottom.
 ///
@@ -20,10 +21,17 @@ class AssetBrowser extends StatefulWidget {
     required this.height,
     this.onOpenAsset,
     this.onProblem,
+    this.onMakePrefab,
   });
 
   final AssetTree tree;
   final double height;
+
+  /// Called when somebody drags an object out of the scene and drops it here.
+  ///
+  /// The browser knows where it was dropped; the shell knows what the object
+  /// is. This is where the two meet.
+  final void Function(ObjectDrag object, String directory)? onMakePrefab;
 
   /// Called when somebody opens a file, rather than a folder.
   final ValueChanged<Asset>? onOpenAsset;
@@ -202,6 +210,7 @@ class _AssetBrowserState extends State<AssetBrowser> {
                       _directory = path;
                       _selected = null;
                     }),
+                    onDropObject: widget.onMakePrefab,
                   ),
                   Expanded(
                     child: _Grid(
@@ -213,6 +222,10 @@ class _AssetBrowserState extends State<AssetBrowser> {
                       onDelete: _confirmDelete,
                       onRename: _promptRename,
                       onCreate: _promptCreate,
+                      onDropObject: widget.onMakePrefab == null
+                          ? null
+                          : (object) =>
+                              widget.onMakePrefab!(object, _directory),
                       onOpen: (asset) {
                         if (!asset.isFolder) {
                           widget.onOpenAsset?.call(asset);
@@ -357,12 +370,16 @@ class _FolderTree extends StatelessWidget {
     required this.folders,
     required this.current,
     required this.onOpen,
+    this.onDropObject,
   });
 
   final AssetTree tree;
   final List<({String path, int depth})> folders;
   final String current;
   final ValueChanged<String> onOpen;
+
+  /// Called with the object dropped and the folder it landed on.
+  final void Function(ObjectDrag object, String directory)? onDropObject;
 
   @override
   Widget build(BuildContext context) {
@@ -380,6 +397,9 @@ class _FolderTree extends StatelessWidget {
             icon: Icons.home_outlined,
             selected: p.equals(current, tree.root),
             onTap: () => onOpen(tree.root),
+            onDropObject: onDropObject == null
+                ? null
+                : (object) => onDropObject!(object, tree.root),
           ),
           for (final folder in folders)
             _FolderRow(
@@ -388,6 +408,9 @@ class _FolderTree extends StatelessWidget {
               icon: Icons.folder_outlined,
               selected: p.equals(current, folder.path),
               onTap: () => onOpen(folder.path),
+              onDropObject: onDropObject == null
+                  ? null
+                  : (object) => onDropObject!(object, folder.path),
             ),
         ],
       ),
@@ -402,6 +425,7 @@ class _FolderRow extends StatefulWidget {
     required this.icon,
     required this.selected,
     required this.onTap,
+    this.onDropObject,
   });
 
   final String name;
@@ -410,6 +434,10 @@ class _FolderRow extends StatefulWidget {
   final bool selected;
   final VoidCallback onTap;
 
+  /// Dropping an object on a folder makes a prefab there, without having to
+  /// open the folder first.
+  final ValueChanged<ObjectDrag>? onDropObject;
+
   @override
   State<_FolderRow> createState() => _FolderRowState();
 }
@@ -417,13 +445,17 @@ class _FolderRow extends StatefulWidget {
 class _FolderRowState extends State<_FolderRow> {
   bool _hovering = false;
 
+  /// Whether something is being held over this row, which is worth showing:
+  /// the rows are 24 pixels apart and dropping on the wrong one is easy.
+  bool _catching = false;
+
   @override
   Widget build(BuildContext context) {
-    final colour = widget.selected
+    final colour = widget.selected || _catching
         ? OrbisColors.ember
         : (_hovering ? OrbisColors.ink : OrbisColors.inkMid);
 
-    return MouseRegion(
+    final row = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovering = true),
       onExit: (_) => setState(() => _hovering = false),
@@ -435,7 +467,7 @@ class _FolderRowState extends State<_FolderRow> {
             left: Space.sm + widget.depth * 12.0,
             right: Space.sm,
           ),
-          color: widget.selected
+          color: widget.selected || _catching
               ? OrbisColors.emberWash
               : (_hovering ? OrbisColors.raised : Colors.transparent),
           child: Row(
@@ -454,6 +486,21 @@ class _FolderRowState extends State<_FolderRow> {
         ),
       ),
     );
+
+    if (widget.onDropObject == null) return row;
+
+    return DragTarget<ObjectDrag>(
+      onWillAcceptWithDetails: (_) {
+        setState(() => _catching = true);
+        return true;
+      },
+      onLeave: (_) => setState(() => _catching = false),
+      onAcceptWithDetails: (details) {
+        setState(() => _catching = false);
+        widget.onDropObject!(details.data);
+      },
+      builder: (context, candidate, _) => row,
+    );
   }
 }
 
@@ -468,6 +515,7 @@ class _Grid extends StatelessWidget {
     required this.onDelete,
     required this.onRename,
     required this.onCreate,
+    this.onDropObject,
   });
 
   final List<Asset> entries;
@@ -477,6 +525,7 @@ class _Grid extends StatelessWidget {
   final ValueChanged<Asset> onDelete;
   final ValueChanged<Asset> onRename;
   final ValueChanged<NewAsset> onCreate;
+  final ValueChanged<ObjectDrag>? onDropObject;
 
   @override
   Widget build(BuildContext context) {
@@ -496,11 +545,41 @@ class _Grid extends StatelessWidget {
 
     // Opaque so the right-click lands on the gaps between tiles and on the
     // empty folder, which is exactly where somebody reaches for "new".
-    return GestureDetector(
+    final catching = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onSecondaryTapUp: (details) =>
           showAssetMenu(context, details.globalPosition, onCreate: onCreate),
       child: grid,
+    );
+
+    if (onDropObject == null) return catching;
+
+    return DragTarget<ObjectDrag>(
+      onWillAcceptWithDetails: (_) => true,
+      onAcceptWithDetails: (details) => onDropObject!(details.data),
+      builder: (context, candidate, _) => Stack(
+        fit: StackFit.expand,
+        children: [
+          catching,
+          // Only while something is over it: an outline drawn all the time
+          // would be one more line in a panel that is mostly lines.
+          if (candidate.isNotEmpty)
+            IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: OrbisColors.emberWash,
+                  border: Border.all(color: OrbisColors.ember),
+                  borderRadius: BorderRadius.circular(Radii.control),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  'Drop to make a prefab',
+                  style: OrbisText.label.copyWith(color: OrbisColors.ink),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
