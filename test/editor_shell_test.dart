@@ -14,7 +14,7 @@ import 'package:orbis_editor/src/editor/dock_view.dart';
 import 'package:orbis_editor/src/editor/game_view.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
-import 'package:orbis_editor/src/editor/mesh_panel.dart';
+import 'package:orbis_editor/src/editor/modelling_panel.dart';
 import 'package:orbis_editor/src/editor/surface.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
@@ -1457,6 +1457,8 @@ void main() {
     /// finder cannot see it. Which sections fit depends on the window and on
     /// how the panels are arranged, so a test that assumes one is on screen is
     /// a test that breaks when somebody moves a panel.
+    /// Brings the modelling panel to the front. It is a tab beside the
+    /// inspector, and a tab that is not showing is not built. Tabs are drawn
     Future<void> scrollInspector(WidgetTester tester) async {
       await tester.drag(
         find.descendant(
@@ -2314,6 +2316,17 @@ void main() {
           .firstWhere((o) => o.kind == ObjectKind.shape);
     }
 
+    /// in capitals, so the finder is too.
+    Future<void> openTools(WidgetTester tester) async {
+      await tester.tap(find.text('MODELLING').first);
+      await tester.pumpAndSettle();
+    }
+
+    /// Its callbacks, driven directly rather than by hunting for a button
+    /// below the fold of a lazy list.
+    ModellingPanel panelIn(WidgetTester tester) =>
+        tester.widget<ModellingPanel>(find.byType(ModellingPanel));
+
     Future<void> scrollInspector(WidgetTester tester) async {
       await tester.drag(
         find.descendant(
@@ -2378,17 +2391,30 @@ void main() {
     testWidgets('the geometry mode is offered for a shape', (tester) async {
       await open(tester);
       await addShape(tester, 'Cube');
-      await scrollInspector(tester);
+      // In the modelling panel now, not four scrolls down the inspector.
+      await openTools(tester);
 
       expect(find.text('GEOMETRY'), findsOneWidget);
       expect(find.text('Editing'), findsOneWidget);
+    });
+
+    testWidgets('the inspector says where the tools went', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      // Somebody who used to find extrude here will look here for it.
+      expect(find.textContaining('modelling panel'), findsOneWidget);
+      expect(find.text('Modelling tools'), findsOneWidget);
+      // And the shape's own numbers are still where they belong.
+      expect(find.text('CUBE'), findsOneWidget);
     });
 
     testWidgets('G goes into the geometry and round the modes',
         (tester) async {
       await open(tester);
       await addShape(tester, 'Cube');
-      await scrollInspector(tester);
+      await openTools(tester);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
       await tester.pumpAndSettle();
@@ -2403,11 +2429,6 @@ void main() {
       expect(find.textContaining('Click'), findsNothing);
     });
 
-    /// The materials panel as it stands, so its callbacks can be driven
-    /// without fighting a lazy list for a button below the fold.
-    MeshPanel panelIn(WidgetTester tester) =>
-        tester.widget<MeshPanel>(find.byType(MeshPanel));
-
     testWidgets('a material slot is added and painted onto a face',
         (tester) async {
       await open(tester);
@@ -2416,6 +2437,7 @@ void main() {
 
       await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
       await tester.pumpAndSettle();
+      await openTools(tester);
 
       panelIn(tester).onSurfaces(const [Surface(name: 'Stone')], live: false);
       await tester.pumpAndSettle();
@@ -2449,6 +2471,7 @@ void main() {
       await scrollInspector(tester);
       await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
       await tester.pumpAndSettle();
+      await openTools(tester);
 
       panelIn(tester).onSurfaces(
         const [Surface(name: 'Stone'), Surface(name: 'Brass')],
@@ -2477,7 +2500,7 @@ void main() {
         (tester) async {
       await open(tester);
       await addShape(tester, 'Cube');
-      await scrollInspector(tester);
+      await openTools(tester);
 
       expect(find.text('Conform normals'), findsOneWidget);
       expect(find.text('Flip all normals'), findsOneWidget);
@@ -2488,7 +2511,7 @@ void main() {
     testWidgets('flipping the normals is one undoable step', (tester) async {
       await open(tester);
       await addShape(tester, 'Cube');
-      await scrollInspector(tester);
+      await openTools(tester);
 
       await tester.tap(find.text('Flip all normals'));
       await tester.pumpAndSettle();

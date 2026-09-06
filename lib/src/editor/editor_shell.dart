@@ -30,6 +30,7 @@ import 'inspector.dart';
 import 'mesh_edit.dart';
 import 'mesh_panel.dart';
 import 'model_bounds.dart';
+import 'modelling_panel.dart';
 import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
@@ -201,6 +202,44 @@ class _EditorShellState extends State<EditorShell> {
   /// scene agree about the grid — and a view setting, not a document one: it
   /// is not saved and it is not undone.
   final Snapping _snapping = Snapping();
+
+  /// Everything somebody does to geometry, in one place.
+  ///
+  /// Built here rather than in the inspector because it is a panel of its own
+  /// now: it stays put when the selection changes, and says what it is
+  /// waiting for when there is nothing to work on.
+  Widget _modellingTools() {
+    final chosen = _shapeSelected;
+    return ModellingPanel(
+      shape: chosen?.object.shape,
+      geometry: chosen?.object.geometry,
+      context_: _context,
+      mode: _elementMode,
+      selection: _elements,
+      amounts: _amounts,
+      onContext: _setContext,
+      onMode: (mode) => setState(() => _elementMode = mode),
+      onAction: _runMeshAction,
+      onAmount: (action, amount) =>
+          setState(() => _amounts[action] = amount),
+      seeThrough: _seeThrough,
+      onSeeThrough: (value) => setState(() => _seeThrough = value),
+      surfaces: chosen?.object.surfaces ?? const [],
+      onSurfaces: (surfaces, {required live}) {
+        if (chosen == null) return;
+        _setSurfaces(chosen.object, surfaces, live: live);
+      },
+      onPaint: _paintFaces,
+      format: _format,
+      onFormat: (one) => setState(() => _format = one),
+      onExport: () {
+        if (chosen != null) _exportShape(chosen.object);
+      },
+      tool: _drawing.tool,
+      onTool: _useTool,
+      drawing: _drawing,
+    );
+  }
 
   /// What a drag in the coordinate view does.
   UvGesture _uvGesture = UvGesture.move;
@@ -1756,29 +1795,16 @@ class _EditorShellState extends State<EditorShell> {
                 : MeshPanel(
                     shape: selected!.shape,
                     geometry: selected.geometry,
-                    context_: _context,
-                    mode: _elementMode,
-                    selection: _elements,
-                    amounts: _amounts,
                     onShape: (shape) => _reshape(selected, shape),
-                    onContext: _setContext,
-                    onMode: (mode) => setState(() => _elementMode = mode),
-                    onAction: _runMeshAction,
-                    onAmount: (action, amount) =>
-                        setState(() => _amounts[action] = amount),
-                    seeThrough: _seeThrough,
-                    onSeeThrough: (value) =>
-                        setState(() => _seeThrough = value),
-                    surfaces: selected.surfaces,
-                    onSurfaces: (surfaces, {required live}) =>
-                        _setSurfaces(selected, surfaces, live: live),
-                    onPaint: (slot) => _paintFaces(slot),
-                    format: _format,
-                    onFormat: (one) => setState(() => _format = one),
-                    onExport: () => _exportShape(selected),
                     outline: selected.outline,
                     onOutline: (next, {required live}) =>
                         _setOutline(selected, next, live: live),
+                    onOpenTools: () => setState(
+                      () => _layout = _layout.add(
+                        const DockPanel(id: 'modelling',
+                            kind: PanelKind.modelling),
+                      ),
+                    ),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
@@ -1898,6 +1924,10 @@ class _EditorShellState extends State<EditorShell> {
             }),
             ),
       PanelKind.console => ConsolePanel(log: _log),
+      PanelKind.modelling => SingleChildScrollView(
+          padding: const EdgeInsets.all(Space.sm),
+          child: _modellingTools(),
+        ),
       PanelKind.uvs => SingleChildScrollView(
           padding: const EdgeInsets.all(Space.sm),
           child: _uvEditor(),
@@ -3211,6 +3241,7 @@ class _ViewMenu extends StatelessWidget {
     (PanelKind.game, 'game'),
     (PanelKind.project, 'project'),
     (PanelKind.console, 'console'),
+    (PanelKind.modelling, 'modelling'),
     (PanelKind.uvs, 'uvs'),
   ];
 

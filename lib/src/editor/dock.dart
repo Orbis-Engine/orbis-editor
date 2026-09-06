@@ -14,7 +14,8 @@ enum PanelKind {
   game('Game', Icons.sports_esports_outlined),
   project('Project', Icons.folder_outlined),
   console('Console', Icons.terminal),
-  uvs('UVs', Icons.grid_on_outlined);
+  uvs('UVs', Icons.grid_on_outlined),
+  modelling('Modelling', Icons.handyman_outlined);
 
   const PanelKind(this.label, this.icon);
 
@@ -281,6 +282,9 @@ class DockLayout {
                   id: 'right',
                   panels: [
                     DockPanel(id: 'inspector', kind: PanelKind.inspector),
+                    // Beside the inspector rather than behind a menu. It is a
+                    // tool, and a tool nobody can find is a tool nobody uses.
+                    DockPanel(id: 'modelling', kind: PanelKind.modelling),
                   ],
                 ),
               ],
@@ -290,6 +294,7 @@ class DockLayout {
               panels: [
                 DockPanel(id: 'project', kind: PanelKind.project),
                 DockPanel(id: 'console', kind: PanelKind.console),
+                DockPanel(id: 'uvs', kind: PanelKind.uvs),
               ],
             ),
           ],

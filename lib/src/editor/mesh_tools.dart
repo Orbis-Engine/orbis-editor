@@ -3,6 +3,28 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 
 import 'mesh_edit.dart';
 
+/// Which shelf an action sits on.
+///
+/// Grouped because twenty-five buttons in a column is a list nobody reads,
+/// and the three groups are not arbitrary: one changes what is selected, one
+/// changes the whole object, and one changes the part of it that is selected.
+/// Knowing which of those a button will do is most of knowing whether to
+/// press it.
+enum ToolGroup {
+  /// Changes the selection without touching the geometry.
+  selection('Selection'),
+
+  /// Changes the selected part of the shape.
+  geometry('Geometry'),
+
+  /// Changes the whole shape, selection or no selection.
+  object('Whole shape');
+
+  const ToolGroup(this.label);
+
+  final String label;
+}
+
 /// One thing somebody can do to geometry.
 ///
 /// A description rather than a method call, so the same list draws the menu,
@@ -14,6 +36,7 @@ class MeshAction {
     required this.icon,
     required this.modes,
     required this.run,
+    this.group = ToolGroup.geometry,
     this.needs = 1,
     this.hint = '',
     this.amount,
@@ -24,6 +47,9 @@ class MeshAction {
 
   /// Which modes it appears in. Empty means the whole object.
   final Set<ElementMode> modes;
+
+  /// Which shelf it sits on.
+  final ToolGroup group;
 
   /// How many elements it needs. Bridging needs two edges; extruding needs
   /// one face.
@@ -166,6 +192,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Grow',
+      group: ToolGroup.selection,
       icon: Icons.zoom_out_map,
       modes: {ElementMode.face},
       hint: 'Takes in the neighbours. The angle keeps it on the flat rather '
@@ -181,6 +208,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Shrink',
+      group: ToolGroup.selection,
       icon: Icons.zoom_in_map,
       modes: {ElementMode.face},
       needs: 2,
@@ -192,6 +220,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Loop',
+      group: ToolGroup.selection,
       icon: Icons.all_inclusive,
       modes: {ElementMode.face},
       hint: 'Selects the ring of faces this one runs round. Quads only.',
@@ -243,6 +272,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Edge loop',
+      group: ToolGroup.selection,
       icon: Icons.rotate_right,
       modes: {ElementMode.edge},
       hint: 'Selects the loop running through this edge. Quads only.',
@@ -256,6 +286,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Edge ring',
+      group: ToolGroup.selection,
       icon: Icons.swap_horiz,
       modes: {ElementMode.edge},
       hint: 'Selects the ring of edges parallel to this one. Quads only.',
@@ -319,6 +350,7 @@ abstract final class MeshTools {
     // ---- the whole object ----
     MeshAction(
       label: 'Subdivide all',
+      group: ToolGroup.object,
       icon: Icons.grid_on,
       modes: const {},
       hint: 'Cuts every face into four.',
@@ -329,6 +361,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Conform normals',
+      group: ToolGroup.object,
       icon: Icons.compass_calibration,
       modes: const {},
       hint: 'Turns the odd face back the way the rest of them point. What '
@@ -340,6 +373,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Flip all normals',
+      group: ToolGroup.object,
       icon: Icons.swap_vert,
       modes: const {},
       hint: 'Turns the whole shape inside out, which is how a box becomes a '
@@ -351,6 +385,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Weld all',
+      group: ToolGroup.object,
       icon: Icons.merge_type,
       modes: const {},
       hint: 'Joins every pair of points in the same place, so pieces that '
@@ -363,6 +398,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Triangulate all',
+      group: ToolGroup.object,
       icon: Icons.details,
       modes: const {},
       hint: 'Cuts every face down to triangles.',
@@ -373,6 +409,7 @@ abstract final class MeshTools {
     ),
     MeshAction(
       label: 'Centre pivot',
+      group: ToolGroup.object,
       icon: Icons.filter_center_focus,
       modes: const {},
       hint: 'Moves the middle of the object to where it turns and scales '

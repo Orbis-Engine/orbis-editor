@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
-import 'package:orbis_editor/src/editor/mesh_panel.dart';
+import 'package:orbis_editor/src/editor/modelling_panel.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/uv_panel.dart';
@@ -84,6 +84,15 @@ void main() {
   Future<void> selectFaces(WidgetTester tester, List<int> which) async {
     final viewport = tester.widget<SceneViewport>(find.byType(SceneViewport));
     viewport.onSelectElements!(which.cast<Object>(), add: false);
+    await tester.pumpAndSettle();
+  }
+
+
+  /// Brings the modelling panel to the front. It is a tab beside the
+  /// inspector, and a tab that is not showing is not built.
+  Future<void> openTools(WidgetTester tester) async {
+    // Tabs are drawn in capitals, so the finder is too.
+    await tester.tap(find.text('MODELLING').first);
     await tester.pumpAndSettle();
   }
 
@@ -232,12 +241,16 @@ void main() {
 
   group('exporting', () {
     Future<void> exportAs(WidgetTester tester, String format) async {
-      final panel = tester.widget<MeshPanel>(find.byType(MeshPanel));
+      await openTools(tester);
+      final panel =
+          tester.widget<ModellingPanel>(find.byType(ModellingPanel));
       panel.onFormat(
         MeshFormat.values.firstWhere((one) => one.label == format),
       );
       await tester.pumpAndSettle();
-      tester.widget<MeshPanel>(find.byType(MeshPanel)).onExport();
+      tester
+          .widget<ModellingPanel>(find.byType(ModellingPanel))
+          .onExport();
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byType(TextField).last, 'steps');
