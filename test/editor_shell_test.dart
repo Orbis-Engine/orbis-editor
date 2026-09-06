@@ -1180,4 +1180,127 @@ void main() {
       await tester.pumpAndSettle();
     });
   });
+
+  group('the shared set', () {
+    /// The Shared scene's own row, which sits above every scene.
+    Finder sharedRow() => find.descendant(
+          of: find.byType(Outliner),
+          matching: find.text('Shared'),
+        );
+
+    Future<void> dragOnto(WidgetTester tester, Finder from, Finder to) async {
+      final gesture = await tester.startGesture(tester.getCenter(from));
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(to));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('an object can be dragged into it', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Crate'), sharedRow());
+
+      // Out of the scene it was in and into the set every scene has: still
+      // one row, but the scene is one object lighter.
+      expect(find.textContaining('Move Crate'), findsOneWidget);
+      expect(row('Crate'), findsOneWidget);
+      expect(find.textContaining('6 objects'), findsOneWidget);
+    });
+
+    testWidgets('and dragged back out again', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Crate'), sharedRow());
+      expect(find.textContaining('6 objects'), findsOneWidget);
+
+      await dragOnto(tester, row('Crate'), row('Props'));
+
+      expect(row('Crate'), findsOneWidget);
+      expect(find.textContaining('7 objects'), findsOneWidget);
+    });
+
+    testWidgets('moving into it is undoable', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Crate'), sharedRow());
+      await press(tester, LogicalKeyboardKey.keyZ);
+
+      // Back in the scene it came from, counted there again.
+      expect(row('Crate'), findsOneWidget);
+      expect(find.textContaining('7 objects'), findsOneWidget);
+    });
+
+    testWidgets('something in it can be copied and pasted', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Crate'), sharedRow());
+
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.keyC);
+      await press(tester, LogicalKeyboardKey.keyV);
+
+      // Both in the shared set, since that is where the selection was.
+      expect(row('Crate'), findsNWidgets(2));
+    });
+
+    testWidgets('something in it can be duplicated', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Crate'), sharedRow());
+
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.keyD);
+
+      expect(row('Crate'), findsNWidgets(2));
+    });
+
+    testWidgets('pasting with nothing selected still goes to the scene',
+        (tester) async {
+      await open(tester);
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.keyC);
+      await press(tester, LogicalKeyboardKey.keyV);
+
+      expect(row('Crate'), findsNWidgets(2));
+    });
+
+    testWidgets('an object copied out of it lands in the open scene',
+        (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Sun'), sharedRow());
+
+      await tester.tap(row('Sun'));
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.keyC);
+      await tester.tap(row('Props'));
+      await tester.pumpAndSettle();
+      await press(tester, LogicalKeyboardKey.keyV);
+
+      expect(row('Sun'), findsNWidgets(2));
+    });
+
+    testWidgets('the scene it left reads as unsaved too', (tester) async {
+      await open(tester);
+      await save(tester);
+      expect(unsavedMarker(), findsNothing);
+
+      await dragOnto(tester, row('Crate'), sharedRow());
+
+      // Both documents changed, so the one it came out of is a whole object
+      // short of what is on disk and has to say so.
+      expect(unsavedMarker(), findsWidgets);
+    });
+
+    testWidgets('a whole subtree moves into it at once', (tester) async {
+      await open(tester);
+      await dragOnto(tester, row('Props'), sharedRow());
+
+      // The group and both its children went together.
+      expect(row('Props'), findsOneWidget);
+      expect(row('Cube'), findsOneWidget);
+      expect(row('Crate'), findsOneWidget);
+      // Three fewer in the scene: the group and both its children.
+      expect(find.textContaining('4 objects'), findsOneWidget);
+    });
+  });
 }

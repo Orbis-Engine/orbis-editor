@@ -503,6 +503,117 @@ class MoveObject extends EditorCommand {
 
 }
 
+/// Moves an object and everything under it from one scene into another.
+///
+/// A separate command from [MoveObject] because it is a different operation:
+/// one scene loses a subtree and another gains it, and an undo has to put it
+/// back in the scene it came from at the index it came from. Trying to do both
+/// through one command means every field is nullable and neither case is
+/// clear.
+///
+/// What makes it worth having at all is the shared set — the objects every
+/// scene has. Without this, the only way to put something in it was to build
+/// it there, and the obvious gesture of dragging a prop onto the Shared row
+/// did nothing at all.
+class MoveBetweenScenes extends EditorCommand {
+  MoveBetweenScenes({
+    required this.fromSceneId,
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.parentId,
+    required this.index,
+  });
+
+  /// Where it came from.
+  final String fromSceneId;
+
+  /// Where it is going, which is the scene the history records this against:
+  /// an undo should show the object where it will reappear.
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+
+  /// The parent it lands under in the destination, or null for a root.
+  final String? parentId;
+
+  /// Where among its new siblings.
+  final int index;
+
+  @override
+  Set<String> get touches => {sceneId, fromSceneId};
+
+  /// What was taken out, with the indices to put it back at.
+  List<({SceneObject object, int index})> _removed = const [];
+
+  /// What actually went into the destination.
+  ///
+  /// The very same objects when nothing had to change, so the renderer keeps
+  /// the key it knows them by and an undo puts back exactly what was there.
+  /// Copies only when an id collided.
+  List<SceneObject> _moved = const [];
+
+  @override
+  String get label => 'Move $name';
+
+  @override
+  void apply(SceneHost host) {
+    final from = host.sceneFor(fromSceneId);
+    final to = host.sceneFor(sceneId);
+    final object = from?[id];
+    if (from == null || to == null || object == null) return;
+
+    // Read before the move, so the thing lands where it looked rather than
+    // wherever its old local transform points under a new parent.
+    final world = from.worldOf(id).clone();
+
+    _removed = from.remove(id);
+
+    // Two scenes can hold the same id — the starter scene names its objects
+    // outright — and adding a second one would throw. Renaming on the way
+    // across rather than refusing keeps the drag working.
+    final clash = <String, String>{
+      for (final entry in _removed)
+        if (to.contains(entry.object.id))
+          entry.object.id: '${entry.object.id}~${to.length}',
+    };
+
+    _moved = [
+      for (final entry in _removed)
+        if (clash.isEmpty)
+          entry.object
+        else
+          entry.object.copyAs(
+            id: clash[entry.object.id] ?? entry.object.id,
+            parentId: entry.object.parentId == null
+                ? null
+                : (clash[entry.object.parentId] ?? entry.object.parentId),
+          ),
+    ];
+
+    final root = _moved.first;
+    root.parentId = parentId;
+    for (final moving in _moved) {
+      to.add(moving);
+    }
+
+    to.moveTo(root.id, parentId: parentId, index: index);
+    placeInWorld(to, root, world);
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final from = host.sceneFor(fromSceneId);
+    final to = host.sceneFor(sceneId);
+    if (from == null || to == null || _removed.isEmpty) return;
+
+    to.remove(_moved.first.id);
+    from.restore(_removed);
+  }
+}
+
 /// Changes something about the scene itself rather than a thing in it.
 class SetSceneSky extends EditorCommand {
   SetSceneSky({

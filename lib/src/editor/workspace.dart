@@ -40,7 +40,14 @@ class SceneEntry {
   bool get isLoaded => scene != null;
 
   /// What to call it: its file, or its own name when it has none.
-  String get title => path == null ? name : p.basenameWithoutExtension(path!);
+  ///
+  /// The shared set keeps its name rather than taking its file's. It is not
+  /// one of the scenes somebody is choosing between, and listing it as
+  /// "shared" among "main" and "level2" reads as a scene that happens to be
+  /// lower case rather than as the thing every scene has.
+  String get title => path == null || id == sharedSceneId
+      ? name
+      : p.basenameWithoutExtension(path!);
 }
 
 /// What every scene in a project has in it.

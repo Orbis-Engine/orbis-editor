@@ -314,7 +314,12 @@ class _RowState extends State<_Row> {
     if (id == object.id) return false;
 
     final holder = widget.workspace.sceneHolding(id);
-    if (holder == null || holder.id != widget.row.entry.id) return false;
+    if (holder == null) return false;
+
+    // From another scene — out of the shared set, most often. Nothing to
+    // check: an object cannot be its own ancestor across two documents, and
+    // the move takes it out of one and puts it in the other.
+    if (holder.id != widget.row.entry.id) return true;
 
     return !holder.scene!.isAncestorOf(id, object.id);
   }

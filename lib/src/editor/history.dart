@@ -27,6 +27,14 @@ abstract class EditorCommand {
 
   void revert(SceneHost host);
 
+  /// Every scene this changes, which is usually just [sceneId].
+  ///
+  /// A move between scenes changes two documents, and both of them have to
+  /// read as unsaved afterwards. Stamping only the destination would leave the
+  /// scene the object came *out* of looking clean while it is a whole object
+  /// short of what is on disk.
+  Set<String> get touches => {sceneId};
+
   /// Identifies a run of changes that should collapse into one undo step.
   ///
   /// Dragging a slider produces a command per frame. Without this, undo would
@@ -89,15 +97,15 @@ class History extends ChangeNotifier {
   /// was there when it was saved, whatever has happened to other scenes since.
   int stampFor(String sceneId) {
     for (var i = _done.length - 1; i >= 0; i--) {
-      if (_done[i].sceneId == sceneId) return _done[i].stamp;
+      if (_done[i].touches.contains(sceneId)) return _done[i].stamp;
     }
     return 0;
   }
 
   /// Forgets every step belonging to a scene, for when one is closed.
   void forget(String sceneId) {
-    _done.removeWhere((command) => command.sceneId == sceneId);
-    _undone.removeWhere((command) => command.sceneId == sceneId);
+    _done.removeWhere((command) => command.touches.contains(sceneId));
+    _undone.removeWhere((command) => command.touches.contains(sceneId));
     _sealed = true;
     notifyListeners();
   }

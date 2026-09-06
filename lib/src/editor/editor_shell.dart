@@ -564,13 +564,22 @@ class _EditorShellState extends State<EditorShell> {
     return null;
   }
 
+  /// The scene being worked in, which is not always the one that is loaded.
+  ///
+  /// The shared set — the objects every scene has — is a scene that is always
+  /// there and never the loaded one. Something selected in it is being edited
+  /// in it, and every edit that reaches for "the scene" has to mean that one
+  /// or the shared set becomes a place things can only be built, never
+  /// copied, pasted, duplicated or dragged into.
+  SceneEntry? get _working => _primary == null
+      ? _current
+      : (_workspace.sceneHolding(_primary!) ?? _current);
+
   void _add(ObjectKind kind) {
     // Wherever the selection is. Selecting something in the shared set and
     // pressing Add means adding to the shared set — anything else would be
     // the button ignoring where somebody is working.
-    final open = _primary == null
-        ? _current
-        : (_workspace.sceneHolding(_primary!) ?? _current);
+    final open = _working;
     final scene = open?.scene;
     if (open == null || scene == null) {
       _say('There is no scene loaded to add to.');
@@ -629,7 +638,7 @@ class _EditorShellState extends State<EditorShell> {
 
   /// Deletes everything selected, as one step.
   void _deleteSelection() {
-    final open = _current;
+    final open = _working;
     final scene = open?.scene;
     if (open == null || scene == null || _selected.isEmpty) return;
 
@@ -650,7 +659,21 @@ class _EditorShellState extends State<EditorShell> {
     final scene = open?.scene;
     final object = scene?[id];
     if (open == null || scene == null || object == null) return;
-    if (drop.sceneId != open.id) return;
+
+    // Onto a different scene's row — the shared set, most often. A different
+    // operation rather than a refusal: one scene loses the subtree and
+    // another gains it.
+    if (drop.sceneId != open.id) {
+      _run(MoveBetweenScenes(
+        fromSceneId: open.id,
+        sceneId: drop.sceneId,
+        id: id,
+        name: object.name,
+        parentId: drop.parentId,
+        index: drop.index,
+      ));
+      return;
+    }
 
     final fromIndex = scene.indexOf(id);
     var toIndex = drop.index;
@@ -675,7 +698,7 @@ class _EditorShellState extends State<EditorShell> {
   /// Written out as text as well, so a copy can cross into another window —
   /// or into a text editor, where it is readable rather than an opaque blob.
   Future<void> _copy() async {
-    final scene = _current?.scene;
+    final scene = _working?.scene;
     if (scene == null || _selected.isEmpty) return;
 
     _clipboard.take(scene, _selected);
@@ -688,7 +711,7 @@ class _EditorShellState extends State<EditorShell> {
 
   /// Copies the selection and then removes it.
   Future<void> _cut() async {
-    final scene = _current?.scene;
+    final scene = _working?.scene;
     if (scene == null || _selected.isEmpty) return;
 
     // Copied before it is deleted, since the delete is what makes it
@@ -706,7 +729,9 @@ class _EditorShellState extends State<EditorShell> {
   /// pressing paste usually means — pasting into the thing you were looking at
   /// buries it one level down.
   Future<void> _paste() async {
-    final open = _current;
+    // Into whatever holds the selection, so pasting next to a shared prop
+    // puts the copy beside it rather than in the scene behind it.
+    final open = _working;
     final scene = open?.scene;
     if (open == null || scene == null) return;
 
@@ -745,7 +770,7 @@ class _EditorShellState extends State<EditorShell> {
 
   /// Copies the selection and pastes it straight back.
   void _duplicate() {
-    final open = _current;
+    final open = _working;
     final scene = open?.scene;
     if (open == null || scene == null || _selected.isEmpty) return;
 
