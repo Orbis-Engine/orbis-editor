@@ -189,6 +189,34 @@ class _EditorShellState extends State<EditorShell> {
     _refreshGeometry();
   }
 
+  /// Whether picking reaches what is behind the surface.
+  ///
+  /// A view setting, not a document one: it is not saved and it is not
+  /// undone, and two people editing the same shape can disagree about it.
+  bool _seeThrough = false;
+
+  /// Takes everything a marquee drew round.
+  void _selectElements(List<Object> what, {required bool add}) {
+    setState(() {
+      if (!add) _elements.clear();
+      for (final one in what) {
+        switch (one) {
+          case final int index when _elementMode == ElementMode.vertex:
+            _elements.vertices.add(index);
+          case final int index when _elementMode == ElementMode.face:
+            _elements.faces.add(index);
+          case final MeshEdge edge:
+            _elements.edges.add(edge);
+          default:
+            break;
+        }
+      }
+      // A new set object, so anything comparing the old one against the new
+      // sees that it changed.
+      _elements = _elements.copy();
+    });
+  }
+
   /// Takes a mesh a viewport drag has changed.
   ///
   /// The same path a tool button takes, with two differences: the step is
@@ -1318,6 +1346,9 @@ class _EditorShellState extends State<EditorShell> {
                     onAction: _runMeshAction,
                     onAmount: (action, amount) =>
                         setState(() => _amounts[action] = amount),
+                    seeThrough: _seeThrough,
+                    onSeeThrough: (value) =>
+                        setState(() => _seeThrough = value),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
@@ -1359,6 +1390,8 @@ class _EditorShellState extends State<EditorShell> {
             elementSelection: _elements,
             onPickElement: _pickElement,
             onDragElements: _dragElements,
+            onSelectElements: _selectElements,
+            seeThroughElements: _seeThrough,
             geometryOf: _geometry.pathFor,
             interface: _sceneInterface,
             showInterface: _showInterface,

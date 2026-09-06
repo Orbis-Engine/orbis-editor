@@ -205,6 +205,8 @@ class SceneViewport extends StatefulWidget {
     this.elementSelection = nothingSelected,
     this.onPickElement,
     this.onDragElements,
+    this.onSelectElements,
+    this.seeThroughElements = false,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -258,6 +260,17 @@ class SceneViewport extends StatefulWidget {
   /// Called when a click lands on a vertex, an edge or a face — or on none of
   /// them, which is how somebody clears a selection.
   final void Function(Object? what, {required bool add})? onPickElement;
+
+  /// Called with everything a marquee drew round.
+  ///
+  /// A list rather than one at a time, so a box over forty vertices is one
+  /// step and not forty — and so an empty box clears the selection, which is
+  /// what somebody drawing on nothing means by it.
+  final void Function(List<Object> what, {required bool add})?
+      onSelectElements;
+
+  /// Whether what is behind the surface can be picked as well.
+  final bool seeThroughElements;
 
   /// Called with a mesh a drag has changed, and what should be selected after.
   ///
@@ -977,17 +990,55 @@ class _SceneViewportState extends State<SceneViewport>
   /// The part of the mesh the pointer is over, while editing one.
   Object? _hoveredElement;
 
+  MeshPicker _pickerFor(
+    ({SceneObject object, Mesh mesh, Matrix4 transform}) editing,
+    Size surface,
+  ) =>
+      MeshPicker(
+        mesh: editing.mesh,
+        transform: editing.transform,
+        projection: ViewportProjection(camera: widget.camera, size: surface),
+        seeThrough: widget.seeThroughElements,
+      );
+
+  /// Where a marquee started and where it has reached, in local pixels.
+  Offset? _boxFrom;
+  Offset? _boxTo;
+
+  /// The marquee as a rectangle, or null when there is not one.
+  Rect? get _box {
+    final from = _boxFrom;
+    final to = _boxTo;
+    if (from == null || to == null) return null;
+    final box = Rect.fromPoints(from, to);
+    // A rectangle a couple of pixels across is a click that wobbled, and
+    // taking it as a marquee would clear a selection somebody meant to keep.
+    return box.width < 3 && box.height < 3 ? null : box;
+  }
+
+  /// Takes everything the marquee drew round.
+  void _takeBox(bool add) {
+    final editing = widget.editing;
+    final surface = _surface;
+    final box = _box;
+    if (editing == null || surface == null || box == null) return;
+
+    final picker = _pickerFor(editing, surface);
+    final found = switch (widget.elementMode) {
+      ElementMode.vertex => picker.verticesIn(box).cast<Object>(),
+      ElementMode.edge => picker.edgesIn(box).cast<Object>(),
+      ElementMode.face => picker.facesIn(box).cast<Object>(),
+    };
+    widget.onSelectElements?.call(found.toList(), add: add);
+  }
+
   /// What a pixel lands on, in whatever mode is on.
   Object? _elementAt(Offset pixel) {
     final editing = widget.editing;
     final surface = _surface;
     if (editing == null || surface == null || surface.isEmpty) return null;
 
-    final picker = MeshPicker(
-      mesh: editing.mesh,
-      transform: editing.transform,
-      projection: ViewportProjection(camera: widget.camera, size: surface),
-    );
+    final picker = _pickerFor(editing, surface);
 
     return switch (widget.elementMode) {
       ElementMode.vertex => picker.vertexAt(pixel),
@@ -1107,6 +1158,18 @@ class _SceneViewportState extends State<SceneViewport>
                 ),
               ),
             ),
+            if (_box != null)
+              Positioned.fromRect(
+                rect: _box!,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0x22E5893F),
+                      border: Border.all(color: const Color(0xCCE5893F)),
+                    ),
+                  ),
+                ),
+              ),
             Positioned(
               left: Space.md,
               top: Space.md,
@@ -1326,12 +1389,28 @@ class _SceneViewportState extends State<SceneViewport>
           // anywhere else is the view turning. Nothing to hold down and no
           // mode to be in — the handles are the mode.
           if (_grab(details.localPosition)) return;
+          // While a mesh is being edited, a drag that missed the handles is a
+          // marquee rather than the camera turning. The camera is still there
+          // on the right button and on the trackpad, and having to hold
+          // something down to select is the wrong way round for the one thing
+          // somebody is doing constantly.
+          if (widget.editing != null && widget.onSelectElements != null) {
+            setState(() {
+              _boxFrom = details.localPosition;
+              _boxTo = details.localPosition;
+            });
+            return;
+          }
           _dragAnchor = details.localPosition;
         },
         onPanUpdate: (details) {
           if (_onTrackpad) return;
           if (_dragging != null) {
             _dragTo(details.localPosition);
+            return;
+          }
+          if (_boxFrom != null) {
+            setState(() => _boxTo = details.localPosition);
             return;
           }
           final anchor = _dragAnchor;
@@ -1342,10 +1421,22 @@ class _SceneViewportState extends State<SceneViewport>
           _dragAnchor = details.localPosition;
         },
         onPanEnd: (_) {
+          if (_boxFrom != null) {
+            _takeBox(HardwareKeyboard.instance.isMetaPressed ||
+                HardwareKeyboard.instance.isShiftPressed);
+            setState(() {
+              _boxFrom = null;
+              _boxTo = null;
+            });
+          }
           _release();
           _dragAnchor = null;
         },
         onPanCancel: () {
+          setState(() {
+            _boxFrom = null;
+            _boxTo = null;
+          });
           _release();
           _dragAnchor = null;
         },

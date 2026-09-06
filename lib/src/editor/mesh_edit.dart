@@ -142,6 +142,7 @@ class MeshPicker {
     required this.mesh,
     required this.transform,
     required this.projection,
+    this.seeThrough = false,
   });
 
   final Mesh mesh;
@@ -151,8 +152,52 @@ class MeshPicker {
 
   final ViewportProjection projection;
 
+  /// Whether what is behind the surface can be selected too.
+  ///
+  /// Off, a click or a marquee takes only what somebody can actually see,
+  /// which is nearly always what they meant. On, it takes the far side of the
+  /// shape as well — which is exactly what is wanted for scaling a whole ring
+  /// of a cylinder, and never what is wanted for anything else.
+  final bool seeThrough;
+
   /// How near a click has to be, in pixels.
   static const double _reach = 12;
+
+  /// Whether a point on the mesh can be seen from where the camera is.
+  ///
+  /// A ray from the eye to the point: anything the mesh puts in the way first
+  /// hides it. The margin matters — a corner lies exactly on the faces that
+  /// meet there, and without it every vertex hides itself.
+  bool visible(Vector3 world) {
+    if (seeThrough) return true;
+
+    final eye = projection.eye;
+    final away = world - eye;
+    final reach = away.length;
+    if (reach < 1e-6) return true;
+    final direction = away / reach;
+
+    for (final face in mesh.faces) {
+      if (face.vertices.length < 3) continue;
+      final points = [
+        for (final index in face.vertices)
+          if (index >= 0 && index < mesh.positions.length) _worldOf(index),
+      ];
+      if (points.length < 3) continue;
+
+      for (var i = 1; i + 1 < points.length; i++) {
+        final hit = _rayHitsTriangle(
+          eye,
+          direction,
+          points.first,
+          points[i],
+          points[i + 1],
+        );
+        if (hit != null && hit < reach - 1e-3) return false;
+      }
+    }
+    return true;
+  }
 
   Vector3 _worldOf(int index) =>
       transform.transformed3(mesh.positions[index]);
@@ -198,12 +243,67 @@ class MeshPicker {
     int? found;
 
     for (var index = 0; index < mesh.positions.length; index++) {
-      final at = projection.project(_worldOf(index));
+      final world = _worldOf(index);
+      final at = projection.project(world);
       if (at == null) continue;
       final away = (at - pixel).distance;
       if (away >= nearest) continue;
+      if (!visible(world)) continue;
       nearest = away;
       found = index;
+    }
+    return found;
+  }
+
+  /// Every vertex inside a box on screen.
+  List<int> verticesIn(Rect box) {
+    final found = <int>[];
+    for (var index = 0; index < mesh.positions.length; index++) {
+      final world = _worldOf(index);
+      final at = projection.project(world);
+      if (at == null || !box.contains(at)) continue;
+      if (!visible(world)) continue;
+      found.add(index);
+    }
+    return found;
+  }
+
+  /// Every edge inside a box, whole.
+  ///
+  /// Both ends in, not either: a marquee that took every edge it clipped
+  /// would take half the shape behind whatever was being framed, and
+  /// "everything I drew round" is what somebody means.
+  List<MeshEdge> edgesIn(Rect box) {
+    final found = <MeshEdge>[];
+    for (final edge in mesh.allEdges) {
+      final a = _worldOf(edge.$1);
+      final b = _worldOf(edge.$2);
+      final pa = projection.project(a);
+      final pb = projection.project(b);
+      if (pa == null || pb == null) continue;
+      if (!box.contains(pa) || !box.contains(pb)) continue;
+      if (!visible(a) && !visible(b)) continue;
+      found.add(edge);
+    }
+    return found;
+  }
+
+  /// Every face whose middle is inside a box.
+  ///
+  /// The middle rather than every corner, so a face bigger than the box is
+  /// still caught by drawing over the part of it somebody can see. A face
+  /// only partly inside is not: the middle decides, which is one rule rather
+  /// than an argument about how much counts.
+  List<int> facesIn(Rect box) {
+    final found = <int>[];
+    for (var index = 0; index < mesh.faces.length; index++) {
+      final face = mesh.faces[index];
+      if (face.vertices.length < 3) continue;
+      final middle = transform.transformed3(mesh.centreOf(face));
+      final at = projection.project(middle);
+      if (at == null || !box.contains(at)) continue;
+      if (!visible(middle)) continue;
+      found.add(index);
     }
     return found;
   }
@@ -220,6 +320,10 @@ class MeshPicker {
 
       final away = _pixelToSegment(pixel, a, b);
       if (away >= nearest) continue;
+      // Either end being visible is enough: an edge running away from the
+      // camera can have its far corner behind the shape and still be an edge
+      // somebody is looking straight at.
+      if (!visible(_worldOf(edge.$1)) && !visible(_worldOf(edge.$2))) continue;
       nearest = away;
       found = edge;
     }

@@ -27,6 +27,8 @@ class MeshPanel extends StatelessWidget {
     required this.onMode,
     required this.onAction,
     required this.onAmount,
+    required this.seeThrough,
+    required this.onSeeThrough,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -47,6 +49,10 @@ class MeshPanel extends StatelessWidget {
   final ValueChanged<ElementMode> onMode;
   final ValueChanged<MeshAction> onAction;
   final void Function(String action, double amount) onAmount;
+
+  /// Whether picking reaches what is behind the surface.
+  final bool seeThrough;
+  final ValueChanged<bool> onSeeThrough;
 
   bool get _parametric => shape != null && geometry == null;
 
@@ -254,6 +260,16 @@ class MeshPanel extends StatelessWidget {
                   const SizedBox(width: Space.xs),
                 ],
               ],
+            ),
+            const SizedBox(height: Space.xs),
+            OrbisButton(
+              label: seeThrough ? 'Seeing through' : 'See through',
+              icon: seeThrough
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined,
+              expand: true,
+              tone: seeThrough ? ButtonTone.primary : ButtonTone.quiet,
+              onPressed: () => onSeeThrough(!seeThrough),
             ),
             const SizedBox(height: Space.xs),
             Text(

@@ -24,6 +24,8 @@ void main() {
   }
 
   late List<Reported> reported;
+  late List<({List<Object> what, bool add})> boxed;
+  var seeThrough = false;
   late Mesh mesh;
   late Workspace workspace;
   late History history;
@@ -49,6 +51,7 @@ void main() {
     ElementMode mode = ElementMode.face,
   }) async {
     reported = [];
+    boxed = [];
     final scene = workspace.loaded!.scene!;
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
@@ -69,6 +72,10 @@ void main() {
             ),
             elementMode: mode,
             elementSelection: selection,
+            seeThroughElements: seeThrough,
+            onSelectElements: (what, {required add}) {
+              boxed.add((what: what, add: add));
+            },
             onDragElements: (mesh, selection, what, {required merge}) {
               reported.add((
                 mesh: mesh,
@@ -292,5 +299,106 @@ void main() {
 
     expect(reported, isEmpty);
     expect(workspace.loaded!.scene![object.id]!.position.y, greaterThan(0.1));
+  });
+
+
+  group('drawing a box round things', () {
+    testWidgets('a marquee over the whole shape takes every face',
+        (tester) async {
+      await pump(tester, selection: ElementSelection());
+      seeThrough = true;
+      await pump(tester, selection: ElementSelection());
+
+      final gesture = await tester.startGesture(
+        kind: PointerDeviceKind.mouse,
+        surface.topLeft + const Offset(10, 10),
+      );
+      await dragBy(
+        tester,
+        gesture,
+        Offset(surface.width - 20, surface.height - 20),
+      );
+      await gesture.up();
+      await tester.pump();
+
+      expect(boxed, hasLength(1), reason: 'one step, not one per face');
+      expect(boxed.single.what.length, mesh.faceCount);
+      expect(boxed.single.add, isFalse);
+    });
+
+    testWidgets('without seeing through, the far side is left behind',
+        (tester) async {
+      seeThrough = false;
+      await pump(tester, selection: ElementSelection());
+
+      final gesture = await tester.startGesture(
+        kind: PointerDeviceKind.mouse,
+        surface.topLeft + const Offset(10, 10),
+      );
+      await dragBy(
+        tester,
+        gesture,
+        Offset(surface.width - 20, surface.height - 20),
+      );
+      await gesture.up();
+      await tester.pump();
+
+      // Three of a cube's six faces point at the camera from any angle that
+      // is not straight on, and the other three are behind them.
+      expect(boxed.single.what.length, lessThan(mesh.faceCount));
+      expect(boxed.single.what, isNotEmpty);
+    });
+
+    testWidgets('a box that misses everything clears the selection',
+        (tester) async {
+      await pump(tester, selection: ElementSelection(faces: {0}));
+
+      final gesture = await tester.startGesture(
+        kind: PointerDeviceKind.mouse,
+        surface.topLeft + const Offset(4, 4),
+      );
+      await dragBy(tester, gesture, const Offset(40, 30));
+      await gesture.up();
+      await tester.pump();
+
+      expect(boxed.single.what, isEmpty,
+          reason: 'nothing found, and said so rather than doing nothing');
+    });
+
+    testWidgets('a click that wobbled is not a marquee', (tester) async {
+      await pump(tester, selection: ElementSelection(faces: {0}));
+
+      final gesture = await tester.startGesture(
+        kind: PointerDeviceKind.mouse,
+        surface.center,
+      );
+      await dragBy(tester, gesture, const Offset(2, 1), steps: 2);
+      await gesture.up();
+      await tester.pump();
+
+      expect(boxed, isEmpty,
+          reason: 'two pixels is a hand shaking, not a box');
+    });
+
+    testWidgets('holding shift adds to what was already there',
+        (tester) async {
+      await pump(tester, selection: ElementSelection(faces: {0}));
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      final gesture = await tester.startGesture(
+        kind: PointerDeviceKind.mouse,
+        surface.topLeft + const Offset(10, 10),
+      );
+      await dragBy(
+        tester,
+        gesture,
+        Offset(surface.width - 20, surface.height - 20),
+      );
+      await gesture.up();
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(boxed.single.add, isTrue);
+    });
   });
 }
