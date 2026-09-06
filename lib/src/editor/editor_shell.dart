@@ -189,6 +189,44 @@ class _EditorShellState extends State<EditorShell> {
     _refreshGeometry();
   }
 
+  /// Takes a mesh a viewport drag has changed.
+  ///
+  /// The same path a tool button takes, with two differences: the step is
+  /// named after the gesture rather than the tool, and every frame after the
+  /// first folds into the first — so a drag across the screen is one thing to
+  /// undo however many frames it took.
+  void _dragElements(
+    Mesh mesh,
+    ElementSelection selection,
+    String what, {
+    required bool merge,
+  }) {
+    final chosen = _shapeSelected;
+    if (chosen == null) return;
+
+    // A key that lasts the gesture. Bumped on the first change of a drag, so
+    // two separate drags of the same face never fold into each other.
+    if (!merge) _gesture = Object();
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: mesh,
+      what: what,
+      gesture: _gesture,
+    ));
+
+    setState(() => _elements = selection);
+    _geometry.forget(chosen.object.id);
+    // Only the one being dragged. Writing every shape in the project on every
+    // frame of a drag is the whole project's geometry sixty times a second.
+    _geometry.pathFor(chosen.object);
+  }
+
+  /// What ties one gesture's worth of commands together.
+  Object? _gesture;
+
   /// Writes out the geometry of every shape that has changed.
   ///
   /// Called when something changes rather than when something is drawn. Doing
@@ -1320,6 +1358,7 @@ class _EditorShellState extends State<EditorShell> {
             elementMode: _elementMode,
             elementSelection: _elements,
             onPickElement: _pickElement,
+            onDragElements: _dragElements,
             geometryOf: _geometry.pathFor,
             interface: _sceneInterface,
             showInterface: _showInterface,

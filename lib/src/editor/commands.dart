@@ -1422,6 +1422,7 @@ class SetGeometry extends EditorCommand {
     required this.name,
     required this.to,
     required this.what,
+    this.gesture,
   });
 
   @override
@@ -1429,10 +1430,27 @@ class SetGeometry extends EditorCommand {
 
   final String id;
   final String name;
-  final Mesh to;
+  Mesh to;
 
   /// What the step is called: "Extrude", "Inset".
   final String what;
+
+  /// Set while a drag is running, so the hundred commands a gesture produces
+  /// are one step to undo. Null for an edit that stands alone — a menu item,
+  /// a tool button.
+  final Object? gesture;
+
+  @override
+  Object? get mergeKey => gesture;
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is! SetGeometry) return;
+    // The mesh the drag has reached now, over the one it started from. The
+    // `_was` this command is holding is from before the gesture began, which
+    // is where undo has to land.
+    to = later.to;
+  }
 
   Mesh? _was;
   Shape? _wasShape;

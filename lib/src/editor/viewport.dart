@@ -204,6 +204,7 @@ class SceneViewport extends StatefulWidget {
     this.elementMode = ElementMode.face,
     this.elementSelection = nothingSelected,
     this.onPickElement,
+    this.onDragElements,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -257,6 +258,19 @@ class SceneViewport extends StatefulWidget {
   /// Called when a click lands on a vertex, an edge or a face — or on none of
   /// them, which is how somebody clears a selection.
   final void Function(Object? what, {required bool add})? onPickElement;
+
+  /// Called with a mesh a drag has changed, and what should be selected after.
+  ///
+  /// The whole mesh rather than the change, for the same reason every other
+  /// geometry edit is: describing a drag as a diff is more code than the drag.
+  /// [merge] is set on every frame after the first, so a gesture that produces
+  /// a hundred of these is one step to undo.
+  final void Function(
+    Mesh mesh,
+    ElementSelection selection,
+    String what, {
+    required bool merge,
+  })? onDragElements;
 
   /// Where an object's built geometry was written, if anywhere.
   ///
@@ -336,6 +350,24 @@ class _SceneViewportState extends State<SceneViewport>
   final Map<String, Vector3> _before = {};
   final Map<String, Matrix3> _beforeWorld = {};
 
+  /// The mesh as it stood when an element drag began, and which of its corners
+  /// are moving.
+  ///
+  /// Kept whole and moved from, rather than moved a little each frame: a drag
+  /// applied incrementally accumulates every rounding error it makes, and a
+  /// slow drag out and back does not come home.
+  Mesh? _beforeMesh;
+  List<int> _movingPoints = const [];
+
+  /// What the selection should be while an element drag is running. Set when a
+  /// drag extrudes, because the faces that come out of an extrude are not the
+  /// ones that went in.
+  ElementSelection? _draggingSelection;
+
+  /// Whether anything has actually been written yet this drag, so the first
+  /// change starts an undo step and the rest fold into it.
+  bool _dragStarted = false;
+
   /// The scene the handles are working in.
   ///
   /// Whichever holds what is selected: the open scene, or the shared set. A
@@ -366,9 +398,42 @@ class _SceneViewportState extends State<SceneViewport>
 
     return Gizmo(
       mode: _mode,
-      pivot: scene.worldOf(id).getTranslation(),
+      // While parts of a mesh are being edited the handles belong to those
+      // parts, not to the object round them: dragging a face should move the
+      // face. With nothing selected there is nothing to put them on, and
+      // falling back to the object would make an empty selection look like a
+      // whole-object move waiting to happen.
+      pivot: _elementPivot ?? scene.worldOf(id).getTranslation(),
       projection: ViewportProjection(camera: widget.camera, size: size),
     );
+  }
+
+  /// Whether a drag right now moves parts of a mesh rather than objects.
+  bool get _editingElements =>
+      widget.editing != null && !_selectedElements.isEmpty;
+
+  /// The selection a drag is working on — the one that came in, or the one an
+  /// extrude made part-way through the gesture.
+  ElementSelection get _selectedElements =>
+      _draggingSelection ?? widget.elementSelection;
+
+  /// Where the handles sit while editing elements, in the world.
+  Vector3? get _elementPivot {
+    final editing = widget.editing;
+    if (editing == null) return null;
+    final middle = _selectedElements.pivotIn(editing.mesh);
+    if (middle == null) return null;
+    return editing.transform.transformed3(middle);
+  }
+
+  /// A world-space movement, in the object's own frame.
+  ///
+  /// A shift means something different inside an object that is turned or
+  /// scaled, and a face dragged a metre along the world's X on an object
+  /// turned ninety degrees should still end up a metre along the world's X.
+  Vector3 _intoObject(Vector3 world, Matrix4 transform) {
+    final inverse = Matrix4.inverted(transform);
+    return inverse.transformed3(world) - inverse.transformed3(Vector3.zero());
   }
 
   /// Everything a drag moves: the whole selection, or just the one the handles
@@ -436,6 +501,15 @@ class _SceneViewportState extends State<SceneViewport>
     // than to teleport whatever is selected.
     if (grabbed == null) return false;
 
+    if (_editingElements) {
+      if (!_grabElements()) return false;
+      setState(() {
+        _dragging = axis;
+        _grabbed = grabbed;
+      });
+      return true;
+    }
+
     _before.clear();
     _beforeWorld.clear();
     for (final id in _targets) {
@@ -453,6 +527,110 @@ class _SceneViewportState extends State<SceneViewport>
     return true;
   }
 
+  /// Takes hold of the parts of a mesh.
+  ///
+  /// Holding shift extrudes first and then drags what came out, which is the
+  /// move a modelling tool is built around: a doorway, a chimney and a ledge
+  /// are all one face pulled out. Extruding by nothing and then moving is
+  /// exactly right — the walls are made where the face was, and the drag
+  /// takes the face away from them.
+  bool _grabElements() {
+    final editing = widget.editing;
+    if (editing == null || widget.onDragElements == null) return false;
+
+    var selection = widget.elementSelection.copy();
+    final mesh = editing.mesh.copy();
+    var extruded = false;
+
+    final wantsExtrude = _mode == GizmoMode.move &&
+        widget.elementMode == ElementMode.face &&
+        HardwareKeyboard.instance.isShiftPressed &&
+        selection.faces.isNotEmpty;
+
+    if (wantsExtrude) {
+      // The copy's own faces, not the ones on screen. `extrude` matches by
+      // identity, and a copied mesh's faces are different objects — passing
+      // the originals finds nothing and silently extrudes nothing.
+      final made = mesh.extrude(selection.facesIn(mesh), 0);
+      if (made.isNotEmpty) {
+        final places = <int>{};
+        for (var i = 0; i < mesh.faces.length; i++) {
+          if (made.contains(mesh.faces[i])) places.add(i);
+        }
+        selection = ElementSelection(faces: places);
+        extruded = true;
+      }
+    }
+
+    final points = selection.pointsIn(mesh).toList();
+    if (points.isEmpty) return false;
+
+    _beforeMesh = mesh;
+    _movingPoints = points;
+    _draggingSelection = selection;
+    _dragStarted = false;
+
+    // The extrude is written straight away rather than waiting for the first
+    // movement. Somebody who holds shift, pulls and lets go without moving has
+    // still made a face, and it should be there and be undoable.
+    if (extruded) {
+      widget.onDragElements!(mesh.copy(), selection, 'Extrude', merge: false);
+      _dragStarted = true;
+    }
+    return true;
+  }
+
+  /// Moves or turns the parts of a mesh, from where they were when the drag
+  /// began.
+  void _dragElementsTo(Offset local) {
+    final gizmo = _gizmo;
+    final editing = widget.editing;
+    final start = _beforeMesh;
+    final axis = _dragging;
+    final grabbed = _grabbed;
+    final report = widget.onDragElements;
+    if (gizmo == null ||
+        editing == null ||
+        start == null ||
+        axis == null ||
+        grabbed == null ||
+        report == null) {
+      return;
+    }
+
+    final next = start.copy();
+    final String what;
+
+    if (_mode == GizmoMode.move) {
+      final now = gizmo.pointOnAxis(local, axis);
+      if (now == null) return;
+      next.movePoints(
+        _movingPoints,
+        _intoObject(now - grabbed, editing.transform),
+      );
+      what = 'Move';
+    } else {
+      final now = gizmo.pointOnRing(local, axis);
+      if (now == null) return;
+      final angle = gizmo.angleBetween(grabbed, now, axis);
+      // Into the object's frame first, so the ring somebody grabbed in the
+      // world is the axis the corners turn about inside a turned object.
+      final about = start.centreOfPoints(_movingPoints);
+      if (about == null) return;
+      final localAxis =
+          _intoObject(axis.direction, editing.transform).normalized();
+      next.turnPoints(
+        _movingPoints,
+        Quaternion.axisAngle(localAxis, angle).asRotationMatrix(),
+        about,
+      );
+      what = 'Turn';
+    }
+
+    report(next, _selectedElements, what, merge: _dragStarted);
+    _dragStarted = true;
+  }
+
   /// Applies the drag as it stands: one command, however many objects.
   void _dragTo(Offset local) {
     final gizmo = _gizmo;
@@ -467,6 +645,11 @@ class _SceneViewportState extends State<SceneViewport>
         grabbed == null ||
         history == null ||
         sceneId == null) {
+      return;
+    }
+
+    if (_editingElements || _beforeMesh != null) {
+      _dragElementsTo(local);
       return;
     }
 
@@ -539,6 +722,10 @@ class _SceneViewportState extends State<SceneViewport>
     setState(() {
       _dragging = null;
       _grabbed = null;
+      _beforeMesh = null;
+      _movingPoints = const [];
+      _draggingSelection = null;
+      _dragStarted = false;
     });
   }
 
@@ -900,7 +1087,7 @@ class _SceneViewportState extends State<SceneViewport>
                       transform: editing.transform,
                       camera: widget.camera,
                       mode: widget.elementMode,
-                      selection: widget.elementSelection,
+                      selection: _selectedElements,
                       hovered: _hoveredElement,
                     ),
                   ),

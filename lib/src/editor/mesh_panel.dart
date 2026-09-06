@@ -260,7 +260,10 @@ class MeshPanel extends StatelessWidget {
               selection.isEmpty
                   ? 'Click ${mode.label.toLowerCase()} in the viewport. '
                       'Shift to add. G changes mode, escape leaves.'
-                  : '${selection.countIn(mode)} selected',
+                  : '${selection.countIn(mode)} selected — drag the handles to '
+                      '${mode == ElementMode.face
+                          ? 'move them, shift-drag to extrude'
+                          : 'move them'}',
               style: OrbisText.caption.copyWith(fontSize: 11),
             ),
           ],
