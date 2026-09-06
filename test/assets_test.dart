@@ -247,4 +247,80 @@ void main() {
       );
     });
   });
+
+  group('making things', () {
+    test('a folder appears where it was asked for', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.folder, 'props');
+
+      expect(made.problem, isNull);
+      expect(Directory(p.join(root.path, 'props')).existsSync(), isTrue);
+    });
+
+    test('a script gets its extension and something to run', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.script, 'walker');
+
+      expect(made.path, endsWith('walker.ts'));
+      expect(File(made.path!).readAsStringSync(), contains('onFrame'));
+    });
+
+    test('every kind writes a starter that is not empty', () {
+      final tree = AssetTree(root.path);
+      for (final what in NewAsset.values) {
+        if (what.isFolder) continue;
+        final made = tree.create(root.path, what, what.name);
+        expect(made.problem, isNull, reason: what.name);
+        expect(File(made.path!).readAsStringSync().trim(), isNotEmpty,
+            reason: what.name);
+      }
+    });
+
+    test('the second one of a name gets a name of its own', () {
+      final tree = AssetTree(root.path);
+      tree.create(root.path, NewAsset.folder, 'props');
+      final second = tree.create(root.path, NewAsset.folder, 'props');
+
+      expect(second.problem, isNull);
+      expect(p.basename(second.path!), isNot('props'));
+      expect(Directory(second.path!).existsSync(), isTrue);
+    });
+
+    test('a name that is a path is refused rather than followed', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.folder, '../escaped');
+
+      expect(made.problem, isNotNull);
+      expect(Directory(p.join(root.parent.path, 'escaped')).existsSync(),
+          isFalse);
+    });
+
+    test('an empty name is refused', () {
+      final tree = AssetTree(root.path);
+      expect(tree.create(root.path, NewAsset.folder, '   ').problem, isNotNull);
+    });
+
+    test('nothing is made outside the project', () {
+      final tree = AssetTree(root.path);
+      final outside = root.parent.path;
+      expect(tree.create(outside, NewAsset.folder, 'nope').problem, isNotNull);
+    });
+
+    test('what a script is called it is kinded as', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.interface, 'panel');
+
+      expect(tree.describe(made.path!).kind, AssetKind.script);
+    });
+
+    test('a written file comes back described', () {
+      final tree = AssetTree(root.path);
+      final made = tree.write(root.path, 'crate.oprefab', '{"version":1}');
+
+      expect(made.problem, isNull);
+      final asset = tree.describe(made.path!);
+      expect(asset.kind, AssetKind.prefab);
+      expect(asset.bytes, 13);
+    });
+  });
 }

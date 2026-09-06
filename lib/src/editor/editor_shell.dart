@@ -11,6 +11,7 @@ import '../widgets/controls.dart';
 import 'asset_browser.dart';
 import 'assets.dart';
 import 'clipboard.dart';
+import 'code_editor.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'inspector.dart';
@@ -798,6 +799,22 @@ class _EditorShellState extends State<EditorShell> {
             '${subject ?? first.key}: ${first.value}');
   }
 
+  /// Opens the project in a code editor, optionally on one file.
+  ///
+  /// The project folder rather than the single file, so imports resolve and
+  /// the type definitions next door are findable.
+  void _openInCode([String? file]) {
+    final problem = CodeEditor.open(widget.project.directory, file: file);
+    if (problem != null) {
+      _say(problem);
+      return;
+    }
+    _say(file == null
+        ? 'Opened the project in ${CodeEditor.available ?? 'your editor'}.'
+        : 'Opened ${p.basename(file)} in '
+            '${CodeEditor.available ?? 'your editor'}.');
+  }
+
   void _say(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -983,6 +1000,12 @@ class _EditorShellState extends State<EditorShell> {
                   onSave: _save,
                   onSaveAs: _saveAs,
                   onNewScene: () => _newScene(),
+                  onOpenInCode: _openInCode,
+                  onReveal: () {
+                    final problem =
+                        CodeEditor.reveal(widget.project.directory);
+                    if (problem != null) _say(problem);
+                  },
                   onUndo: _undo,
                   onRedo: _redo,
                   selectionCount: _selected.length,
@@ -1061,8 +1084,21 @@ class _EditorShellState extends State<EditorShell> {
                               tree: _assets,
                               height: _browserHeight,
                               onOpenAsset: (asset) {
+                                // A scene opens here; anything somebody would
+                                // type into goes where they type.
                                 if (asset.kind == AssetKind.scene) {
                                   _openScene(asset.path);
+                                  return;
+                                }
+                                const editable = {
+                                  AssetKind.script,
+                                  AssetKind.style,
+                                  AssetKind.native,
+                                  AssetKind.data,
+                                  AssetKind.material,
+                                };
+                                if (editable.contains(asset.kind)) {
+                                  _openInCode(asset.path);
                                 }
                               },
                               onProblem: _say,
@@ -1165,6 +1201,8 @@ class _TopBar extends StatelessWidget {
     required this.onSave,
     required this.onSaveAs,
     required this.onNewScene,
+    required this.onOpenInCode,
+    required this.onReveal,
     required this.onUndo,
     required this.onRedo,
     required this.selectionCount,
@@ -1186,6 +1224,8 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onSaveAs;
 
   final VoidCallback onNewScene;
+  final VoidCallback onOpenInCode;
+  final VoidCallback onReveal;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
   final int selectionCount;
@@ -1221,6 +1261,8 @@ class _TopBar extends StatelessWidget {
             onSave: onSave,
             onSaveAs: onSaveAs,
             onNewScene: onNewScene,
+            onOpenInCode: onOpenInCode,
+            onReveal: onReveal,
           ),
           const SizedBox(width: Space.xs),
           _AddMenu(onAdd: onAdd),
@@ -1443,6 +1485,8 @@ class _SceneMenu extends StatelessWidget {
     required this.onSave,
     required this.onSaveAs,
     required this.onNewScene,
+    required this.onOpenInCode,
+    required this.onReveal,
   });
 
   final bool dirty;
@@ -1450,6 +1494,12 @@ class _SceneMenu extends StatelessWidget {
   final VoidCallback onSaveAs;
 
   final VoidCallback onNewScene;
+
+  /// Opens the project folder in whatever code editor is installed.
+  final VoidCallback onOpenInCode;
+
+  /// Shows the project folder in the desktop's file browser.
+  final VoidCallback onReveal;
 
   @override
   Widget build(BuildContext context) {
@@ -1482,6 +1532,27 @@ class _SceneMenu extends StatelessWidget {
           leadingIcon: const Icon(Icons.drive_file_move_outline,
               size: 14, color: OrbisColors.inkMid),
           child: Text('Save as…', style: OrbisText.label),
+        ),
+        const Divider(height: 9, color: OrbisColors.line),
+        MenuItemButton(
+          onPressed: onOpenInCode,
+          leadingIcon: const Icon(Icons.code,
+              size: 14, color: OrbisColors.inkMid),
+          // Named after what is installed, so it says where it is going
+          // rather than promising an editor that is not there.
+          child: Text(
+            'Open project in ${CodeEditor.available ?? 'VS Code'}',
+            style: OrbisText.label,
+          ),
+        ),
+        MenuItemButton(
+          onPressed: onReveal,
+          leadingIcon: const Icon(Icons.folder_open_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text(
+            Platform.isMacOS ? 'Show in Finder' : 'Show project folder',
+            style: OrbisText.label,
+          ),
         ),
       ],
       builder: (context, controller, child) => OrbisButton(

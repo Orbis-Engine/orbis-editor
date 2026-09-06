@@ -16,6 +16,9 @@ enum AssetKind {
   texture('Texture', Icons.image_outlined),
   material('Material', Icons.grain),
   script('Script', Icons.code),
+  style('Stylesheet', Icons.style_outlined),
+  native('C++', Icons.memory),
+  prefab('Prefab', Icons.widgets_outlined),
   audio('Audio', Icons.graphic_eq),
   data('Data', Icons.data_object),
   other('File', Icons.insert_drive_file_outlined);
@@ -31,7 +34,11 @@ enum AssetKind {
     '.png': texture, '.jpg': texture, '.jpeg': texture,
     '.ktx2': texture, '.hdr': texture, '.exr': texture,
     '.fmat': material, '.mat': material,
-    '.ts': script, '.js': script, '.dart': script,
+    '.ts': script, '.tsx': script, '.js': script, '.jsx': script,
+    '.dart': script,
+    '.css': style,
+    '.cpp': native, '.cc': native, '.h': native, '.hpp': native,
+    '.oprefab': prefab,
     '.wav': audio, '.mp3': audio, '.ogg': audio,
     '.json': data, '.yaml': data, '.yml': data,
   };
@@ -261,6 +268,83 @@ class AssetTree {
   }
 
   /// A path inside [directory] that nothing is using yet.
+  /// One entry, for a path already known to exist.
+  ///
+  /// For the caller that has just made a file and wants to hand it on without
+  /// re-reading the whole folder to find it again.
+  Asset describe(String path) {
+    final file = File(path);
+    final folder = FileSystemEntity.isDirectorySync(path);
+    return Asset(
+      name: p.basename(path),
+      path: path,
+      kind: folder ? AssetKind.folder : AssetKind.of(path),
+      bytes: folder ? null : (file.existsSync() ? file.lengthSync() : null),
+    );
+  }
+
+  /// Makes one of the things the browser knows how to make.
+  ///
+  /// Returns what went wrong, or null. The name is made unique first, so
+  /// asking for a second New folder gets one rather than an error.
+  ({String? problem, String? path}) create(
+    String directory,
+    NewAsset what,
+    String name,
+  ) {
+    if (!p.isWithin(root, directory) && directory != root) {
+      return (problem: 'That folder is outside the project.', path: null);
+    }
+
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      return (problem: 'A name is needed.', path: null);
+    }
+    if (trimmed.contains(p.separator) || trimmed.contains('..')) {
+      return (problem: 'A name cannot be a path.', path: null);
+    }
+
+    final wanted = what.isFolder ? trimmed : '$trimmed${what.extension}';
+    final unique = available(directory, wanted);
+    final path = p.join(directory, unique);
+
+    try {
+      if (what.isFolder) {
+        Directory(path).createSync();
+      } else {
+        File(path).writeAsStringSync(what.starter ?? '');
+      }
+    } on FileSystemException catch (error) {
+      return (problem: error.osError?.message ?? 'Could not create it.',
+              path: null);
+    }
+
+    return (problem: null, path: path);
+  }
+
+  /// Writes a file the editor has made itself — a prefab, most of the time.
+  ///
+  /// Separate from [create] because the contents are not a starter to be
+  /// edited afterwards: they are the thing.
+  ({String? problem, String? path}) write(
+    String directory,
+    String name,
+    String contents,
+  ) {
+    if (!p.isWithin(root, directory) && directory != root) {
+      return (problem: 'That folder is outside the project.', path: null);
+    }
+
+    final path = p.join(directory, available(directory, name));
+    try {
+      File(path).writeAsStringSync(contents);
+    } on FileSystemException catch (error) {
+      return (problem: error.osError?.message ?? 'Could not write it.',
+              path: null);
+    }
+    return (problem: null, path: path);
+  }
+
   String available(String directory, String name) {
     final base = p.basenameWithoutExtension(name);
     final extension = p.extension(name);
@@ -280,4 +364,176 @@ class AssetTree {
       return null;
     }
   }
+}
+
+/// The things the project browser knows how to make.
+///
+/// A starter rather than an empty file. Somebody who asks for a new script
+/// wants to write the second line of it, not to look up which import the
+/// first one takes — and a file that runs the moment it is made says more
+/// about what the engine expects than any amount of documentation.
+enum NewAsset {
+  folder(
+    label: 'Folder',
+    icon: Icons.create_new_folder_outlined,
+    extension: '',
+    suggested: 'New folder',
+  ),
+
+  script(
+    label: 'TypeScript',
+    icon: Icons.code,
+    extension: '.ts',
+    suggested: 'behaviour',
+    starter: '''
+// A behaviour, in TypeScript.
+//
+// Everything this puts in the world it puts through `spawn`. The engine asks
+// for a frame, this runs, and what it says is what is drawn.
+
+import { spawn, onFrame } from "orbis/scene";
+
+spawn({
+  id: "thing",
+  at: [0, 0, 0],
+  size: 1,
+  colour: "#D9634F",
+});
+
+onFrame((seconds) => {
+  spawn({
+    id: "thing",
+    at: [Math.sin(seconds) * 3, 0, 0],
+    size: 1,
+    colour: "#D9634F",
+  });
+});
+''',
+  ),
+
+  interface(
+    label: 'Interface',
+    icon: Icons.dashboard_customize_outlined,
+    extension: '.tsx',
+    suggested: 'panel',
+    starter: '''
+// An interface, in TypeScript.
+//
+// A component is a function from props to elements. There is no state hook
+// and no lifecycle: the reconciler is on the other side of this, and the
+// interface is described again after every event.
+
+import { mount } from "orbis";
+
+const state = { count: 0 };
+
+function Panel() {
+  return (
+    <column class="p-4 gap-2 bg-slate-900 rounded-lg border border-slate-700">
+      <text class="text-lg font-semibold text-slate-100">Panel</text>
+      <text class="text-slate-300">Pressed {state.count} times</text>
+      <button
+        class="px-3 py-2 rounded bg-ember-500 text-white"
+        key="press"
+        onPressed={() => { state.count += 1; }}
+      >
+        Press me
+      </button>
+    </column>
+  );
+}
+
+mount(() => <Panel />);
+''',
+  ),
+
+  stylesheet(
+    label: 'Stylesheet',
+    icon: Icons.style_outlined,
+    extension: '.css',
+    suggested: 'theme',
+    starter: '''
+/* Declarations an interface can wear over its class list.
+ *
+ * A subset, and an honest one: what is here is what maps onto a widget tree
+ * without lying. Floats, grid areas, selectors and the cascade need a
+ * document, and there is not one.
+ */
+
+.panel {
+  padding: 16px;
+  gap: 8px;
+  background: #111418;
+  border-radius: 10px;
+  border: 1px solid #2A313A;
+}
+
+.heading {
+  font-size: 18px;
+  font-weight: 600;
+  color: #E9EDF2;
+}
+''',
+  ),
+
+  native(
+    label: 'C++',
+    icon: Icons.memory,
+    extension: '.cpp',
+    suggested: 'system',
+    starter: '''
+// A system, in C++.
+//
+// For the work that has to be native: something walking a million components,
+// something talking to a device, something a profiler has already pointed at.
+// Everything else is quicker to write in TypeScript and fast enough there.
+
+#include <cstdint>
+
+extern "C" {
+
+/// Called once, when this is loaded.
+void orbis_start() {}
+
+/// Called every frame, with the seconds since the last one.
+void orbis_step(double delta) {
+  (void)delta;
+}
+
+/// Called once, before this is unloaded.
+void orbis_stop() {}
+
+}
+''',
+  ),
+
+  scene(
+    label: 'Scene',
+    icon: Icons.public,
+    extension: '.oscene',
+    suggested: 'untitled',
+    starter: '{"version":3,"objects":[]}\n',
+  );
+
+  const NewAsset({
+    required this.label,
+    required this.icon,
+    required this.extension,
+    required this.suggested,
+    this.starter,
+  });
+
+  final String label;
+  final IconData icon;
+
+  /// Empty for a folder, which is the one of these that is not a file.
+  final String extension;
+
+  /// What the name box starts with. The browser makes it unique.
+  final String suggested;
+
+  /// What the file says the moment it is made. Null for a folder.
+  final String? starter;
+
+  bool get isFolder => this == NewAsset.folder;
 }
