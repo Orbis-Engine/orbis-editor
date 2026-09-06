@@ -1583,17 +1583,23 @@ void main() {
       expect(written, contains('weight.odata'));
     });
 
-    testWidgets('the types it writes land beside it', (tester) async {
+    testWidgets('the bindings it writes land beside it', (tester) async {
       await open(tester);
       await makeOne(tester, 'ball');
       await select(tester, 'ball.odata');
 
-      await tester.tap(find.text('Write TypeScript types'));
+      await tester.tap(find.text('Write script bindings'));
       await tester.pumpAndSettle();
 
+      // Both languages from the one declaration, which is what makes a field
+      // renamed here a build error in whatever reads it.
       final types = File(p.join(root.path, 'ball.d.ts'));
       expect(types.existsSync(), isTrue);
       expect(types.readAsStringSync(), contains('export interface'));
+
+      final header = File(p.join(root.path, 'ball.h'));
+      expect(header.existsSync(), isTrue);
+      expect(header.readAsStringSync(), contains('namespace Ball'));
     });
   });
 }

@@ -184,11 +184,11 @@ class _DataPanelState extends State<DataPanel> {
           Padding(
             padding: const EdgeInsets.fromLTRB(Space.sm, Space.xs, Space.sm, 0),
             child: Tooltip(
-              message: 'Writes a .d.ts beside this file, so a script that '
-                  'reads it is checked against these fields rather than '
-                  'guessing at string keys.',
+              message: 'Writes a .d.ts and a .h beside this file, so a '
+                  'script reading it — in TypeScript or in C++ — is checked '
+                  'against these fields rather than guessing at string keys.',
               child: OrbisButton(
-                label: 'Write TypeScript types',
+                label: 'Write script bindings',
                 icon: Icons.code,
                 tone: ButtonTone.quiet,
                 expand: true,

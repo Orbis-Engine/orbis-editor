@@ -15,6 +15,7 @@ import 'code_editor.dart';
 import 'commands.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
+import 'script_build.dart';
 import 'history.dart';
 import 'inspector.dart';
 import 'outliner.dart';
@@ -51,6 +52,8 @@ class _EditorShellState extends State<EditorShell> {
   late final AssetTree _assets = AssetTree(widget.project.directory);
 
   late final DataStore _data = DataStore(widget.project.directory);
+
+  late final ScriptBuilder _builder = ScriptBuilder(widget.project.directory);
 
   /// The data object being looked at, or null when the inspector is showing
   /// the scene's selection.
@@ -921,6 +924,55 @@ class _EditorShellState extends State<EditorShell> {
     _select(object.id);
   }
 
+  // ---- scripts ----
+
+  /// Compiles a C++ script and says what the compiler said.
+  ///
+  /// A success is a line in the status bar; a failure is a panel, because a
+  /// compiler error is several lines long and the first of them is rarely the
+  /// useful one.
+  Future<void> _buildScript(String path) async {
+    final name = p.basename(path);
+    _say('Building $name…');
+
+    // Off the frame: a compile is a second or two, and a frozen editor for
+    // that long reads as a crash.
+    final built = await Future(() => _builder.build(path));
+    if (!mounted) return;
+
+    if (built.ok) {
+      _say('Built $name.${built.output.isEmpty ? '' : ' With warnings.'}');
+      if (built.output.isEmpty) return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: OrbisColors.surface,
+        title: Text(
+          built.ok ? '$name built, with warnings' : '$name did not build',
+          style: OrbisText.title,
+        ),
+        content: SizedBox(
+          width: 640,
+          height: 320,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              built.output.isEmpty ? 'The compiler said nothing.' : built.output,
+              style: OrbisText.mono.copyWith(fontSize: 11.5),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ---- data objects ----
 
   /// Points the selection at a data object.
@@ -989,30 +1041,35 @@ class _EditorShellState extends State<EditorShell> {
     setState(() => _dataAsset = relative);
   }
 
-  /// Writes the TypeScript a script imports a data object as.
+  /// Writes the bindings a script reads a data object through.
   ///
-  /// Generated rather than hand-written, so a field renamed here is a type
-  /// error in the script that reads it rather than an undefined at runtime.
-  /// That is most of what having the data in a file the editor understands
-  /// buys; the alternative is a string key and hope.
-  void _exportTypes(String relative) {
+  /// Both languages from the one declaration, which is the piece that makes
+  /// three front ends feel like one: a field renamed here breaks the build of
+  /// everything that reads it, in TypeScript and in C++, rather than quietly
+  /// returning nothing at runtime. The alternative is a string key and hope.
+  void _exportBindings(String relative) {
     final data = _data[relative];
     if (data == null) return;
 
     final name = p.basenameWithoutExtension(relative);
-    final path = p.join(
-      widget.project.directory,
-      p.dirname(relative),
-      '$name.d.ts',
-    );
-    try {
-      File(path).writeAsStringSync(data.toTypeScript(name));
-    } on FileSystemException catch (error) {
-      _say('Could not write $name.d.ts: '
-          '${error.osError?.message ?? error.message}');
-      return;
+    final folder = p.join(widget.project.directory, p.dirname(relative));
+
+    final written = <String>[];
+    for (final one in [
+      (file: '$name.d.ts', text: data.toTypeScript(name)),
+      (file: '$name.h', text: data.toCpp(name)),
+    ]) {
+      final path = p.join(folder, one.file);
+      try {
+        File(path).writeAsStringSync(one.text);
+      } on FileSystemException catch (error) {
+        _say('Could not write ${one.file}: '
+            '${error.osError?.message ?? error.message}');
+        return;
+      }
+      written.add(one.file);
     }
-    _say('Wrote ${_assets.relative(path)}.');
+    _say('Wrote ${written.join(' and ')}.');
   }
 
   // ---- prefabs ----
@@ -1464,6 +1521,7 @@ class _EditorShellState extends State<EditorShell> {
                               },
                               onProblem: _say,
                               onMakePrefab: _makePrefab,
+                              onBuild: (asset) => _buildScript(asset.path),
                               onSelectAsset: (asset) => setState(() {
                                 // Only a data object claims the inspector.
                                 // Selecting a mesh should not take the panel
@@ -1491,7 +1549,8 @@ class _EditorShellState extends State<EditorShell> {
                                 path: _dataAsset!,
                                 store: _data,
                                 onProblem: _say,
-                                onExportTypes: () => _exportTypes(_dataAsset!),
+                                onExportTypes: () =>
+                                    _exportBindings(_dataAsset!),
                               ),
                         onOpenData: _showData,
                         onDetachData: _detachData,

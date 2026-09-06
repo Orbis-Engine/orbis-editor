@@ -23,6 +23,7 @@ class AssetBrowser extends StatefulWidget {
     this.onSelectAsset,
     this.onProblem,
     this.onMakePrefab,
+    this.onBuild,
   });
 
   final AssetTree tree;
@@ -33,6 +34,9 @@ class AssetBrowser extends StatefulWidget {
   /// The browser knows where it was dropped; the shell knows what the object
   /// is. This is where the two meet.
   final void Function(ObjectDrag object, String directory)? onMakePrefab;
+
+  /// Called when somebody asks for a source file to be compiled.
+  final ValueChanged<Asset>? onBuild;
 
   /// Called when somebody opens a file, rather than a folder.
   final ValueChanged<Asset>? onOpenAsset;
@@ -238,6 +242,7 @@ class _AssetBrowserState extends State<AssetBrowser> {
                         },
                         onDelete: _confirmDelete,
                         onRename: _promptRename,
+                      onBuild: widget.onBuild,
                         onDropObject: widget.onMakePrefab == null
                             ? null
                             : (object) =>
@@ -528,6 +533,7 @@ class _Grid extends StatelessWidget {
     required this.onOpen,
     required this.onDelete,
     required this.onRename,
+    this.onBuild,
     this.onDropObject,
   });
 
@@ -537,6 +543,11 @@ class _Grid extends StatelessWidget {
   final ValueChanged<Asset> onOpen;
   final ValueChanged<Asset> onDelete;
   final ValueChanged<Asset> onRename;
+
+  /// Offered only for the files that can be built. Null for the rest, so the
+  /// menu does not carry an action whose answer is "not that kind of file".
+  final ValueChanged<Asset>? onBuild;
+
   final ValueChanged<ObjectDrag>? onDropObject;
 
   @override
@@ -614,6 +625,9 @@ class _Grid extends StatelessWidget {
           onDoubleTap: () => onOpen(asset),
           onDelete: () => onDelete(asset),
           onRename: () => onRename(asset),
+          onBuild: onBuild == null || !asset.canBuild
+              ? null
+              : () => onBuild!(asset),
         );
       },
     );
@@ -649,12 +663,14 @@ class AssetMenu extends StatefulWidget {
     VoidCallback? onOpen,
     VoidCallback? onRename,
     VoidCallback? onDelete,
+    VoidCallback? onBuild,
   }) {
     context.findAncestorStateOfType<_AssetMenuState>()?.show(
       at,
       onOpen: onOpen,
       onRename: onRename,
       onDelete: onDelete,
+      onBuild: onBuild,
     );
   }
 
@@ -669,12 +685,14 @@ class _AssetMenuState extends State<AssetMenu> {
   VoidCallback? _onOpen;
   VoidCallback? _onRename;
   VoidCallback? _onDelete;
+  VoidCallback? _onBuild;
 
   void show(
     Offset at, {
     VoidCallback? onOpen,
     VoidCallback? onRename,
     VoidCallback? onDelete,
+    VoidCallback? onBuild,
   }) {
     final box = _anchor.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
@@ -683,6 +701,7 @@ class _AssetMenuState extends State<AssetMenu> {
       _onOpen = onOpen;
       _onRename = onRename;
       _onDelete = onDelete;
+      _onBuild = onBuild;
     });
     // Reopened rather than moved: a menu already showing somewhere else would
     // otherwise stay where it was and look like the right-click did nothing.
@@ -727,7 +746,10 @@ class _AssetMenuState extends State<AssetMenu> {
 
   @override
   Widget build(BuildContext context) {
-    final acting = _onOpen != null || _onRename != null || _onDelete != null;
+    final acting = _onOpen != null ||
+        _onRename != null ||
+        _onDelete != null ||
+        _onBuild != null;
 
     return MenuAnchor(
       key: _anchor,
@@ -735,6 +757,9 @@ class _AssetMenuState extends State<AssetMenu> {
       style: _style,
       menuChildren: [
         if (acting) ...[
+          // First, because somebody who right-clicked a script wants to know
+          // whether it compiles more often than they want to rename it.
+          if (_onBuild != null) _item('Build', Icons.build_outlined, _onBuild),
           _item('Open', Icons.open_in_new, _onOpen),
           _item('Rename', Icons.drive_file_rename_outline, _onRename),
           _item('Delete', Icons.delete_outline, _onDelete),
@@ -765,6 +790,7 @@ class _Tile extends StatefulWidget {
     required this.onDoubleTap,
     required this.onDelete,
     required this.onRename,
+    this.onBuild,
   });
 
   final Asset asset;
@@ -773,6 +799,7 @@ class _Tile extends StatefulWidget {
   final VoidCallback onDoubleTap;
   final VoidCallback onDelete;
   final VoidCallback onRename;
+  final VoidCallback? onBuild;
 
   @override
   State<_Tile> createState() => _TileState();
@@ -802,6 +829,7 @@ class _TileState extends State<_Tile> {
             onOpen: widget.onDoubleTap,
             onRename: widget.onRename,
             onDelete: widget.onDelete,
+            onBuild: widget.onBuild,
           ),
           child: Container(
             padding: const EdgeInsets.symmetric(vertical: Space.sm),

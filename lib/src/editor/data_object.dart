@@ -236,6 +236,74 @@ class DataObject {
     return lines.join('\n');
   }
 
+  /// The C++ a script includes to read this.
+  ///
+  /// The same declaration as [toTypeScript], in the other language. Both are
+  /// generated from this one object, which is the point: a field renamed here
+  /// breaks the build of everything that reads it rather than quietly
+  /// returning nothing at runtime.
+  ///
+  /// Accessors rather than a struct of values, because the value is read every
+  /// frame from the file — a struct would be a copy, and a copy is exactly
+  /// what a shared data object is not.
+  String toCpp(String importName) {
+    List<String> reader(DataField field) => switch (field.type) {
+          DataType.number => [
+              'inline double ${field.key}(double fallback = 0) {',
+              '  return ::orbis::number(asset, "${field.key}", fallback);',
+              '}',
+            ],
+          DataType.toggle => [
+              'inline bool ${field.key}(bool fallback = false) {',
+              '  return ::orbis::toggle(asset, "${field.key}", fallback);',
+              '}',
+            ],
+          DataType.text || DataType.colour || DataType.asset => [
+              'inline const char *${field.key}() {',
+              '  return ::orbis::text(asset, "${field.key}");',
+              '}',
+            ],
+          // A vector is three numbers under one key, read as three: the host
+          // table carries scalars, and a struct return would be a fourth call
+          // shape for the sake of one type.
+          DataType.vector => [
+              'inline double ${field.key}(int axis, double fallback = 0) {',
+              '  static const char *const keys[3] = {',
+              '      "${field.key}.x", "${field.key}.y", "${field.key}.z"};',
+              '  if (axis < 0 || axis > 2) return fallback;',
+              '  return ::orbis::number(asset, keys[axis], fallback);',
+              '}',
+            ],
+        };
+
+    final type = _pascal(name);
+
+    return [
+      '// Written by the editor from $importName$extension. Do not edit.',
+      '//',
+      '// $name${note.isEmpty ? '' : ' — $note'}',
+      '',
+      '#pragma once',
+      '',
+      '#include "orbis_script.h"',
+      '',
+      '/// Read every frame rather than copied at start: the value is a file',
+      '/// somebody can change while the game is running, and that is the',
+      '/// reason it is a data object rather than a constant in this header.',
+      'namespace $type {',
+      '',
+      'inline constexpr const char *asset = "$importName$extension";',
+      '',
+      for (final field in fields) ...[
+        if (field.note.isNotEmpty) '/// ${field.note}',
+        ...reader(field),
+        '',
+      ],
+      '}  // namespace $type',
+      '',
+    ].join('\n');
+  }
+
   static String _pascal(String words) {
     final parts = words
         .split(RegExp(r'[^A-Za-z0-9]+'))

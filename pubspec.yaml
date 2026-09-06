@@ -48,6 +48,13 @@ dependencies:
   # second, and converting in both places is how the two drift apart.
   orbis_light:
     path: ../orbis/packages/orbis_light
+
+  # Compiling a C++ script, and the header it is compiled against. The editor
+  # only builds and checks; loading and running one is the runtime's job, and
+  # the same package does both so the thing the editor checks against is the
+  # thing the runtime loads.
+  orbis_native:
+    path: ../orbis/packages/orbis_native
   path: ^1.9.0
   path_provider: ^2.1.5
 

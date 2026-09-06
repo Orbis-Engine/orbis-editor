@@ -69,6 +69,16 @@ class Asset {
 
   bool get isFolder => kind == AssetKind.folder;
 
+  /// Whether asking to compile this makes sense.
+  ///
+  /// A source file, not a header: a header is built as part of whatever
+  /// includes it, and offering to compile one on its own would offer an
+  /// action whose answer is always the same.
+  bool get canBuild {
+    final suffix = p.extension(path).toLowerCase();
+    return suffix == '.cpp' || suffix == '.cc';
+  }
+
   /// A size somebody can read at a glance.
   String get size {
     final value = bytes;
@@ -490,28 +500,62 @@ mount(() => <Panel />);
     extension: '.cpp',
     suggested: 'system',
     starter: '''
-// A system, in C++.
+// A script, in C++.
 //
-// For the work that has to be native: something walking a million components,
-// something talking to a device, something a profiler has already pointed at.
-// Everything else is quicker to write in TypeScript and fast enough there.
+// The same four questions every script answers, whatever it is written in:
+// what contract it was built against, what to do when it starts, what to do
+// each frame, and what to do when it stops. ORBIS_SCRIPT answers the first and
+// hands you the host.
+//
+// Worth writing in C++ when the loop touches everything every frame. Anything
+// else is quicker to write in TypeScript and fast enough there.
 
-#include <cstdint>
+#include "orbis_script.h"
 
-extern "C" {
+/// What this script keeps on an entity. The layout is the contract with
+/// everything else that reads it, so it is declared once and here.
+struct Drift {
+  double speed;
+};
 
-/// Called once, when this is loaded.
-void orbis_start() {}
+namespace {
+OrbisComponent drift;
+OrbisTransforms transforms;
+double elapsed = 0;
+}  // namespace
 
-/// Called every frame, with the seconds since the last one.
-void orbis_step(double delta) {
-  (void)delta;
+ORBIS_SCRIPT {
+  transforms = orbis::host()->transform_register(orbis::world());
+  drift = orbis::component<Drift>("Drift");
+  orbis::log("started");
 }
 
-/// Called once, before this is unloaded.
-void orbis_stop() {}
+extern "C" void orbis_step(double delta) {
+  elapsed += delta;
 
+  const OrbisComponent wanted[] = {transforms.local, drift};
+  OrbisQuery *query = orbis::host()->query_create(orbis::world(), wanted, 2);
+
+  const uint32_t chunks = orbis::host()->query_chunk_count(query);
+  for (uint32_t chunk = 0; chunk < chunks; ++chunk) {
+    const uint32_t length = orbis::host()->query_chunk_length(query, chunk);
+    auto *local = static_cast<float *>(
+        orbis::host()->query_chunk_column(query, chunk, 0));
+    auto *drifts = static_cast<Drift *>(
+        orbis::host()->query_chunk_column(query, chunk, 1));
+
+    // One crossing for the whole run, then plain C++ over the engine's own
+    // memory. Calling in once per entity is what the column layout exists to
+    // avoid.
+    for (uint32_t i = 0; i < length; ++i) {
+      local[i * 10] += static_cast<float>(drifts[i].speed * delta);
+    }
+  }
+
+  orbis::host()->query_destroy(query);
 }
+
+extern "C" void orbis_stop(void) { orbis::log("stopped"); }
 ''',
   ),
 
@@ -521,21 +565,21 @@ void orbis_stop() {}
     extension: '.h',
     suggested: 'system',
     starter: '''
-// What a system offers to whatever else is compiled with it.
+// What a script offers to whatever else is compiled with it.
 //
-// Declarations only. The engine calls the entry points in the .cpp through
-// their C names; this is for the code either side of that boundary.
+// Declarations only. The engine calls orbis_start, orbis_step and orbis_stop
+// through their C names; this is for the code either side of that boundary —
+// a component layout two scripts share, a helper the .cpp keeps out of itself.
 
 #pragma once
 
-#include <cstdint>
+#include "orbis_script.h"
 
-namespace orbis {
-
-/// Called every frame, with the seconds since the last one.
-void step(double delta);
-
-}  // namespace orbis
+/// A component's layout, declared once so that two files reading the same
+/// column cannot disagree about what is in it.
+struct Drift {
+  double speed;
+};
 ''',
   ),
 
