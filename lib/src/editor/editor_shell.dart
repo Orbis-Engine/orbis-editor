@@ -31,6 +31,7 @@ import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
 import 'scene.dart';
+import 'snapping.dart';
 import 'surface.dart';
 import 'scene_document.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
@@ -189,6 +190,13 @@ class _EditorShellState extends State<EditorShell> {
     _geometry.forget(chosen.object.id);
     _refreshGeometry();
   }
+
+  /// What a drag lands on.
+  ///
+  /// One for the whole editor rather than one a viewport, so four views of a
+  /// scene agree about the grid — and a view setting, not a document one: it
+  /// is not saved and it is not undone.
+  final Snapping _snapping = Snapping();
 
   /// Whether picking reaches what is behind the surface.
   ///
@@ -1448,6 +1456,13 @@ class _EditorShellState extends State<EditorShell> {
             onDragElements: _dragElements,
             onSelectElements: _selectElements,
             seeThroughElements: _seeThrough,
+            snapping: _snapping,
+            onSnapping: (next) => setState(() {
+              _snapping
+                ..on = next.on
+                ..step = next.step
+                ..angle = next.angle;
+            }),
             geometryOf: _geometry.pathFor,
             interface: _sceneInterface,
             showInterface: _showInterface,
@@ -2041,6 +2056,12 @@ class _EditorShellState extends State<EditorShell> {
         // what somebody presses without thinking about it.
         const SingleActivator(LogicalKeyboardKey.escape): _LeaveEditIntent(),
         const SingleActivator(LogicalKeyboardKey.keyG): _CycleModeIntent(),
+        // The brackets, which is where every tool with a brush size puts
+        // them.
+        const SingleActivator(LogicalKeyboardKey.bracketRight):
+            _GridIntent(true),
+        const SingleActivator(LogicalKeyboardKey.bracketLeft):
+            _GridIntent(false),
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true):
             _SaveIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
@@ -2070,6 +2091,17 @@ class _EditorShellState extends State<EditorShell> {
         actions: {
           _LeaveEditIntent: CallbackAction<_LeaveEditIntent>(onInvoke: (_) {
             _setContext(EditContext.object);
+            return null;
+          }),
+          _GridIntent: CallbackAction<_GridIntent>(onInvoke: (intent) {
+            setState(() {
+              _snapping.step =
+                  intent.coarser ? _snapping.coarser : _snapping.finer;
+              // Changing the grid turns it on: somebody reaching for the key
+              // is asking about the grid, and answering with a size that does
+              // nothing is the wrong answer.
+              _snapping.on = true;
+            });
             return null;
           }),
           _CycleModeIntent: CallbackAction<_CycleModeIntent>(onInvoke: (_) {
@@ -2862,6 +2894,13 @@ class _LeaveEditIntent extends Intent {
 }
 
 /// Round the three ways of selecting part of a mesh.
+/// Makes the grid coarser or finer.
+class _GridIntent extends Intent {
+  const _GridIntent(this.coarser);
+
+  final bool coarser;
+}
+
 class _CycleModeIntent extends Intent {
   const _CycleModeIntent();
 }

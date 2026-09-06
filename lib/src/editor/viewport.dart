@@ -13,6 +13,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'gizmo.dart';
+import 'snapping.dart';
 import 'history.dart';
 import 'mesh_edit.dart';
 import 'scene.dart';
@@ -207,6 +208,8 @@ class SceneViewport extends StatefulWidget {
     this.onDragElements,
     this.onSelectElements,
     this.seeThroughElements = false,
+    required this.snapping,
+    this.onSnapping,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -271,6 +274,13 @@ class SceneViewport extends StatefulWidget {
 
   /// Whether what is behind the surface can be picked as well.
   final bool seeThroughElements;
+
+  /// What a drag lands on. Passed in rather than owned here, so four views of
+  /// one scene agree about the grid.
+  final Snapping snapping;
+
+  /// Called when the chip or a key changes it.
+  final ValueChanged<Snapping>? onSnapping;
 
   /// Called with a mesh a drag has changed, and what should be selected after.
   ///
@@ -437,6 +447,26 @@ class _SceneViewportState extends State<SceneViewport>
     final middle = _selectedElements.pivotIn(editing.mesh);
     if (middle == null) return null;
     return editing.transform.transformed3(middle);
+  }
+
+  /// A grid step as somebody would say it: millimetres below a centimetre,
+  /// centimetres below a metre.
+  static String _gridLabel(double step) {
+    if (step < 0.01) return '${(step * 1000).round()}mm';
+    if (step < 1) return '${(step * 100).round()}cm';
+    return '${step.toStringAsFixed(step % 1 == 0 ? 0 : 1)}m';
+  }
+
+  /// The grid as it applies right now.
+  ///
+  /// Held down suspends it rather than switching it on, because somebody who
+  /// wants a shelf half a millimetre off wants it for one drag and not for
+  /// the afternoon.
+  Snapping get _snap {
+    final held = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isAltPressed;
+    if (!held) return widget.snapping;
+    return Snapping(on: false, step: widget.snapping.step, angle: widget.snapping.angle);
   }
 
   /// A world-space movement, in the object's own frame.
@@ -617,15 +647,17 @@ class _SceneViewportState extends State<SceneViewport>
     if (_mode == GizmoMode.move) {
       final now = gizmo.pointOnAxis(local, axis);
       if (now == null) return;
-      next.movePoints(
-        _movingPoints,
-        _intoObject(now - grabbed, editing.transform),
-      );
+      // Snapped in the world, where the grid is, and then taken into the
+      // object's frame. Snapping after the conversion would put the grid at
+      // whatever angle and scale the object happens to have.
+      final shift = _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot,
+          axis.direction);
+      next.movePoints(_movingPoints, _intoObject(shift, editing.transform));
       what = 'Move';
     } else {
       final now = gizmo.pointOnRing(local, axis);
       if (now == null) return;
-      final angle = gizmo.angleBetween(grabbed, now, axis);
+      final angle = _snap.turn(gizmo.angleBetween(grabbed, now, axis));
       // Into the object's frame first, so the ring somebody grabbed in the
       // world is the axis the corners turn about inside a turned object.
       final about = start.centreOfPoints(_movingPoints);
@@ -671,7 +703,10 @@ class _SceneViewportState extends State<SceneViewport>
     if (_mode == GizmoMode.move) {
       final now = gizmo.pointOnAxis(local, axis);
       if (now == null) return;
-      final shift = now - grabbed;
+      // From where the handle was, so a selection of several keeps its shape
+      // and the one the handles are on is the one that lands on a line.
+      final shift =
+          _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot, axis.direction);
 
       for (final entry in _before.entries) {
         final object = scene[entry.key];
@@ -688,7 +723,7 @@ class _SceneViewportState extends State<SceneViewport>
     } else {
       final now = gizmo.pointOnRing(local, axis);
       if (now == null) return;
-      final angle = gizmo.angleBetween(grabbed, now, axis);
+      final angle = _snap.turn(gizmo.angleBetween(grabbed, now, axis));
       final turn =
           Quaternion.axisAngle(axis.direction, angle).asRotationMatrix();
 
@@ -1179,6 +1214,25 @@ class _SceneViewportState extends State<SceneViewport>
                 const _ViewportChip('Shaded'),
                 const SizedBox(width: Space.xs),
                 _ViewportChip(_summary),
+                const SizedBox(width: Space.xs),
+                _ViewportChip(
+                  widget.snapping.on
+                      ? 'Grid ${_gridLabel(widget.snapping.step)}'
+                      : 'Grid off',
+                  on: widget.snapping.on,
+                  tooltip: 'Where a drag lands. Hold control or option to '
+                      'suspend it for one drag; the bracket keys make it '
+                      'coarser and finer.',
+                  onTap: widget.onSnapping == null
+                      ? null
+                      : () => widget.onSnapping!(
+                            Snapping(
+                              on: !widget.snapping.on,
+                              step: widget.snapping.step,
+                              angle: widget.snapping.angle,
+                            ),
+                          ),
+                ),
                 // Only when there is one to hide. A switch for something that
                 // is not there is a switch that teaches somebody nothing.
                 if (_flying) ...[

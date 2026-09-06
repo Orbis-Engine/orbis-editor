@@ -7,6 +7,7 @@ import 'package:orbis_editor/src/editor/commands.dart';
 import 'package:orbis_editor/src/editor/history.dart';
 import 'package:orbis_editor/src/editor/mesh_edit.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
+import 'package:orbis_editor/src/editor/snapping.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/editor/workspace.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
@@ -26,6 +27,7 @@ void main() {
   late List<Reported> reported;
   late List<({List<Object> what, bool add})> boxed;
   var seeThrough = false;
+  var snapping = Snapping(on: false);
   late Mesh mesh;
   late Workspace workspace;
   late History history;
@@ -70,6 +72,9 @@ void main() {
               mesh: mesh,
               transform: scene.worldOf(object.id),
             ),
+            // Off unless a test is about it: everything else here measures
+            // where a drag went, and a grid would measure the grid.
+            snapping: snapping,
             elementMode: mode,
             elementSelection: selection,
             seeThroughElements: seeThrough,
@@ -145,6 +150,8 @@ void main() {
   }
 
   setUp(() {
+    snapping = Snapping(on: false);
+    seeThrough = false;
     mesh = Shape.of(ShapeKind.cube).build();
     object = SceneObject(
       id: 'shape',
@@ -301,6 +308,28 @@ void main() {
     expect(workspace.loaded!.scene![object.id]!.position.y, greaterThan(0.1));
   });
 
+
+  testWidgets('a snapped drag lands the selection on a grid line',
+      (tester) async {
+    snapping = Snapping(step: 0.5);
+    final selection = ElementSelection(faces: {topFaceOf(mesh)});
+    await pump(tester, selection: selection);
+
+    final was = mesh.centreOfPoints(selection.pointsIn(mesh))!.y;
+    final gesture = await tester.startGesture(
+      kind: PointerDeviceKind.mouse,
+      handleAt(GizmoAxis.y, selection),
+    );
+    await dragBy(tester, gesture, const Offset(0, -70));
+    await gesture.up();
+    await tester.pump();
+
+    final now = reported.last.mesh
+        .centreOfPoints(reported.last.selection.pointsIn(reported.last.mesh))!
+        .y;
+    expect(now, greaterThan(was), reason: 'it moved');
+    expect(now % 0.5, closeTo(0, 1e-6), reason: 'and landed on a line');
+  });
 
   group('drawing a box round things', () {
     testWidgets('a marquee over the whole shape takes every face',
