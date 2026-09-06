@@ -14,6 +14,7 @@ import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'drawing.dart';
 import 'gizmo.dart';
+import 'model_bounds.dart';
 import 'snapping.dart';
 import 'history.dart';
 import 'mesh_edit.dart';
@@ -211,6 +212,7 @@ class SceneViewport extends StatefulWidget {
     this.seeThroughElements = false,
     required this.snapping,
     this.onSnapping,
+    this.models,
     this.drawing,
     this.onDrawPoint,
     this.onDrawFinish,
@@ -283,6 +285,11 @@ class SceneViewport extends StatefulWidget {
   /// What a drag lands on. Passed in rather than owned here, so four views of
   /// one scene agree about the grid.
   final Snapping snapping;
+
+  /// How big an imported model says it is. Passed in rather than read here,
+  /// so four views share one answer per file instead of reading it four
+  /// times.
+  final ModelBounds? models;
 
   /// The outline or cut being drawn, if one is.
   ///
@@ -539,8 +546,13 @@ class _SceneViewportState extends State<SceneViewport>
     // in front of a scene's own is the uncommon way round, and picking the
     // thing somebody is working on when both are under the pointer is the
     // better answer of the two.
-    final hit = scene.objectAlong(ray.origin, ray.direction) ??
-        widget.workspace.shared.objectAlong(ray.origin, ray.direction);
+    final hit =
+        scene.objectAlong(ray.origin, ray.direction, boundsOf: widget.models?.of) ??
+            widget.workspace.shared.objectAlong(
+              ray.origin,
+              ray.direction,
+              boundsOf: widget.models?.of,
+            );
 
     final modifiers = {
       LogicalKeyboardKey.shiftLeft,
@@ -1262,6 +1274,7 @@ class _SceneViewportState extends State<SceneViewport>
               child: IgnorePointer(
                 child: CustomPaint(
                   painter: _SelectionPainter(
+                    models: widget.models,
                     workspace: widget.workspace,
                     selected: widget.selected,
                     camera: widget.camera,
@@ -1836,18 +1849,23 @@ class _SelectionPainter extends CustomPainter {
     required this.workspace,
     required this.selected,
     required this.camera,
+    this.models,
   });
 
   final Workspace workspace;
   final Set<String> selected;
   final OrbitCamera camera;
 
-  /// The unit cube the renderer draws for every object, in its own space.
-  static final _corners = [
-    for (final x in [-1.0, 1.0])
-      for (final y in [-1.0, 1.0])
-        for (final z in [-1.0, 1.0]) Vector3(x, y, z),
-  ];
+  /// How big an imported model says it is, for the objects whose geometry
+  /// the editor does not hold.
+  final ModelBounds? models;
+
+  /// The eight corners of a box.
+  static List<Vector3> _cornersOf(({Vector3 min, Vector3 max}) box) => [
+        for (final x in [box.min.x, box.max.x])
+          for (final y in [box.min.y, box.max.y])
+            for (final z in [box.min.z, box.max.z]) Vector3(x, y, z),
+      ];
 
   /// Pairs of corner indices making the twelve edges.
   static const _edges = [
@@ -1886,7 +1904,14 @@ class _SelectionPainter extends CustomPainter {
       final points = <Offset>[];
       var visible = true;
 
-      for (final corner in _corners) {
+      // The box the object actually occupies. It used to be a two-metre cube
+      // for everything, which was right when everything was the placeholder
+      // and wrong for every shape since.
+      final corners = _cornersOf(
+        object.localBounds(reported: models?.of(object)),
+      );
+
+      for (final corner in corners) {
         final projected =
             clip.transform(Vector4(corner.x, corner.y, corner.z, 1));
         // Behind the camera: the perspective divide flips the point to the

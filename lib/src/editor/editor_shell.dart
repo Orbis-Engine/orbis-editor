@@ -29,6 +29,7 @@ import 'history.dart';
 import 'inspector.dart';
 import 'mesh_edit.dart';
 import 'mesh_panel.dart';
+import 'model_bounds.dart';
 import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
@@ -345,6 +346,9 @@ class _EditorShellState extends State<EditorShell> {
     _geometry.pathFor(object);
     setState(() {});
   }
+
+  /// How big each imported model says it is, read once a file.
+  late final ModelBounds _models = ModelBounds(widget.project.directory);
 
   /// The outline or cut being drawn, if one is.
   ///
@@ -674,6 +678,10 @@ class _EditorShellState extends State<EditorShell> {
   /// renderer to write it for — so on a platform Filament has not reached, or
   /// in a headless run, the file never appeared at all.
   void _refreshGeometry() {
+    // The written files are what the imported-size cache reads, and a shape
+    // being edited rewrites its own. Without this an edited shape keeps the
+    // box it had when it was first written.
+    _models.clear();
     for (final entry in [..._workspace.entries, _workspace.sharedEntry]) {
       final scene = entry.scene;
       if (scene == null) continue;
@@ -1815,6 +1823,7 @@ class _EditorShellState extends State<EditorShell> {
             onSelectElements: _selectElements,
             seeThroughElements: _seeThrough,
             snapping: _snapping,
+            models: _models,
             drawing: _drawing,
             onDrawPoint: _drawPoint,
             onDrawFinish: _finishDrawing,

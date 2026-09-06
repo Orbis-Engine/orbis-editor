@@ -216,6 +216,27 @@ class SceneObject {
 
   Mesh? get currentMesh => geometry ?? outline?.build() ?? shape?.build();
 
+  /// The box this object actually occupies, in its own space.
+  ///
+  /// What a click is tested against and what the selection outline is drawn
+  /// round. It used to be a two-metre cube for everything, which was right
+  /// when everything *was* the placeholder cube — a shape half a metre across
+  /// was picked and outlined four times its own size, and a model imported at
+  /// any other scale was worse.
+  ///
+  /// [reported] is what a file said about itself, for the objects whose
+  /// geometry the editor does not hold.
+  ({Vector3 min, Vector3 max}) localBounds({
+    ({Vector3 min, Vector3 max})? reported,
+  }) {
+    final mesh = currentMesh;
+    if (mesh != null && !mesh.isEmpty) return mesh.bounds;
+    if (reported != null) return reported;
+    // The placeholder the renderer draws when it has nothing else, which is
+    // genuinely two metres across.
+    return (min: Vector3.all(-1), max: Vector3.all(1));
+  }
+
   /// The materials this shape's faces can be painted with.
   ///
   /// Ordered, because `Face.material` is a position in this list. Removing
@@ -826,7 +847,11 @@ class EditorScene {
   /// than inside the upright box that would contain it. A real mesh is a finer
   /// question than this can answer — that wants the geometry itself, which
   /// lives on the other side of the channel.
-  String? objectAlong(Vector3 origin, Vector3 direction) {
+  String? objectAlong(
+    Vector3 origin,
+    Vector3 direction, {
+    ({Vector3 min, Vector3 max})? Function(SceneObject)? boundsOf,
+  }) {
     String? nearest;
     var closest = double.infinity;
 
@@ -845,19 +870,89 @@ class EditorScene {
       // comparable between objects.
       final along = inverse.transformed3(origin + direction) - from;
 
-      final hit = _unitCubeHit(from, along);
+      final box = object.localBounds(reported: boundsOf?.call(object));
+      final hit = _boxHit(from, along, box.min, box.max);
       if (hit == null || hit >= closest) continue;
-      closest = hit;
+
+      // The box got the ray into the neighbourhood; the geometry decides.
+      // Clicking the gap in an L-shaped room should select what is behind it,
+      // not the room — which is the whole difference between a box round a
+      // thing and the thing.
+      final mesh = object.currentMesh;
+      final where = mesh == null || mesh.isEmpty
+          ? hit
+          : _meshHit(mesh, from, along);
+      if (where == null || where >= closest) continue;
+
+      closest = where;
       nearest = object.id;
     }
     return nearest;
   }
 
-  /// How far along a ray the unit cube is first met, or null for a miss.
+  /// How far along a ray a box is first met, or null for a miss.
+  static double? _meshHit(Mesh mesh, Vector3 origin, Vector3 direction) {
+    var nearest = double.infinity;
+
+    for (final face in mesh.faces) {
+      final points = mesh.pointsOf(face);
+      if (points.length < 3) continue;
+      // The same fan the renderer draws it with, so what is clicked is what
+      // is on screen. Ear clipping would be exact for a concave face, and the
+      // difference is a click in the dent of one — worth having, and not
+      // worth walking every face twice for.
+      for (var i = 1; i + 1 < points.length; i++) {
+        final hit = _triangleHit(
+          origin,
+          direction,
+          points.first,
+          points[i],
+          points[i + 1],
+        );
+        if (hit != null && hit < nearest) nearest = hit;
+      }
+    }
+    return nearest.isFinite ? nearest : null;
+  }
+
+  /// Möller–Trumbore. Both sides count: clicking the far wall of a room from
+  /// inside it should select the room.
+  static double? _triangleHit(
+    Vector3 origin,
+    Vector3 direction,
+    Vector3 a,
+    Vector3 b,
+    Vector3 c,
+  ) {
+    final edge1 = b - a;
+    final edge2 = c - a;
+    final h = direction.cross(edge2);
+    final det = edge1.dot(h);
+    if (det.abs() < 1e-12) return null;
+
+    final f = 1 / det;
+    final s = origin - a;
+    final u = f * s.dot(h);
+    if (u < 0 || u > 1) return null;
+
+    final q = s.cross(edge1);
+    final v = f * direction.dot(q);
+    if (v < 0 || u + v > 1) return null;
+
+    final t = f * edge2.dot(q);
+    return t > 1e-6 ? t : null;
+  }
+
+  /// How far along a ray a box is first met, or null for a miss.
   ///
   /// The slab method: the span of the ray inside each pair of parallel faces,
   /// intersected. If what is left is empty the ray goes past.
-  static double? _unitCubeHit(Vector3 origin, Vector3 direction) {
+  static double? _boxHit(
+    Vector3 origin,
+    Vector3 direction,
+    Vector3 low,
+    Vector3 high,
+  ) {
     var near = -double.infinity;
     var far = double.infinity;
 
@@ -868,12 +963,12 @@ class EditorScene {
       if (d.abs() < 1e-9) {
         // Parallel to this pair of faces: either between them for the whole
         // ray, or never.
-        if (o < -1 || o > 1) return null;
+        if (o < low[axis] || o > high[axis]) return null;
         continue;
       }
 
-      final first = (-1 - o) / d;
-      final second = (1 - o) / d;
+      final first = (low[axis] - o) / d;
+      final second = (high[axis] - o) / d;
       near = math.max(near, math.min(first, second));
       far = math.min(far, math.max(first, second));
       if (near > far) return null;
