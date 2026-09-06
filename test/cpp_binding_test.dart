@@ -45,14 +45,33 @@ void main() {
   });
 
   group('what the editor writes', () {
-    test('the C++ starter compiles as it is', () {
-      final built = build('system', NewAsset.native.starter!);
+    test('the C++ pair it writes compiles as it is', () {
+      // Made the way the browser makes it, both halves at once, then built
+      // without touching either. That is the claim: what the editor writes
+      // builds.
+      final made = AssetTree(root.path)
+          .create(root.path, NewAsset.native, 'movement');
+      expect(made.problem, isNull);
+
+      final built = ScriptBuilder(root.path).build(made.path!);
       expect(built.ok, isTrue, reason: built.output);
     });
 
-    test('the header starter compiles when included', () {
-      File(p.join(root.path, 'shared.h'))
-          .writeAsStringSync(NewAsset.header.starter!);
+    test('the header it writes is what the source includes', () {
+      AssetTree(root.path).create(root.path, NewAsset.native, 'movement');
+
+      // Deleting the header breaks the build, which is how we know the
+      // source is really reading it rather than carrying its own copy.
+      File(p.join(root.path, 'movement.h')).deleteSync();
+      final built =
+          ScriptBuilder(root.path).build(p.join(root.path, 'movement.cpp'));
+
+      expect(built.ok, isFalse);
+      expect(built.output, contains('movement.h'));
+    });
+
+    test('a header on its own compiles when something includes it', () {
+      AssetTree(root.path).create(root.path, NewAsset.header, 'shared');
 
       final built = build('user', '''
 #include "shared.h"
@@ -61,22 +80,6 @@ extern "C" void orbis_step(double d) { (void)d; }
 extern "C" void orbis_stop(void) {}
 ''');
       expect(built.ok, isTrue, reason: built.output);
-    });
-
-    test('every starter it offers is at least syntactically real', () {
-      // The ones that are C++. The others are checked by their own toolchains.
-      for (final what in [NewAsset.native, NewAsset.header]) {
-        final source = what == NewAsset.header
-            ? '#include "one.h"\nORBIS_SCRIPT {}\n'
-                'extern "C" void orbis_step(double d) { (void)d; }\n'
-                'extern "C" void orbis_stop(void) {}\n'
-            : what.starter!;
-        if (what == NewAsset.header) {
-          File(p.join(root.path, 'one.h')).writeAsStringSync(what.starter!);
-        }
-        final built = build('check_${what.name}', source);
-        expect(built.ok, isTrue, reason: '${what.label}: ${built.output}');
-      }
     });
   });
 
@@ -143,7 +146,9 @@ extern "C" void orbis_stop(void) {}
     });
 
     test('what is built goes somewhere disposable inside the project', () {
-      build('system', NewAsset.native.starter!);
+      final made =
+          AssetTree(root.path).create(root.path, NewAsset.native, 'system');
+      ScriptBuilder(root.path).build(made.path!);
 
       expect(
         Directory(p.join(root.path, '.orbis', 'build')).existsSync(),
@@ -152,8 +157,10 @@ extern "C" void orbis_stop(void) {}
     });
 
     test('two builds of one file do not fight over a path', () {
-      build('system', NewAsset.native.starter!);
-      build('system', NewAsset.native.starter!);
+      final made =
+          AssetTree(root.path).create(root.path, NewAsset.native, 'system');
+      ScriptBuilder(root.path).build(made.path!);
+      ScriptBuilder(root.path).build(made.path!);
 
       // A library already loaded cannot be closed, so a rebuild has to be a
       // different file or it would go on running the old code.

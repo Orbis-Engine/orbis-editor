@@ -323,4 +323,54 @@ void main() {
       expect(asset.bytes, 13);
     });
   });
+
+  group('C++ arrives as a pair', () {
+    test('a source and a header, named after each other', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.native, 'movement');
+
+      expect(made.path, endsWith('movement.cpp'));
+      final header = File(p.join(root.path, 'movement.h'));
+      expect(header.existsSync(), isTrue);
+    });
+
+    test('the source includes the header it was given', () {
+      final tree = AssetTree(root.path);
+      final made = tree.create(root.path, NewAsset.native, 'movement');
+
+      final source = File(made.path!).readAsStringSync();
+      expect(source, contains('#include "movement.h"'));
+      expect(source, isNot(contains('NAME')));
+    });
+
+    test('the header is named after the pair too', () {
+      AssetTree(root.path).create(root.path, NewAsset.native, 'movement');
+
+      final header =
+          File(p.join(root.path, 'movement.h')).readAsStringSync();
+      expect(header, contains('movement'));
+      expect(header, isNot(contains('NAME')));
+    });
+
+    test('a second pair of a name keeps the two halves together', () {
+      final tree = AssetTree(root.path);
+      tree.create(root.path, NewAsset.native, 'movement');
+      final second = tree.create(root.path, NewAsset.native, 'movement');
+
+      final stem = p.basenameWithoutExtension(second.path!);
+      expect(stem, isNot('movement'));
+      expect(File(p.join(root.path, '$stem.h')).existsSync(), isTrue);
+      expect(
+        File(second.path!).readAsStringSync(),
+        contains('#include "$stem.h"'),
+      );
+    });
+
+    test('nothing else brings a second file with it', () {
+      for (final what in NewAsset.values) {
+        expect(what.companion, what == NewAsset.native ? isNotNull : isNull,
+            reason: what.name);
+      }
+    });
+  });
 }

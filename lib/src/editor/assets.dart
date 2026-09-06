@@ -330,7 +330,18 @@ class AssetTree {
           DataObject.blank(p.basenameWithoutExtension(unique)).toText(),
         );
       } else {
-        File(path).writeAsStringSync(what.starter ?? '');
+        File(path).writeAsStringSync(_starterFor(what, unique));
+
+        // Written beside it and named after it, so the include in the source
+        // resolves without anybody editing either file first.
+        final companion = what.companion;
+        if (companion != null) {
+          final beside = p.join(
+            directory,
+            '${p.basenameWithoutExtension(unique)}${companion.extension}',
+          );
+          File(beside).writeAsStringSync(_starterFor(companion, unique));
+        }
       }
     } on FileSystemException catch (error) {
       return (problem: error.osError?.message ?? 'Could not create it.',
@@ -339,6 +350,14 @@ class AssetTree {
 
     return (problem: null, path: path);
   }
+
+  /// A starter with the file's own name written into it.
+  ///
+  /// The C++ pair refer to each other by name, and a placeholder somebody has
+  /// to find and replace is a placeholder that ships.
+  static String _starterFor(NewAsset what, String fileName) =>
+      (what.starter ?? '')
+          .replaceAll('NAME', p.basenameWithoutExtension(fileName));
 
   /// Writes a file the editor has made itself — a prefab, most of the time.
   ///
@@ -510,13 +529,7 @@ mount(() => <Panel />);
 // Worth writing in C++ when the loop touches everything every frame. Anything
 // else is quicker to write in TypeScript and fast enough there.
 
-#include "orbis_script.h"
-
-/// What this script keeps on an entity. The layout is the contract with
-/// everything else that reads it, so it is declared once and here.
-struct Drift {
-  double speed;
-};
+#include "NAME.h"
 
 namespace {
 OrbisComponent drift;
@@ -565,18 +578,19 @@ extern "C" void orbis_stop(void) { orbis::log("stopped"); }
     extension: '.h',
     suggested: 'system',
     starter: '''
-// What a script offers to whatever else is compiled with it.
+// What NAME offers to whatever else is compiled with it.
 //
 // Declarations only. The engine calls orbis_start, orbis_step and orbis_stop
 // through their C names; this is for the code either side of that boundary —
-// a component layout two scripts share, a helper the .cpp keeps out of itself.
+// a component layout two scripts share, a helper the source keeps out of
+// itself.
 
 #pragma once
 
 #include "orbis_script.h"
 
-/// A component's layout, declared once so that two files reading the same
-/// column cannot disagree about what is in it.
+/// A component's layout, declared once so two files reading the same column
+/// cannot disagree about what is in it.
 struct Drift {
   double speed;
 };
@@ -652,6 +666,14 @@ struct Drift {
 
   /// What the name box starts with. The browser makes it unique.
   final String suggested;
+
+  /// A second file written alongside, or null.
+  ///
+  /// C++ arrives as a pair. A source file with nowhere to declare what it
+  /// shares is a source file that will grow a header the moment a second one
+  /// needs to read the same component, and by then the layout has been typed
+  /// twice.
+  NewAsset? get companion => this == NewAsset.native ? NewAsset.header : null;
 
   /// What the file says the moment it is made. Null for a folder.
   final String? starter;
