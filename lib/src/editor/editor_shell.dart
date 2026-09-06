@@ -20,14 +20,19 @@ import 'data_store.dart';
 import 'dock.dart';
 import 'dock_view.dart';
 import 'game_view.dart';
+import 'geometry_store.dart';
 import 'script_build.dart';
 import 'ui_editor.dart';
 import 'history.dart';
 import 'inspector.dart';
+import 'mesh_edit.dart';
+import 'mesh_panel.dart';
+import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
 import 'scene.dart';
 import 'scene_document.dart';
+import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 
 import 'viewport.dart';
@@ -60,6 +65,161 @@ class _EditorShellState extends State<EditorShell> {
   late final AssetTree _assets = AssetTree(widget.project.directory);
 
   late final DataStore _data = DataStore(widget.project.directory);
+
+  /// Geometry built here, written out for the renderer to load.
+  late final GeometryStore _geometry = GeometryStore(widget.project.directory);
+
+  // ---- editing geometry ----
+
+  /// Whether the whole object is selected, or its parts.
+  EditContext _context = EditContext.object;
+
+  ElementMode _elementMode = ElementMode.face;
+
+  ElementSelection _elements = ElementSelection();
+
+  /// How much the next action does, per action.
+  ///
+  /// Kept between presses: somebody extruding a corridor extrudes it in equal
+  /// steps, and a distance that reset to a half every time would be a number
+  /// they retyped every time.
+  final Map<String, double> _amounts = {};
+
+  /// The object whose parts are being edited, or null.
+  ///
+  /// Only a shape, and only while the context says so. Editing the parts of a
+  /// referenced glTF model would mean editing a file somebody else's
+  /// application also owns.
+  ({SceneObject object, Mesh mesh, Matrix4 transform})? get _editing {
+    if (_context != EditContext.element) return null;
+
+    final open = _workspace.sceneHolding(_primary ?? '');
+    final scene = open?.scene;
+    final object = _primary == null ? null : scene?[_primary!];
+    if (object == null || object.kind != ObjectKind.shape) return null;
+
+    final mesh = object.currentMesh;
+    if (mesh == null || mesh.isEmpty) return null;
+
+    return (
+      object: object,
+      mesh: mesh,
+      transform: scene!.worldOf(object.id),
+    );
+  }
+
+  /// The selected shape, whichever context is on.
+  ///
+  /// Separate from [_editing], which is only about element editing. Conforming
+  /// normals or welding a whole shape is something somebody does to the object
+  /// without going into it, and requiring them to would be a mode for no
+  /// reason.
+  ({SceneObject object, Mesh mesh, SceneEntry entry})? get _shapeSelected {
+    final open = _workspace.sceneHolding(_primary ?? '');
+    final object = _primary == null ? null : open?.scene?[_primary!];
+    if (object == null || object.kind != ObjectKind.shape) return null;
+
+    final mesh = object.currentMesh;
+    if (mesh == null || mesh.isEmpty) return null;
+    return (object: object, mesh: mesh, entry: open!);
+  }
+
+  /// Whether the selection could be edited part by part.
+  bool get _canEditParts => _shapeSelected != null;
+
+  void _setContext(EditContext context) {
+    if (context == EditContext.element && !_canEditParts) return;
+    setState(() {
+      _context = context;
+      if (context == EditContext.object) _elements.clear();
+    });
+  }
+
+  /// Adds what was clicked to the selection, or replaces it.
+  void _pickElement(Object? what, {required bool add}) {
+    setState(() {
+      if (!add) _elements.clear();
+      if (what == null) return;
+
+      switch (what) {
+        case final int index when _elementMode == ElementMode.vertex:
+          _toggle(_elements.vertices, index);
+        case final int index when _elementMode == ElementMode.face:
+          _toggle(_elements.faces, index);
+        case final MeshEdge edge:
+          _toggle(_elements.edges, edge);
+        default:
+          break;
+      }
+    });
+  }
+
+  static void _toggle<T>(Set<T> set, T value) {
+    if (!set.remove(value)) set.add(value);
+  }
+
+  /// Does one of the mesh actions and puts the result on the undo stack.
+  ///
+  /// The whole mesh per step. An extrude adds vertices and faces and moves
+  /// others, and describing that as a diff is more code than the extrude —
+  /// while a mesh is a few thousand doubles, which is nothing next to a frame.
+  void _runMeshAction(MeshAction action) {
+    // The selected shape, not the one being element-edited: an object action
+    // works without going into the geometry first.
+    final chosen = _shapeSelected;
+    if (chosen == null) return;
+
+    final next = chosen.mesh.copy();
+    final after = action.run(
+      next,
+      _elements,
+      _amounts[action.label] ?? action.amount?.value ?? 1,
+    );
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: action.label,
+    ));
+
+    setState(() => _elements = after);
+    _geometry.forget(chosen.object.id);
+    _refreshGeometry();
+  }
+
+  /// Writes out the geometry of every shape that has changed.
+  ///
+  /// Called when something changes rather than when something is drawn. Doing
+  /// it from the render path meant a shape was only written where there was a
+  /// renderer to write it for — so on a platform Filament has not reached, or
+  /// in a headless run, the file never appeared at all.
+  void _refreshGeometry() {
+    for (final entry in [..._workspace.entries, _workspace.sharedEntry]) {
+      final scene = entry.scene;
+      if (scene == null) continue;
+      for (final object in scene.objects) {
+        if (object.kind != ObjectKind.shape) continue;
+        _geometry.pathFor(object);
+      }
+    }
+  }
+
+  /// Changes a shape's numbers.
+  void _reshape(SceneObject object, Shape shape) {
+    final open = _workspace.sceneHolding(object.id);
+    if (open == null) return;
+
+    _run(SetShape(
+      sceneId: open.id,
+      id: object.id,
+      name: object.name,
+      to: shape,
+    ));
+    _geometry.forget(object.id);
+    _refreshGeometry();
+  }
 
   late final ScriptBuilder _builder = ScriptBuilder(widget.project.directory);
 
@@ -182,7 +342,12 @@ class _EditorShellState extends State<EditorShell> {
     super.dispose();
   }
 
-  void _onChanged() => setState(() {});
+  void _onChanged() {
+    // An undo can bring a shape back or change what it is, and the file the
+    // renderer loads has to follow it.
+    _refreshGeometry();
+    setState(() {});
+  }
 
   String _defaultScenePath() =>
       p.join(widget.project.directory, 'scenes', 'main$sceneExtension');
@@ -632,13 +797,14 @@ class _EditorShellState extends State<EditorShell> {
     }
 
     final name = _uniqueName(scene, switch (kind) {
-      ObjectKind.mesh => 'Cube',
+      ObjectKind.mesh => 'Mesh',
       ObjectKind.light => 'Light',
       ObjectKind.camera => 'Camera',
       ObjectKind.group => 'Group',
       ObjectKind.scene => 'Scene',
       ObjectKind.weather => 'Weather',
       ObjectKind.canvas => 'Canvas',
+      ObjectKind.shape => 'Shape',
     });
 
     final object = SceneObject(
@@ -659,6 +825,37 @@ class _EditorShellState extends State<EditorShell> {
 
     _run(AddObject(object, sceneId: open.id, parentId: parent));
     _select(object.id);
+  }
+
+  /// Puts a shape in the scene.
+  ///
+  /// Parametric to begin with: it is a width, a height and a depth until
+  /// somebody pulls a face off it, and until then changing the width should
+  /// change the width rather than move eight corners.
+  void _addShape(ShapeKind kind) {
+    final open = _working;
+    final scene = open?.scene;
+    if (open == null || scene == null) {
+      _say('There is no scene loaded to add to.', level: LogLevel.warning);
+      return;
+    }
+
+    final object = SceneObject(
+      id: _nextObjectId(),
+      name: _uniqueName(scene, kind.label),
+      kind: ObjectKind.shape,
+      shape: Shape(kind: kind),
+      colour: const Color(0xFF8E99A8),
+    );
+
+    final selected = _primary == null ? null : scene[_primary!];
+    _run(AddObject(
+      object,
+      sceneId: open.id,
+      parentId: selected?.kind == ObjectKind.group ? selected!.id : null,
+    ));
+    _select(object.id);
+    _refreshGeometry();
   }
 
   String _uniqueName(EditorScene scene, String base) {
@@ -1066,6 +1263,24 @@ class _EditorShellState extends State<EditorShell> {
             _exportBindings(_dataAsset!),
             ),
             onOpenData: _showData,
+            // The shape and geometry controls. The inspector shows what it is
+            // given and does not know what an extrude is.
+            meshPanel: selected?.kind != ObjectKind.shape
+                ? null
+                : MeshPanel(
+                    shape: selected!.shape,
+                    geometry: selected.geometry,
+                    context_: _context,
+                    mode: _elementMode,
+                    selection: _elements,
+                    amounts: _amounts,
+                    onShape: (shape) => _reshape(selected, shape),
+                    onContext: _setContext,
+                    onMode: (mode) => setState(() => _elementMode = mode),
+                    onAction: _runMeshAction,
+                    onAmount: (action, amount) =>
+                        setState(() => _amounts[action] = amount),
+                  ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
             ),
@@ -1101,6 +1316,11 @@ class _EditorShellState extends State<EditorShell> {
             },
             onDropAsset: _dropAsset,
             projectRoot: widget.project.directory,
+            editing: _editing,
+            elementMode: _elementMode,
+            elementSelection: _elements,
+            onPickElement: _pickElement,
+            geometryOf: _geometry.pathFor,
             interface: _sceneInterface,
             showInterface: _showInterface,
             onToggleInterface: () => setState(
@@ -1109,6 +1329,7 @@ class _EditorShellState extends State<EditorShell> {
             previewOf: (camera) => GameView(
               workspace: _workspace,
               projectRoot: widget.project.directory,
+              geometryOf: _geometry.pathFor,
               through: camera,
               plain: true,
             ),
@@ -1122,6 +1343,7 @@ class _EditorShellState extends State<EditorShell> {
       PanelKind.game => GameView(
           workspace: _workspace,
           projectRoot: widget.project.directory,
+          geometryOf: _geometry.pathFor,
           interface: _sceneInterface,
         ),
       PanelKind.project => AssetBrowser(
@@ -1686,6 +1908,11 @@ class _EditorShellState extends State<EditorShell> {
         const SingleActivator(LogicalKeyboardKey.delete): _DeleteIntent(),
         const SingleActivator(LogicalKeyboardKey.backspace): _DeleteIntent(),
         const SingleActivator(LogicalKeyboardKey.keyF): _FrameIntent(),
+        // The two keys a modelling tool has. Escape comes back out of the
+        // geometry and G goes round the three ways of selecting it, which is
+        // what somebody presses without thinking about it.
+        const SingleActivator(LogicalKeyboardKey.escape): _LeaveEditIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyG): _CycleModeIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true):
             _SaveIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
@@ -1713,6 +1940,20 @@ class _EditorShellState extends State<EditorShell> {
       },
       child: Actions(
         actions: {
+          _LeaveEditIntent: CallbackAction<_LeaveEditIntent>(onInvoke: (_) {
+            _setContext(EditContext.object);
+            return null;
+          }),
+          _CycleModeIntent: CallbackAction<_CycleModeIntent>(onInvoke: (_) {
+            // Into the geometry if not already, then round the modes: one key
+            // that always does the obvious next thing.
+            if (_context != EditContext.element) {
+              _setContext(EditContext.element);
+            } else {
+              setState(() => _elementMode = _elementMode.next);
+            }
+            return null;
+          }),
           _UndoIntent: CallbackAction<_UndoIntent>(onInvoke: (_) => _undo()),
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
           _DeleteIntent: CallbackAction<_DeleteIntent>(
@@ -1766,6 +2007,7 @@ class _EditorShellState extends State<EditorShell> {
                   onPlay: () => setState(() => _playing = !_playing),
                   onClose: widget.onClose,
                   onAdd: _add,
+                  onAddShape: _addShape,
                   onSave: _save,
                   onSaveAs: _saveAs,
                   onNewScene: () => _newScene(),
@@ -1878,6 +2120,7 @@ class _TopBar extends StatelessWidget {
     required this.onPlay,
     required this.onClose,
     required this.onAdd,
+    required this.onAddShape,
     required this.onSave,
     required this.onSaveAs,
     required this.onNewScene,
@@ -1902,6 +2145,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onPlay;
   final VoidCallback onClose;
   final ValueChanged<ObjectKind> onAdd;
+  final ValueChanged<ShapeKind> onAddShape;
   final VoidCallback onSave;
   final VoidCallback onSaveAs;
 
@@ -1951,7 +2195,7 @@ class _TopBar extends StatelessWidget {
             onReveal: onReveal,
           ),
           const SizedBox(width: Space.xs),
-          _AddMenu(onAdd: onAdd),
+          _AddMenu(onAdd: onAdd, onAddShape: onAddShape),
           const SizedBox(width: Space.xs),
           _EditMenu(
             selectionCount: selectionCount,
@@ -2125,12 +2369,18 @@ class _StatusBar extends StatelessWidget {
 
 /// The Add menu.
 class _AddMenu extends StatelessWidget {
-  const _AddMenu({required this.onAdd});
+  const _AddMenu({required this.onAdd, required this.onAddShape});
 
   final ValueChanged<ObjectKind> onAdd;
 
+  /// Shapes are their own submenu: there are seven of them and they are the
+  /// thing somebody reaches for most while blocking a level out.
+  final ValueChanged<ShapeKind> onAddShape;
+
   static const _items = [
-    (ObjectKind.mesh, 'Cube', Icons.view_in_ar_outlined),
+    // Not 'Cube': it is an object that draws a cube until it is given a mesh
+    // to draw instead, and there is a real cube one submenu above.
+    (ObjectKind.mesh, 'Mesh object', Icons.view_in_ar_outlined),
     (ObjectKind.light, 'Light', Icons.wb_sunny_outlined),
     (ObjectKind.camera, 'Camera', Icons.videocam_outlined),
     (ObjectKind.group, 'Group', Icons.folder_outlined),
@@ -2151,6 +2401,29 @@ class _AddMenu extends StatelessWidget {
         ),
       ),
       menuChildren: [
+        SubmenuButton(
+          menuStyle: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(OrbisColors.raised),
+            surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(Radii.panel),
+                side: const BorderSide(color: OrbisColors.line),
+              ),
+            ),
+          ),
+          leadingIcon: const Icon(Icons.category_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          menuChildren: [
+            for (final shape in ShapeKind.values)
+              MenuItemButton(
+                onPressed: () => onAddShape(shape),
+                child: Text(shape.label, style: OrbisText.label),
+              ),
+          ],
+          child: Text('Shape', style: OrbisText.label),
+        ),
+        const Divider(height: 9, color: OrbisColors.line),
         for (final (kind, label, icon) in _items)
           MenuItemButton(
             onPressed: () => onAdd(kind),
@@ -2453,4 +2726,14 @@ class _ViewMenu extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Back out of a mesh, to the object it belongs to.
+class _LeaveEditIntent extends Intent {
+  const _LeaveEditIntent();
+}
+
+/// Round the three ways of selecting part of a mesh.
+class _CycleModeIntent extends Intent {
+  const _CycleModeIntent();
 }

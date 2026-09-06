@@ -38,6 +38,7 @@ class Inspector extends StatelessWidget {
     this.onOpenData,
     this.onDetachData,
     this.onOpenInterface,
+    this.meshPanel,
   });
 
   /// The scene being looked at, which need not be the loaded one — a scene can
@@ -81,6 +82,12 @@ class Inspector extends StatelessWidget {
 
   /// Opens the interface a canvas object shows.
   final ValueChanged<String>? onOpenInterface;
+
+  /// The shape and geometry controls, for an object that has geometry.
+  ///
+  /// Built by the shell, which owns what is being edited — the inspector
+  /// shows what it is given and does not know what an extrude is.
+  final Widget? meshPanel;
 
   @override
   Widget build(BuildContext context) {
@@ -149,6 +156,7 @@ class Inspector extends StatelessWidget {
                               onOpenData: onOpenData,
                               onDetachData: onDetachData,
                               onOpenInterface: onOpenInterface,
+                              meshPanel: meshPanel,
                             ),
                           ),
                         ],
@@ -683,6 +691,7 @@ class _Fields extends StatelessWidget {
     this.onOpenData,
     this.onDetachData,
     this.onOpenInterface,
+    this.meshPanel,
   });
 
   final String sceneId;
@@ -692,6 +701,7 @@ class _Fields extends StatelessWidget {
   final ValueChanged<String>? onOpenData;
   final void Function(String id, String path)? onDetachData;
   final ValueChanged<String>? onOpenInterface;
+  final Widget? meshPanel;
 
   @override
   Widget build(BuildContext context) {
@@ -743,6 +753,7 @@ class _Fields extends StatelessWidget {
           _weather(),
           _air(),
         ],
+        if (object.kind == ObjectKind.shape && meshPanel != null) meshPanel!,
         if (object.kind == ObjectKind.canvas) _interface(),
         if (object.data.isNotEmpty) _data(),
       ],

@@ -24,6 +24,7 @@ class GameView extends StatelessWidget {
     super.key,
     required this.workspace,
     this.projectRoot,
+    this.geometryOf,
     this.interface,
     this.through,
     this.plain = false,
@@ -31,6 +32,9 @@ class GameView extends StatelessWidget {
 
   final Workspace workspace;
   final String? projectRoot;
+
+  /// Where an object's built geometry was written, if anywhere.
+  final String? Function(SceneObject)? geometryOf;
 
   /// The interface the scene puts on screen, already read.
   final UiDocument? interface;
@@ -119,6 +123,7 @@ class GameView extends StatelessWidget {
                     camera,
                     projectRoot: projectRoot,
                     shared: workspace.shared,
+                    geometryOf: geometryOf,
                   ),
                 ),
         ),

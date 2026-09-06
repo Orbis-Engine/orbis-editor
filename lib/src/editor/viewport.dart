@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:orbis_filament/orbis_filament.dart';
+import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -13,6 +14,7 @@ import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'gizmo.dart';
 import 'history.dart';
+import 'mesh_edit.dart';
 import 'scene.dart';
 import 'ui_canvas.dart';
 import 'workspace.dart';
@@ -198,6 +200,11 @@ class SceneViewport extends StatefulWidget {
     required this.workspace,
     required this.camera,
     required this.onCameraChanged,
+    this.editing,
+    this.elementMode = ElementMode.face,
+    this.elementSelection = nothingSelected,
+    this.onPickElement,
+    this.geometryOf,
     this.interface,
     this.showInterface = true,
     this.onToggleInterface,
@@ -235,6 +242,28 @@ class SceneViewport extends StatefulWidget {
   /// Called with anything the scene asked for that the renderer could not
   /// give: a mesh that would not load, a light it has no room to shade.
   final ValueChanged<Map<String, String>>? onSceneNotes;
+
+  /// The object whose parts are being edited, with its geometry and where it
+  /// stands, or null when the whole object is what is selected.
+  ///
+  /// Passed in already resolved: the viewport draws what it is given and does
+  /// not decide what is being edited, which is what lets four of them show the
+  /// same edit from four angles.
+  final ({SceneObject object, Mesh mesh, Matrix4 transform})? editing;
+
+  final ElementMode elementMode;
+  final ElementSelection elementSelection;
+
+  /// Called when a click lands on a vertex, an edge or a face — or on none of
+  /// them, which is how somebody clears a selection.
+  final void Function(Object? what, {required bool add})? onPickElement;
+
+  /// Where an object's built geometry was written, if anywhere.
+  ///
+  /// Passed in rather than worked out here: the file is written by whatever
+  /// owns the project folder, and a viewport that wrote files would be four
+  /// viewports writing the same one four times over.
+  final String? Function(SceneObject)? geometryOf;
 
   /// The interface a canvas object in the scene shows, already read.
   ///
@@ -758,6 +787,28 @@ class _SceneViewportState extends State<SceneViewport>
     return make(object);
   }
 
+  /// The part of the mesh the pointer is over, while editing one.
+  Object? _hoveredElement;
+
+  /// What a pixel lands on, in whatever mode is on.
+  Object? _elementAt(Offset pixel) {
+    final editing = widget.editing;
+    final surface = _surface;
+    if (editing == null || surface == null || surface.isEmpty) return null;
+
+    final picker = MeshPicker(
+      mesh: editing.mesh,
+      transform: editing.transform,
+      projection: ViewportProjection(camera: widget.camera, size: surface),
+    );
+
+    return switch (widget.elementMode) {
+      ElementMode.vertex => picker.vertexAt(pixel),
+      ElementMode.edge => picker.edgeAt(pixel),
+      ElementMode.face => picker.faceAt(pixel),
+    };
+  }
+
   bool get _rendererAvailable =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
@@ -834,6 +885,24 @@ class _SceneViewportState extends State<SceneViewport>
                   child: UiCanvasView(
                     document: widget.interface!,
                     designing: false,
+                  ),
+                ),
+              ),
+            // The parts of whatever is being edited, over the scene and under
+            // the handles. A wireframe over everything all the time is a scene
+            // nobody can read; this is only up while somebody is in it.
+            if (widget.editing case final editing?)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: ElementPainter(
+                      mesh: editing.mesh,
+                      transform: editing.transform,
+                      camera: widget.camera,
+                      mode: widget.elementMode,
+                      selection: widget.elementSelection,
+                      hovered: _hoveredElement,
+                    ),
                   ),
                 ),
               ),
@@ -1026,8 +1095,20 @@ class _SceneViewportState extends State<SceneViewport>
         _syncClock();
       },
       child: MouseRegion(
-        onHover: (event) => _hover(event.localPosition),
-        onExit: (_) => setState(() => _hovered = null),
+        onHover: (event) {
+          if (widget.editing != null) {
+            final under = _elementAt(event.localPosition);
+            if (under != _hoveredElement) {
+              setState(() => _hoveredElement = under);
+            }
+            return;
+          }
+          _hover(event.localPosition);
+        },
+        onExit: (_) => setState(() {
+          _hovered = null;
+          _hoveredElement = null;
+        }),
         child: GestureDetector(
         // Opaque so drags land here rather than falling through to whatever
         // scrolls behind the viewport.
@@ -1037,6 +1118,18 @@ class _SceneViewportState extends State<SceneViewport>
           // is talking to. Focus that followed the pointer instead would take
           // it away from a name half-typed in the inspector.
           _flyFocus.requestFocus();
+
+          // While somebody is editing a mesh, a click is about its parts.
+          // Picking a different object out from under them mid-extrude is not
+          // something anybody means by clicking on their own geometry.
+          if (widget.editing != null) {
+            widget.onPickElement?.call(
+              _elementAt(details.localPosition),
+              add: HardwareKeyboard.instance.isMetaPressed ||
+                  HardwareKeyboard.instance.isShiftPressed,
+            );
+            return;
+          }
           _pick(details.localPosition);
         },
         onPanStart: (details) {
@@ -1082,6 +1175,7 @@ class _SceneViewportState extends State<SceneViewport>
                   // What every scene in the project has in it, drawn alongside
                   // whichever one is open.
                   shared: widget.workspace.shared,
+                  geometryOf: widget.geometryOf,
                 ),
                 onSceneNotes: widget.onSceneNotes,
               ),

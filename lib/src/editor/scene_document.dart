@@ -6,6 +6,8 @@ import 'package:orbis_weather/orbis_weather.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'colour.dart';
+import 'package:orbis_mesh/orbis_mesh.dart';
+
 import 'scene.dart';
 
 /// The extension a scene file carries.
@@ -125,6 +127,12 @@ abstract final class SceneDocument {
         if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
         if (object.interfaceAsset != null) 'interface': object.interfaceAsset,
+        // A shape is a handful of numbers and its geometry is thousands, so
+        // only the one that is true is written. An edited shape keeps its
+        // parameters as history: they say what it was made from, which is
+        // worth reading even once it is not that any more.
+        if (object.shape != null) 'shape': object.shape!.toJson(),
+        if (object.geometry != null) 'geometry': object.geometry!.toJson(),
         if (object.prefab != null) 'prefab': object.prefab,
         if (object.data.isNotEmpty) 'data': object.data,
       };
@@ -219,6 +227,8 @@ abstract final class SceneDocument {
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
       interfaceAsset:
           entry['interface'] is String ? entry['interface']! as String : null,
+      shape: Shape.fromJson(entry['shape']),
+      geometry: Mesh.fromJson(entry['geometry']),
       prefab: entry['prefab'] is String ? entry['prefab']! as String : null,
       data: entry['data'] is List
           ? [

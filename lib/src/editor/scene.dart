@@ -6,13 +6,15 @@ import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_weather/orbis_weather.dart';
 
+import 'package:orbis_mesh/orbis_mesh.dart';
+
 import 'colour.dart';
 
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
 /// therefore what the inspector shows.
-enum ObjectKind { scene, mesh, light, camera, group, weather, canvas }
+enum ObjectKind { scene, mesh, light, camera, group, weather, canvas, shape }
 
 /// One object in the edited scene.
 ///
@@ -45,6 +47,8 @@ class SceneObject {
     this.receiveShadows = true,
     this.visible = true,
     this.meshAsset,
+    this.shape,
+    this.geometry,
     this.interfaceAsset,
     this.prefab,
     List<String>? data,
@@ -176,6 +180,27 @@ class SceneObject {
   /// to load it keeps the file honest about what the scene says.
   String? meshAsset;
 
+  /// What this object is, while it is still a shape.
+  ///
+  /// A box is a width, a height and a depth until somebody pulls a face off
+  /// it. Changing the width of a box should change its width, not move eight
+  /// corners — and that stays true right up to the moment they edit it, at
+  /// which point the shape is what it *was* and [geometry] is what it is.
+  Shape? shape;
+
+  /// The geometry, once it stopped being a shape.
+  ///
+  /// Null while the object is still parametric, which is most of the time and
+  /// is much the smaller thing to save. Set the moment anybody extrudes a
+  /// face, and from then on the shape's numbers are history rather than truth.
+  Mesh? geometry;
+
+  /// Whether editing this would throw the shape's parameters away.
+  bool get isParametric => shape != null && geometry == null;
+
+  /// The geometry as it stands, whichever of the two it came from.
+  Mesh? get currentMesh => geometry ?? shape?.build();
+
   /// The interface this canvas shows, as a path relative to the project.
   ///
   /// A reference, like a mesh and like a data object. The `.oui` is the
@@ -212,10 +237,12 @@ class SceneObject {
         ObjectKind.camera => Icons.videocam_outlined,
         ObjectKind.weather => Icons.cloud_outlined,
         ObjectKind.canvas => Icons.web_asset,
+        ObjectKind.shape => Icons.category_outlined,
       };
 
   /// Whether this object is drawn.
-  bool get isDrawable => kind == ObjectKind.mesh;
+  bool get isDrawable =>
+      kind == ObjectKind.mesh || kind == ObjectKind.shape;
 
   /// Where the object sits relative to its parent.
   Matrix4 get localTransform => Matrix4.identity()
@@ -256,6 +283,8 @@ class SceneObject {
         receiveShadows: receiveShadows,
         visible: visible,
         meshAsset: meshAsset,
+        shape: shape,
+        geometry: geometry?.copy(),
         interfaceAsset: interfaceAsset,
         prefab: prefab,
         data: List<String>.from(data),
@@ -936,6 +965,7 @@ class EditorScene {
     OrbisCamera camera, {
     String? projectRoot,
     EditorScene? shared,
+    String? Function(SceneObject)? geometryOf,
   }) {
     final sky = skyState;
     final driven = dayCycle;
@@ -978,7 +1008,16 @@ class EditorScene {
                 key: object.renderKey,
                 transform: scene.worldOf(object.id),
                 colour: linearFromColour(object.colour),
-                mesh: _resolveMesh(object.meshAsset, projectRoot),
+                // Geometry built here first, then whatever file the object
+                // names. A shape somebody is dragging a face on should draw
+                // as what it is now, not as the mesh it used to reference.
+                mesh: _resolveMesh(
+                  (object.kind == ObjectKind.shape
+                          ? geometryOf?.call(object)
+                          : null) ??
+                      object.meshAsset,
+                  projectRoot,
+                ),
                 castShadows: object.castShadows,
                 receiveShadows: object.receiveShadows,
                 visible: scene.isShown(object.id),

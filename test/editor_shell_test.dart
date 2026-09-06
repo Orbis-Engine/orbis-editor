@@ -19,6 +19,7 @@ import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
+import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:orbis_editor/src/widgets/controls.dart';
@@ -303,10 +304,10 @@ void main() {
     await open(tester);
     expect(find.byTooltip('Nothing to undo'), findsOneWidget);
 
-    await add(tester, 'Cube');
+    await add(tester, 'Mesh object');
 
     expect(find.byTooltip('Nothing to undo'), findsNothing);
-    expect(find.byTooltip('Undo Add Cube 2'), findsOneWidget);
+    expect(find.byTooltip('Undo Add Mesh'), findsOneWidget);
   });
 
   testWidgets('saving writes a scene file that opens again', (tester) async {
@@ -2287,6 +2288,183 @@ void main() {
 
       // Looking keeps the eye where it is; orbiting would have moved it.
       expect((eye(tester) - was).length, lessThan(1e-6));
+    });
+  });
+
+  group('building geometry', () {
+    /// Adds a shape through the Add menu.
+    Future<void> addShape(WidgetTester tester, String kind) async {
+      await tester.tap(find.text('Add'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(SubmenuButton, 'Shape'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byType(MenuItemButton),
+        matching: find.text(kind),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    /// The shape object in the open scene.
+    SceneObject shapeIn(WidgetTester tester) {
+      final shell = tester.widget<SceneViewport>(find.byType(SceneViewport));
+      return shell.workspace.loaded!.scene!.objects
+          .firstWhere((o) => o.kind == ObjectKind.shape);
+    }
+
+    Future<void> scrollInspector(WidgetTester tester) async {
+      await tester.drag(
+        find.descendant(
+          of: find.byType(Inspector),
+          matching: find.byType(ListView),
+        ),
+        const Offset(0, -2000),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a shape can be added and is parametric', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Stairs');
+
+      final object = shapeIn(tester);
+      expect(object.shape!.kind, ShapeKind.stairs);
+      expect(object.isParametric, isTrue,
+          reason: 'it is a set of numbers until somebody edits it');
+      expect(object.geometry, isNull);
+    });
+
+    testWidgets('its parameters are in the inspector', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cylinder');
+      await scrollInspector(tester);
+
+      // The controls that belong to a cylinder and to nothing else.
+      expect(find.text('Sides'), findsOneWidget);
+      expect(find.text('Height cuts'), findsOneWidget);
+      // And not a torus's.
+      expect(find.text('Tube'), findsNothing);
+    });
+
+    testWidgets('every kind offers its own parameters', (tester) async {
+      await open(tester);
+
+      for (final (kind, control) in const [
+        ('Torus', 'Tube'),
+        ('Door', 'Side width'),
+        ('Sphere', 'Divisions'),
+      ]) {
+        await addShape(tester, kind);
+        await scrollInspector(tester);
+        expect(find.text(control), findsOneWidget, reason: kind);
+      }
+    });
+
+    testWidgets('it is written out so the renderer can draw it',
+        (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+
+      // An object is the built-in cube or a glTF file, and there is no third
+      // way in — so geometry built here becomes a file.
+      final built = Directory(p.join(root.path, '.orbis', 'geometry'));
+      expect(built.existsSync(), isTrue);
+      expect(built.listSync().where((f) => f.path.endsWith('.glb')),
+          isNotEmpty);
+    });
+
+    testWidgets('the geometry mode is offered for a shape', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      expect(find.text('GEOMETRY'), findsOneWidget);
+      expect(find.text('Editing'), findsOneWidget);
+    });
+
+    testWidgets('G goes into the geometry and round the modes',
+        (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
+      await tester.pumpAndSettle();
+      expect(find.text('Faces'), findsWidgets);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      // Back out to the object, which is what escape is for.
+      expect(find.textContaining('Click'), findsNothing);
+    });
+
+    testWidgets('the object actions are offered without a selection',
+        (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      expect(find.text('Conform normals'), findsOneWidget);
+      expect(find.text('Flip all normals'), findsOneWidget);
+      // And nothing that needs a face selected.
+      expect(find.text('Extrude'), findsNothing);
+    });
+
+    testWidgets('flipping the normals is one undoable step', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      await tester.tap(find.text('Flip all normals'));
+      await tester.pumpAndSettle();
+
+      // It stopped being a shape the moment it was edited.
+      final object = shapeIn(tester);
+      expect(object.geometry, isNotNull);
+      expect(object.isParametric, isFalse);
+
+      await press(tester, LogicalKeyboardKey.keyZ);
+      expect(shapeIn(tester).geometry, isNull);
+    });
+
+    testWidgets('changing a parameter changes the geometry', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Stairs');
+      await scrollInspector(tester);
+
+      final was = shapeIn(tester).shape!.steps;
+      await tester.drag(
+        find.descendant(
+          of: find.widgetWithText(FieldRow, 'Steps'),
+          matching: find.byType(Slider),
+        ),
+        const Offset(60, 0),
+      );
+      await tester.pumpAndSettle();
+
+      expect(shapeIn(tester).shape!.steps, isNot(was));
+      // Still a shape: changing a number is not editing the geometry.
+      expect(shapeIn(tester).isParametric, isTrue);
+    });
+
+    testWidgets('a shape is saved with the scene and comes back',
+        (tester) async {
+      await open(tester);
+      await addShape(tester, 'Arch');
+      await save(tester);
+
+      final written =
+          File(p.join(root.path, 'scenes', 'main.oscene')).readAsStringSync();
+      expect(written, contains('"shape"'));
+
+      final back = SceneDocument.decode(written).scene;
+      final object =
+          back.objects.firstWhere((o) => o.kind == ObjectKind.shape);
+      expect(object.shape!.kind, ShapeKind.arch);
+      expect(object.currentMesh, isNotNull);
     });
   });
 }

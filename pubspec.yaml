@@ -60,6 +60,11 @@ dependencies:
   # draws its interface with, so what the canvas shows is what ships.
   orbis_ui:
     path: ../orbis/packages/orbis_ui
+
+  # Geometry built in the editor. The shapes, and the operations that turn one
+  # into something that was not a shape any more.
+  orbis_mesh:
+    path: ../orbis/packages/orbis_mesh
   path: ^1.9.0
   path_provider: ^2.1.5
 
