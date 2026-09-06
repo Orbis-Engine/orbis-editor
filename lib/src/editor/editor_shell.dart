@@ -1078,7 +1078,7 @@ class _EditorShellState extends State<EditorShell> {
             workspace: _workspace,
             camera: _cameraFor(panel.id),
             onCameraChanged: (camera) =>
-            setState(() => _camera = camera),
+                setState(() => _cameras[panel.id] = camera),
             selected: _selected,
             primary: _primary,
             history: _history,

@@ -569,8 +569,17 @@ class _SceneViewportState extends State<SceneViewport>
   /// The keys held down while the right button is, in view terms.
   final Set<LogicalKeyboardKey> _held = {};
 
-  /// Where the pointer was when it last moved, while looking around.
+  /// Where the pointer was when it last moved, while a button is held down to
+  /// look around.
   Offset? _looking;
+
+  /// Whether flying was switched on rather than held.
+  ///
+  /// Holding a button is fine with a mouse and awkward on a trackpad: a
+  /// two-finger click held down while the other hand types WASD is a hand
+  /// position nobody keeps for long. Switched on, the keys just work and the
+  /// view is steered with an ordinary two-finger drag.
+  bool _flyLocked = false;
 
   /// Metres a second. Adjusted by the wheel while flying, the way it is in
   /// every editor that has this — somebody flying across a level and somebody
@@ -580,7 +589,19 @@ class _SceneViewportState extends State<SceneViewport>
 
   final FocusNode _flyFocus = FocusNode(debugLabel: 'viewport fly');
 
-  bool get _flying => _looking != null;
+  /// The pinch scale at the last trackpad event, so a zoom is the change
+  /// rather than the total — the total restarts at one on every gesture.
+  double _panZoomFrom = 1;
+
+  /// Whether fingers are on the trackpad.
+  ///
+  /// Flutter hands a trackpad gesture to the pan-zoom listeners *and* turns it
+  /// into an ordinary drag for the gesture recognizers, so without this both
+  /// run and the second undoes the first — the view would move once and then
+  /// jump back every frame of the gesture.
+  bool _onTrackpad = false;
+
+  bool get _flying => _looking != null || _flyLocked;
 
   // Not const: LogicalKeyboardKey defines ==, and a constant set may not hold
   // anything that does.
@@ -634,8 +655,23 @@ class _SceneViewportState extends State<SceneViewport>
   }
 
   KeyEventResult _onFlyKey(FocusNode node, KeyEvent event) {
-    // Only while the button is down. Otherwise W would fly the view every time
-    // somebody typed a name into the inspector.
+    // The one key that works whether or not the view is already flying.
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.backquote) {
+      _toggleFlying();
+      return KeyEventResult.handled;
+    }
+
+    if (_flying &&
+        event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      setState(_stopFlying);
+      _syncClock();
+      return KeyEventResult.handled;
+    }
+
+    // Everything else only while flying. Otherwise W would fly the view every
+    // time somebody typed a name into the inspector.
     if (!_flying) return KeyEventResult.ignored;
 
     if (event is KeyDownEvent) {
@@ -651,7 +687,22 @@ class _SceneViewportState extends State<SceneViewport>
 
   void _stopFlying() {
     _looking = null;
+    _flyLocked = false;
     _held.clear();
+  }
+
+  /// Switches flying on or off, for the trackpad.
+  void _toggleFlying() {
+    setState(() {
+      if (_flying) {
+        _stopFlying();
+      } else {
+        _flyLocked = true;
+        _lastFlew = _elapsed;
+        _flyFocus.requestFocus();
+      }
+    });
+    _syncClock();
   }
 
   /// Moves the camera for one frame of held keys.
@@ -817,7 +868,9 @@ class _SceneViewportState extends State<SceneViewport>
                     'Flying · ${_flySpeed.toStringAsFixed(1)} m/s',
                     on: true,
                     tooltip: 'WASD to move, Q and E for down and up, shift to '
-                        'go faster, the wheel to change how fast.',
+                        'go faster. Two fingers or the right button to steer, '
+                        'the wheel to change how fast. Escape or ` to stop.',
+                    onTap: _toggleFlying,
                   ),
                 ],
                 if (widget.interface != null) ...[
@@ -865,8 +918,8 @@ class _SceneViewportState extends State<SceneViewport>
                 right: Space.md,
                 bottom: Space.md,
                 child: const _ViewportChip(
-                  'Click to select · drag a handle to move · drag to orbit · '
-                  'hold the right button to look, WASD to fly',
+                  'Drag to orbit · two fingers to orbit, shift to pan, pinch '
+                  'to zoom · ` to fly, then WASD',
                 ),
               ),
           ],
@@ -896,6 +949,45 @@ class _SceneViewportState extends State<SceneViewport>
           return;
         }
         widget.onCameraChanged(widget.camera.zoom(event.scrollDelta.dy));
+      },
+      // Trackpad gestures arrive here rather than as scroll events, once
+      // something listens for them. That separation is the whole point: a
+      // mouse wheel keeps meaning zoom, and two fingers on glass can mean
+      // something better than a wheel with no wheel.
+      onPointerPanZoomStart: (_) {
+        _panZoomFrom = 1;
+        _onTrackpad = true;
+      },
+      onPointerPanZoomUpdate: (event) {
+        // Pinching is zoom, whichever mode the view is in. It is the one
+        // gesture on a trackpad that has never meant anything else.
+        if ((event.scale - _panZoomFrom).abs() > 0.001) {
+          final step = event.scale / (_panZoomFrom == 0 ? 1 : _panZoomFrom);
+          _panZoomFrom = event.scale;
+          widget.onCameraChanged(
+            widget.camera.zoom(-math.log(step) * 620),
+          );
+          return;
+        }
+
+        final delta = event.localPanDelta;
+        if (delta == Offset.zero) return;
+
+        if (_flying) {
+          // Steering, while the keys do the moving. No button held down, which
+          // is the whole reason flying can be switched on rather than held.
+          widget.onCameraChanged(widget.camera.looking(delta));
+          return;
+        }
+
+        final shifted = HardwareKeyboard.instance.isShiftPressed;
+        widget.onCameraChanged(
+          shifted ? widget.camera.pan(delta) : widget.camera.orbit(delta),
+        );
+      },
+      onPointerPanZoomEnd: (_) {
+        _panZoomFrom = 1;
+        _onTrackpad = false;
       },
       onPointerDown: (event) {
         if (event.buttons & kSecondaryButton == 0) return;
@@ -940,8 +1032,16 @@ class _SceneViewportState extends State<SceneViewport>
         // Opaque so drags land here rather than falling through to whatever
         // scrolls behind the viewport.
         behavior: HitTestBehavior.opaque,
-        onTapUp: (details) => _pick(details.localPosition),
+        onTapUp: (details) {
+          // A click in a view is how that view becomes the one the keyboard
+          // is talking to. Focus that followed the pointer instead would take
+          // it away from a name half-typed in the inspector.
+          _flyFocus.requestFocus();
+          _pick(details.localPosition);
+        },
         onPanStart: (details) {
+          // Already handled as a trackpad gesture.
+          if (_onTrackpad) return;
           // A handle first: a drag that starts on one is a transform, and
           // anywhere else is the view turning. Nothing to hold down and no
           // mode to be in — the handles are the mode.
@@ -949,6 +1049,7 @@ class _SceneViewportState extends State<SceneViewport>
           _dragAnchor = details.localPosition;
         },
         onPanUpdate: (details) {
+          if (_onTrackpad) return;
           if (_dragging != null) {
             _dragTo(details.localPosition);
             return;
