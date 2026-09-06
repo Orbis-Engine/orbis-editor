@@ -178,70 +178,74 @@ class _AssetBrowserState extends State<AssetBrowser> {
 
     return SizedBox(
       height: widget.height,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: OrbisColors.surface,
-          border: Border(top: BorderSide(color: OrbisColors.lineSoft)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _Header(
-              crumb: widget.tree.relative(_directory),
-              count: entries.length,
-              canGoUp: !p.equals(_directory, widget.tree.root),
-              onUp: () => setState(() {
-                _directory = p.dirname(_directory);
-                _selected = null;
-              }),
-              onRefresh: () => setState(() => _revision++),
-              onCreate: _promptCreate,
-            ),
-            Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _FolderTree(
-                    key: ValueKey(_revision),
-                    tree: widget.tree,
-                    folders: folders,
-                    current: _directory,
-                    onOpen: (path) => setState(() {
-                      _directory = path;
-                      _selected = null;
-                    }),
-                    onDropObject: widget.onMakePrefab,
-                  ),
-                  Expanded(
-                    child: _Grid(
-                      key: ValueKey('$_directory/$_revision'),
-                      entries: entries,
-                      selected: _selected,
-                      onSelect: (asset) =>
-                          setState(() => _selected = asset.path),
-                      onDelete: _confirmDelete,
-                      onRename: _promptRename,
-                      onCreate: _promptCreate,
-                      onDropObject: widget.onMakePrefab == null
-                          ? null
-                          : (object) =>
-                              widget.onMakePrefab!(object, _directory),
-                      onOpen: (asset) {
-                        if (!asset.isFolder) {
-                          widget.onOpenAsset?.call(asset);
-                          return;
-                        }
-                        setState(() {
-                          _directory = asset.path;
-                          _selected = null;
-                        });
-                      },
-                    ),
-                  ),
-                ],
+      // One menu for the whole panel: the header button, the empty space
+      // between tiles and every file in the grid all open the same one,
+      // rather than a menu controller per file in the project.
+      child: AssetMenu(
+        onCreate: _promptCreate,
+        child: Container(
+          decoration: const BoxDecoration(
+            color: OrbisColors.surface,
+            border: Border(top: BorderSide(color: OrbisColors.lineSoft)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _Header(
+                crumb: widget.tree.relative(_directory),
+                count: entries.length,
+                canGoUp: !p.equals(_directory, widget.tree.root),
+                onUp: () => setState(() {
+                  _directory = p.dirname(_directory);
+                  _selected = null;
+                }),
+                onRefresh: () => setState(() => _revision++),
               ),
-            ),
-          ],
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _FolderTree(
+                      key: ValueKey(_revision),
+                      tree: widget.tree,
+                      folders: folders,
+                      current: _directory,
+                      onOpen: (path) => setState(() {
+                        _directory = path;
+                        _selected = null;
+                      }),
+                      onDropObject: widget.onMakePrefab,
+                    ),
+                    Expanded(
+                      child: _Grid(
+                        key: ValueKey('$_directory/$_revision'),
+                        entries: entries,
+                        selected: _selected,
+                        onSelect: (asset) =>
+                            setState(() => _selected = asset.path),
+                        onDelete: _confirmDelete,
+                        onRename: _promptRename,
+                        onDropObject: widget.onMakePrefab == null
+                            ? null
+                            : (object) =>
+                                widget.onMakePrefab!(object, _directory),
+                        onOpen: (asset) {
+                          if (!asset.isFolder) {
+                            widget.onOpenAsset?.call(asset);
+                            return;
+                          }
+                          setState(() {
+                            _directory = asset.path;
+                            _selected = null;
+                          });
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -255,7 +259,6 @@ class _Header extends StatelessWidget {
     required this.canGoUp,
     required this.onUp,
     required this.onRefresh,
-    required this.onCreate,
   });
 
   final String crumb;
@@ -263,7 +266,6 @@ class _Header extends StatelessWidget {
   final bool canGoUp;
   final VoidCallback onUp;
   final VoidCallback onRefresh;
-  final ValueChanged<NewAsset> onCreate;
 
   @override
   Widget build(BuildContext context) {
@@ -306,10 +308,9 @@ class _Header extends StatelessWidget {
               enabled: true,
               onTap: () {
                 final box = context.findRenderObject()! as RenderBox;
-                showAssetMenu(
+                AssetMenu.open(
                   context,
                   box.localToGlobal(box.size.bottomLeft(Offset.zero)),
-                  onCreate: onCreate,
                 );
               },
             ),
@@ -514,7 +515,6 @@ class _Grid extends StatelessWidget {
     required this.onOpen,
     required this.onDelete,
     required this.onRename,
-    required this.onCreate,
     this.onDropObject,
   });
 
@@ -524,7 +524,6 @@ class _Grid extends StatelessWidget {
   final ValueChanged<Asset> onOpen;
   final ValueChanged<Asset> onDelete;
   final ValueChanged<Asset> onRename;
-  final ValueChanged<NewAsset> onCreate;
   final ValueChanged<ObjectDrag>? onDropObject;
 
   @override
@@ -548,7 +547,7 @@ class _Grid extends StatelessWidget {
     final catching = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onSecondaryTapUp: (details) =>
-          showAssetMenu(context, details.globalPosition, onCreate: onCreate),
+          AssetMenu.open(context, details.globalPosition),
       child: grid,
     );
 
@@ -602,7 +601,6 @@ class _Grid extends StatelessWidget {
           onDoubleTap: () => onOpen(asset),
           onDelete: () => onDelete(asset),
           onRename: () => onRename(asset),
-          onCreate: onCreate,
         );
       },
     );
@@ -611,60 +609,138 @@ class _Grid extends StatelessWidget {
 
 /// The right-click menu, wherever it is opened from.
 ///
-/// One menu rather than two, because the things somebody can make do not
-/// depend on whether the pointer happened to be over a file when they asked.
-/// What a tile adds is what can be done *to* it, at the top where it reads
-/// first.
-Future<void> showAssetMenu(
-  BuildContext context,
-  Offset at, {
-  required ValueChanged<NewAsset> onCreate,
-  VoidCallback? onOpen,
-  VoidCallback? onRename,
-  VoidCallback? onDelete,
-}) async {
-  final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+/// One menu rather than two, because what somebody can make does not depend
+/// on whether the pointer happened to be over a file when they asked. What a
+/// tile adds is what can be done *to* it, at the top where it reads first.
+///
+/// Built with [MenuAnchor] rather than `showMenu`, which cannot nest: the
+/// list of things to make had grown into a wall of six, and every kind added
+/// made it worse.
+class AssetMenu extends StatefulWidget {
+  const AssetMenu({super.key, required this.onCreate, required this.child});
 
-  PopupMenuItem<Object> entry(String label, IconData icon, Object value) {
-    return PopupMenuItem<Object>(
-      value: value,
-      height: 32,
-      child: Row(
-        children: [
-          Icon(icon, size: 14, color: OrbisColors.inkDim),
-          const SizedBox(width: Space.sm),
-          Text(label, style: OrbisText.label),
-        ],
-      ),
+  final ValueChanged<NewAsset> onCreate;
+
+  /// What the menu opens over — the whole browser, so a right-click anywhere
+  /// in it opens the menu at the pointer.
+  final Widget child;
+
+  /// Opens the menu belonging to the browser this context sits in.
+  ///
+  /// Static so a tile deep in the grid can open the one menu rather than
+  /// carrying its own, which would put a menu controller on every file in
+  /// the project.
+  static void open(
+    BuildContext context,
+    Offset at, {
+    VoidCallback? onOpen,
+    VoidCallback? onRename,
+    VoidCallback? onDelete,
+  }) {
+    context.findAncestorStateOfType<_AssetMenuState>()?.show(
+      at,
+      onOpen: onOpen,
+      onRename: onRename,
+      onDelete: onDelete,
     );
   }
 
-  final choice = await showMenu<Object>(
-    context: context,
-    color: OrbisColors.raised,
-    position: RelativeRect.fromRect(at & Size.zero, Offset.zero & overlay.size),
-    items: [
-      if (onOpen != null) entry('Open', Icons.open_in_new, 'open'),
-      if (onRename != null) entry('Rename', Icons.drive_file_rename_outline, 'rename'),
-      if (onDelete != null) entry('Delete', Icons.delete_outline, 'delete'),
-      if (onOpen != null || onRename != null || onDelete != null)
-        const PopupMenuDivider(height: 9),
-      for (final what in NewAsset.values) entry(what.label, what.icon, what),
-    ],
+  @override
+  State<AssetMenu> createState() => _AssetMenuState();
+}
+
+class _AssetMenuState extends State<AssetMenu> {
+  final MenuController _controller = MenuController();
+  final GlobalKey _anchor = GlobalKey();
+
+  VoidCallback? _onOpen;
+  VoidCallback? _onRename;
+  VoidCallback? _onDelete;
+
+  void show(
+    Offset at, {
+    VoidCallback? onOpen,
+    VoidCallback? onRename,
+    VoidCallback? onDelete,
+  }) {
+    final box = _anchor.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+
+    setState(() {
+      _onOpen = onOpen;
+      _onRename = onRename;
+      _onDelete = onDelete;
+    });
+    // Reopened rather than moved: a menu already showing somewhere else would
+    // otherwise stay where it was and look like the right-click did nothing.
+    _controller.close();
+    _controller.open(position: box.globalToLocal(at));
+  }
+
+  static final MenuStyle _style = MenuStyle(
+    backgroundColor: const WidgetStatePropertyAll(OrbisColors.raised),
+    surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.panel),
+        side: const BorderSide(color: OrbisColors.line),
+      ),
+    ),
   );
 
-  if (choice == null) return;
-  if (choice is NewAsset) {
-    onCreate(choice);
-    return;
+  Widget _item(String label, IconData icon, VoidCallback? onPressed) {
+    return MenuItemButton(
+      onPressed: onPressed,
+      leadingIcon: Icon(icon, size: 14, color: OrbisColors.inkMid),
+      child: Text(label, style: OrbisText.label),
+    );
   }
-  switch (choice) {
-    case 'open':
-      onOpen?.call();
-    case 'rename':
-      onRename?.call();
-    case 'delete':
-      onDelete?.call();
+
+  Widget _make(NewAsset what) => MenuItemButton(
+    onPressed: () => widget.onCreate(what),
+    leadingIcon: Icon(what.icon, size: 14, color: OrbisColors.inkMid),
+    child: Row(
+      children: [
+        Text(what.label, style: OrbisText.label),
+        // The extension is what somebody is really choosing between, so
+        // it is shown rather than left to be guessed from the name.
+        if (what.extension.isNotEmpty) ...[
+          const SizedBox(width: Space.md),
+          Text(what.extension, style: OrbisText.caption),
+        ],
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final acting = _onOpen != null || _onRename != null || _onDelete != null;
+
+    return MenuAnchor(
+      key: _anchor,
+      controller: _controller,
+      style: _style,
+      menuChildren: [
+        if (acting) ...[
+          _item('Open', Icons.open_in_new, _onOpen),
+          _item('Rename', Icons.drive_file_rename_outline, _onRename),
+          _item('Delete', Icons.delete_outline, _onDelete),
+          const Divider(height: 9, color: OrbisColors.line),
+        ],
+        _make(NewAsset.folder),
+        const Divider(height: 9, color: OrbisColors.line),
+        for (final group in NewAssetGroup.values)
+          SubmenuButton(
+            menuStyle: _style,
+            leadingIcon: Icon(group.icon, size: 14, color: OrbisColors.inkMid),
+            menuChildren: [for (final what in group.members) _make(what)],
+            child: Text(group.label, style: OrbisText.label),
+          ),
+        const Divider(height: 9, color: OrbisColors.line),
+        _make(NewAsset.scene),
+      ],
+      child: widget.child,
+    );
   }
 }
 
@@ -676,7 +752,6 @@ class _Tile extends StatefulWidget {
     required this.onDoubleTap,
     required this.onDelete,
     required this.onRename,
-    required this.onCreate,
   });
 
   final Asset asset;
@@ -685,7 +760,6 @@ class _Tile extends StatefulWidget {
   final VoidCallback onDoubleTap;
   final VoidCallback onDelete;
   final VoidCallback onRename;
-  final ValueChanged<NewAsset> onCreate;
 
   @override
   State<_Tile> createState() => _TileState();
@@ -709,10 +783,9 @@ class _TileState extends State<_Tile> {
         child: GestureDetector(
           onTap: widget.onTap,
           onDoubleTap: widget.onDoubleTap,
-          onSecondaryTapUp: (details) => showAssetMenu(
+          onSecondaryTapUp: (details) => AssetMenu.open(
             context,
             details.globalPosition,
-            onCreate: widget.onCreate,
             onOpen: widget.onDoubleTap,
             onRename: widget.onRename,
             onDelete: widget.onDelete,

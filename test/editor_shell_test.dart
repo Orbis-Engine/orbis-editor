@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:orbis_editor/src/editor/asset_browser.dart';
 import 'package:orbis_editor/src/editor/clipboard.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
@@ -1301,6 +1302,113 @@ void main() {
       expect(row('Crate'), findsOneWidget);
       // Three fewer in the scene: the group and both its children.
       expect(find.textContaining('4 objects'), findsOneWidget);
+    });
+  });
+
+  group('making things from the browser', () {
+    /// Right-clicks the empty space in the file grid.
+    Future<void> rightClickGrid(WidgetTester tester) async {
+      await tester.tapAt(
+        tester.getCenter(find.byType(AssetBrowser)),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// Picks a menu entry, opening the group it is in when it has one.
+    Future<void> pick(WidgetTester tester, String label, {String? from}) async {
+      if (from != null) {
+        await tester.tap(find.widgetWithText(SubmenuButton, from));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.descendant(
+        of: find.byType(MenuItemButton),
+        matching: find.text(label),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the menu groups what it can make', (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+
+      // The common ones stay in front; the rest are behind a heading.
+      expect(find.widgetWithText(MenuItemButton, 'Folder'), findsOneWidget);
+      expect(find.widgetWithText(MenuItemButton, 'Scene'), findsOneWidget);
+      expect(find.widgetWithText(SubmenuButton, 'Script'), findsOneWidget);
+      expect(find.widgetWithText(SubmenuButton, 'Style'), findsOneWidget);
+
+      // Nothing inside a group is on the menu until the group is opened.
+      expect(find.text('TypeScript'), findsNothing);
+      expect(find.text('Stylesheet'), findsNothing);
+    });
+
+    testWidgets('a group opens to what is in it', (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+      await tester.tap(find.widgetWithText(SubmenuButton, 'Script'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('TypeScript'), findsOneWidget);
+      expect(find.text('Interface'), findsOneWidget);
+      expect(find.text('C++'), findsOneWidget);
+      expect(find.text('C++ header'), findsOneWidget);
+      // And what each one would actually write.
+      expect(find.text('.tsx'), findsOneWidget);
+    });
+
+    testWidgets('a folder is made from the menu', (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+      await pick(tester, 'Folder');
+      await answerPrompt(tester, 'props', 'Create');
+
+      expect(Directory(p.join(root.path, 'props')).existsSync(), isTrue);
+    });
+
+    testWidgets('a script is made inside its group', (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+      await pick(tester, 'TypeScript', from: 'Script');
+      await answerPrompt(tester, 'walker', 'Create');
+
+      final made = File(p.join(root.path, 'walker.ts'));
+      expect(made.existsSync(), isTrue);
+      expect(made.readAsStringSync(), contains('onFrame'));
+    });
+
+    testWidgets('a theme and a stylesheet are both offered', (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+      await pick(tester, 'Theme', from: 'Style');
+      await answerPrompt(tester, 'dark', 'Create');
+
+      final made = File(p.join(root.path, 'dark.css'));
+      expect(made.existsSync(), isTrue);
+      // The theme is the values, not the rules.
+      expect(made.readAsStringSync(), contains('--accent'));
+    });
+
+    testWidgets('right-clicking a file offers what to do with it too',
+        (tester) async {
+      await open(tester);
+      await rightClickGrid(tester);
+      await pick(tester, 'Folder');
+      await answerPrompt(tester, 'props', 'Create');
+
+      await tester.tapAt(
+        tester.getCenter(find.descendant(
+          of: find.byType(GridView),
+          matching: find.text('props'),
+        )),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(MenuItemButton, 'Rename'), findsOneWidget);
+      expect(find.widgetWithText(MenuItemButton, 'Delete'), findsOneWidget);
+      // And still everything the empty space offers.
+      expect(find.widgetWithText(SubmenuButton, 'Script'), findsOneWidget);
     });
   });
 }

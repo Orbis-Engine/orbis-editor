@@ -507,6 +507,57 @@ void orbis_stop() {}
 ''',
   ),
 
+  header(
+    label: 'C++ header',
+    icon: Icons.description_outlined,
+    extension: '.h',
+    suggested: 'system',
+    starter: '''
+// What a system offers to whatever else is compiled with it.
+//
+// Declarations only. The engine calls the entry points in the .cpp through
+// their C names; this is for the code either side of that boundary.
+
+#pragma once
+
+#include <cstdint>
+
+namespace orbis {
+
+/// Called every frame, with the seconds since the last one.
+void step(double delta);
+
+}  // namespace orbis
+''',
+  ),
+
+  theme(
+    label: 'Theme',
+    icon: Icons.palette_outlined,
+    extension: '.css',
+    suggested: 'theme',
+    starter: '''
+/* The values an interface is built out of, in one place.
+ *
+ * Separate from a stylesheet on purpose: a stylesheet says how one thing
+ * looks, and this says what the whole project's colours and spacing are. Two
+ * files because they change for different reasons and at different rates.
+ */
+
+:root {
+  --ink: #E9EDF2;
+  --ink-dim: #8A94A3;
+  --surface: #111418;
+  --raised: #191E25;
+  --line: #2A313A;
+  --accent: #E58A3F;
+
+  --space: 8px;
+  --radius: 10px;
+}
+''',
+  ),
+
   scene(
     label: 'Scene',
     icon: Icons.public,
@@ -536,4 +587,36 @@ void orbis_stop() {}
   final String? starter;
 
   bool get isFolder => this == NewAsset.folder;
+}
+
+/// How the things somebody can make are laid out on the menu.
+///
+/// A flat list of six was already a wall, and every kind added makes it
+/// worse. Grouped, the menu answers the question somebody actually has —
+/// "am I writing code, or styling something, or making a scene" — before it
+/// asks them to pick a file extension.
+///
+/// The commonest thing by far, a folder, stays at the top level: putting it
+/// behind a submenu would be tidier and slower.
+enum NewAssetGroup {
+  script('Script', Icons.code, [
+    NewAsset.script,
+    NewAsset.interface,
+    NewAsset.native,
+    NewAsset.header,
+  ]),
+
+  style('Style', Icons.style_outlined, [
+    NewAsset.stylesheet,
+    NewAsset.theme,
+  ]);
+
+  const NewAssetGroup(this.label, this.icon, this.members);
+
+  final String label;
+  final IconData icon;
+  final List<NewAsset> members;
+
+  /// The kinds that sit on the menu itself rather than in a group.
+  static const List<NewAsset> loose = [NewAsset.folder, NewAsset.scene];
 }
