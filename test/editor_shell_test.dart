@@ -1857,4 +1857,98 @@ void main() {
       expect(find.text('Nothing at these levels.'), findsOneWidget);
     });
   });
+
+  group('flying the view', () {
+    /// Holds the right button down over the viewport.
+    Future<TestGesture> look(WidgetTester tester) async {
+      final gesture = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryButton,
+      );
+      await gesture.addPointer(
+        location: tester.getCenter(find.byType(SceneViewport)),
+      );
+      addTearDown(gesture.removePointer);
+      await gesture.down(tester.getCenter(find.byType(SceneViewport)));
+      // Pumped rather than settled: flying runs the clock, so there is always
+      // another frame scheduled and pumpAndSettle waits for one that never
+      // comes.
+      await tester.pump();
+      return gesture;
+    }
+
+    testWidgets('holding the right button says it is flying', (tester) async {
+      await open(tester);
+      expect(find.textContaining('Flying'), findsNothing);
+
+      await look(tester);
+
+      expect(find.textContaining('Flying'), findsOneWidget);
+      expect(find.textContaining('m/s'), findsOneWidget);
+    });
+
+    testWidgets('letting go stops', (tester) async {
+      await open(tester);
+      final gesture = await look(tester);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Flying'), findsNothing);
+    });
+
+    testWidgets('W moves the view forward while the button is held',
+        (tester) async {
+      await open(tester);
+      final gesture = await look(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyW);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyW);
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // Still flying is what would be wrong; the camera having moved is what
+      // the unit tests on OrbitCamera cover exactly.
+      expect(find.textContaining('Flying'), findsNothing);
+      expect(find.byType(SceneViewport), findsOneWidget);
+    });
+
+    testWidgets('W does nothing when the button is not held', (tester) async {
+      await open(tester);
+
+      // Otherwise typing a name into the inspector would fly the view across
+      // the level a letter at a time.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyW);
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyW);
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Flying'), findsNothing);
+    });
+
+    testWidgets('the wheel sets the speed rather than the distance',
+        (tester) async {
+      await open(tester);
+      await look(tester);
+
+      final before = tester
+          .widgetList<Text>(find.textContaining('m/s'))
+          .first
+          .data;
+
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: tester.getCenter(find.byType(SceneViewport)),
+          scrollDelta: const Offset(0, -120),
+        ),
+      );
+      await tester.pump();
+
+      final after =
+          tester.widgetList<Text>(find.textContaining('m/s')).first.data;
+      expect(after, isNot(before));
+    });
+  });
 }

@@ -60,6 +60,76 @@ class OrbitCamera {
         target: target,
       );
 
+  /// The three axes the camera sees along, in world space.
+  ///
+  /// Right, up and forward — the basis every movement here is expressed in,
+  /// because "left" means left of where somebody is looking and not left of
+  /// the world.
+  ({Vector3 right, Vector3 up, Vector3 forward}) get basis {
+    final right = Vector3(math.cos(yaw), 0, -math.sin(yaw));
+    final up = Vector3(
+      -math.sin(yaw) * math.sin(pitch),
+      math.cos(pitch),
+      -math.cos(yaw) * math.sin(pitch),
+    );
+    // Towards what the camera is looking at, which is the way the eye is
+    // offset from the target, reversed.
+    final forward = Vector3(
+      -math.sin(yaw) * math.cos(pitch),
+      -math.sin(pitch),
+      -math.cos(yaw) * math.cos(pitch),
+    );
+    return (right: right, up: up, forward: forward);
+  }
+
+  /// Turns on the spot, without moving.
+  ///
+  /// What [orbit] does not do: orbiting swings the eye around a fixed target,
+  /// and looking around keeps the eye still and moves the target. From inside
+  /// a room the difference is the whole difference between the two.
+  OrbitCamera looking(Offset delta) {
+    final was = toRenderCamera().position;
+    final nextYaw = yaw - delta.dx * 0.005;
+    final nextPitch =
+        (pitch + delta.dy * 0.005).clamp(-_pitchLimit, _pitchLimit);
+
+    // The target is put back behind the new direction so the eye stays exactly
+    // where it was. Everything else in the editor works in orbit terms —
+    // framing, panning, the gizmos — and this keeps it that way rather than
+    // giving the camera a second mode with its own maths.
+    final horizontal = distance * math.cos(nextPitch);
+    return OrbitCamera(
+      yaw: nextYaw,
+      pitch: nextPitch,
+      distance: distance,
+      fieldOfView: fieldOfView,
+      target: Vector3(
+        was.x - horizontal * math.sin(nextYaw),
+        was.y - distance * math.sin(nextPitch),
+        was.z - horizontal * math.cos(nextYaw),
+      ),
+    );
+  }
+
+  /// Moves the camera itself, along the axes it is looking down.
+  ///
+  /// [along] is right, up and forward in metres. Both the eye and what it
+  /// looks at move together, which is what flying is: the view does not swing
+  /// around anything, it goes somewhere.
+  OrbitCamera flying(Vector3 along) {
+    final axes = basis;
+    return OrbitCamera(
+      yaw: yaw,
+      pitch: pitch,
+      distance: distance,
+      fieldOfView: fieldOfView,
+      target: target +
+          axes.right * along.x +
+          axes.up * along.y +
+          axes.forward * along.z,
+    );
+  }
+
   /// Slides the camera sideways, keeping its angle. What a middle-drag does.
   OrbitCamera pan(Offset delta) {
     // Scaled by distance so panning feels the same close up and far away, and
@@ -464,6 +534,7 @@ class _SceneViewportState extends State<SceneViewport>
   @override
   void dispose() {
     _clock.dispose();
+    _flyFocus.dispose();
     super.dispose();
   }
 
@@ -474,7 +545,9 @@ class _SceneViewportState extends State<SceneViewport>
   /// fan spinning up to animate nothing.
   void _syncClock() {
     final scene = widget.workspace.loaded?.scene;
-    final wanted = scene != null && scene.isAnimated;
+    // Flying needs it as much as a day cycle does: the camera moves a little
+    // every frame while a key is held, and without a frame there is no every.
+    final wanted = _flying || (scene != null && scene.isAnimated);
     if (wanted == _clock.isActive) return;
     if (wanted) {
       _clock.start();
@@ -483,7 +556,122 @@ class _SceneViewportState extends State<SceneViewport>
     }
   }
 
+  // ---- flying ----
+
+  /// The keys held down while the right button is, in view terms.
+  final Set<LogicalKeyboardKey> _held = {};
+
+  /// Where the pointer was when it last moved, while looking around.
+  Offset? _looking;
+
+  /// Metres a second. Adjusted by the wheel while flying, the way it is in
+  /// every editor that has this — somebody flying across a level and somebody
+  /// nudging along a wall want very different numbers, and reaching for a
+  /// slider to change it means stopping.
+  double _flySpeed = 8;
+
+  final FocusNode _flyFocus = FocusNode(debugLabel: 'viewport fly');
+
+  bool get _flying => _looking != null;
+
+  // Not const: LogicalKeyboardKey defines ==, and a constant set may not hold
+  // anything that does.
+  static final _forwardKeys = {
+    LogicalKeyboardKey.keyW,
+    LogicalKeyboardKey.arrowUp,
+  };
+  static final _backKeys = {
+    LogicalKeyboardKey.keyS,
+    LogicalKeyboardKey.arrowDown,
+  };
+  static final _leftKeys = {
+    LogicalKeyboardKey.keyA,
+    LogicalKeyboardKey.arrowLeft,
+  };
+  static final _rightKeys = {
+    LogicalKeyboardKey.keyD,
+    LogicalKeyboardKey.arrowRight,
+  };
+  static final _upKeys = {LogicalKeyboardKey.keyE, LogicalKeyboardKey.space};
+  static final _downKeys = {LogicalKeyboardKey.keyQ};
+
+  /// Every key flying answers to, so one held down is not also passed on to
+  /// whatever else is listening.
+  static final _flyKeys = {
+    ..._forwardKeys,
+    ..._backKeys,
+    ..._leftKeys,
+    ..._rightKeys,
+    ..._upKeys,
+    ..._downKeys,
+    LogicalKeyboardKey.shiftLeft,
+    LogicalKeyboardKey.shiftRight,
+  };
+
+  bool _anyHeld(Set<LogicalKeyboardKey> keys) =>
+      _held.any(keys.contains);
+
+  /// Which way the keys held down add up to, in right/up/forward.
+  Vector3 get _wanted {
+    final along = Vector3.zero();
+    if (_anyHeld(_rightKeys)) along.x += 1;
+    if (_anyHeld(_leftKeys)) along.x -= 1;
+    if (_anyHeld(_upKeys)) along.y += 1;
+    if (_anyHeld(_downKeys)) along.y -= 1;
+    if (_anyHeld(_forwardKeys)) along.z += 1;
+    if (_anyHeld(_backKeys)) along.z -= 1;
+    // Normalised, or holding two keys would go a metre and a half diagonally
+    // for every metre going straight.
+    return along.length2 == 0 ? along : along.normalized();
+  }
+
+  KeyEventResult _onFlyKey(FocusNode node, KeyEvent event) {
+    // Only while the button is down. Otherwise W would fly the view every time
+    // somebody typed a name into the inspector.
+    if (!_flying) return KeyEventResult.ignored;
+
+    if (event is KeyDownEvent) {
+      _held.add(event.logicalKey);
+    } else if (event is KeyUpEvent) {
+      _held.remove(event.logicalKey);
+    }
+
+    return _flyKeys.contains(event.logicalKey)
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
+  }
+
+  void _stopFlying() {
+    _looking = null;
+    _held.clear();
+  }
+
+  /// Moves the camera for one frame of held keys.
+  void _fly(Duration elapsed) {
+    if (!_flying) return;
+
+    final along = _wanted;
+    if (along.length2 == 0) return;
+
+    final seconds = (elapsed - _lastFlew).inMicroseconds / 1e6;
+    _lastFlew = elapsed;
+    // Clamped: a frame that took a second — a rebuild, a breakpoint — should
+    // not throw the camera across the level.
+    final step = seconds.clamp(0.0, 0.05);
+
+    final fast = _held.contains(LogicalKeyboardKey.shiftLeft) ||
+        _held.contains(LogicalKeyboardKey.shiftRight);
+    widget.onCameraChanged(
+      widget.camera.flying(along * (_flySpeed * (fast ? 4 : 1) * step)),
+    );
+  }
+
+  Duration _lastFlew = Duration.zero;
+
   void _tick(Duration elapsed) {
+    _fly(elapsed);
+    _lastFlew = elapsed;
+
     final scene = widget.workspace.loaded?.scene;
     if (scene == null) return;
     _elapsed = elapsed;
@@ -530,10 +718,12 @@ class _SceneViewportState extends State<SceneViewport>
 
             return Stack(
           children: [
-            Positioned.fill(
-              child:
-                  _rendererAvailable ? _buildSurface() : const _Placeholder(),
-            ),
+            // The input wraps the placeholder as well as the renderer. A
+            // camera is Dart and works whether or not Filament does, and a
+            // viewport that cannot be navigated on the platforms the renderer
+            // has not reached yet is worse than one that says so and still
+            // moves.
+            Positioned.fill(child: _buildSurface()),
             if (candidate.isNotEmpty)
               Positioned.fill(
                 child: IgnorePointer(
@@ -600,6 +790,15 @@ class _SceneViewportState extends State<SceneViewport>
                 _ViewportChip(_summary),
                 // Only when there is one to hide. A switch for something that
                 // is not there is a switch that teaches somebody nothing.
+                if (_flying) ...[
+                  const SizedBox(width: Space.xs),
+                  _ViewportChip(
+                    'Flying · ${_flySpeed.toStringAsFixed(1)} m/s',
+                    on: true,
+                    tooltip: 'WASD to move, Q and E for down and up, shift to '
+                        'go faster, the wheel to change how fast.',
+                  ),
+                ],
                 if (widget.interface != null) ...[
                   const SizedBox(width: Space.xs),
                   _ViewportChip(
@@ -631,13 +830,12 @@ class _SceneViewportState extends State<SceneViewport>
                   ],
                 ),
               ),
-            if (_rendererAvailable)
-              const Positioned(
+            Positioned(
                 right: Space.md,
                 bottom: Space.md,
-                child: _ViewportChip(
-                  'Click to select · drag a handle to move · '
-                  'drag elsewhere to orbit',
+                child: const _ViewportChip(
+                  'Click to select · drag a handle to move · drag to orbit · '
+                  'hold the right button to look, WASD to fly',
                 ),
               ),
           ],
@@ -649,10 +847,60 @@ class _SceneViewportState extends State<SceneViewport>
   }
 
   Widget _buildSurface() {
-    return Listener(
+    return Focus(
+      focusNode: _flyFocus,
+      onKeyEvent: _onFlyKey,
+      child: Listener(
       onPointerSignal: (event) {
         if (event is! PointerScrollEvent) return;
+        // While flying the wheel sets how fast, not how close: somebody
+        // holding the button down is going somewhere, and zooming the orbit
+        // distance under them would move the view sideways as they went.
+        if (_flying) {
+          setState(() {
+            _flySpeed =
+                (_flySpeed * math.exp(-event.scrollDelta.dy * 0.0025))
+                    .clamp(0.25, 400.0);
+          });
+          return;
+        }
         widget.onCameraChanged(widget.camera.zoom(event.scrollDelta.dy));
+      },
+      onPointerDown: (event) {
+        if (event.buttons & kSecondaryButton == 0) return;
+        // The focus has to be here before the first key arrives, and a
+        // viewport that took focus on hover would steal it from a name being
+        // typed in the inspector.
+        _flyFocus.requestFocus();
+        setState(() {
+          _looking = event.localPosition;
+          _lastFlew = _elapsed;
+        });
+        _syncClock();
+      },
+      onPointerMove: (event) {
+        final was = _looking;
+        if (was == null) return;
+        if (event.buttons & kSecondaryButton == 0) {
+          setState(_stopFlying);
+          _syncClock();
+          return;
+        }
+        widget.onCameraChanged(
+          widget.camera.looking(event.localPosition - was),
+        );
+        _looking = event.localPosition;
+      },
+      onPointerUp: (_) {
+        if (!_flying) return;
+        setState(_stopFlying);
+        // Back to whatever the scene wanted, so a still scene stops drawing.
+        _syncClock();
+      },
+      onPointerCancel: (_) {
+        if (!_flying) return;
+        setState(_stopFlying);
+        _syncClock();
       },
       child: MouseRegion(
         onHover: (event) => _hover(event.localPosition),
@@ -689,21 +937,25 @@ class _SceneViewportState extends State<SceneViewport>
           _release();
           _dragAnchor = null;
         },
-        child: OrbisView(
-          // One scene at a time, so the viewport shows one document and there
-          // is never a question about which one an object belongs to.
-          scene: (widget.workspace.loaded?.scene ?? EditorScene([]))
-              .toRenderScene(
-            widget.camera.toRenderCamera(),
-            projectRoot: widget.projectRoot,
-            // What every scene in the project has in it, drawn alongside
-            // whichever one is open.
-            shared: widget.workspace.shared,
-          ),
-          onSceneNotes: widget.onSceneNotes,
-        ),
+        child: !_rendererAvailable
+            ? const _Placeholder()
+            : OrbisView(
+                // One scene at a time, so the viewport shows one document and
+                // there is never a question about which one an object belongs
+                // to.
+                scene: (widget.workspace.loaded?.scene ?? EditorScene([]))
+                    .toRenderScene(
+                  widget.camera.toRenderCamera(),
+                  projectRoot: widget.projectRoot,
+                  // What every scene in the project has in it, drawn alongside
+                  // whichever one is open.
+                  shared: widget.workspace.shared,
+                ),
+                onSceneNotes: widget.onSceneNotes,
+              ),
         ),
       ),
+    ),
     );
   }
 }
