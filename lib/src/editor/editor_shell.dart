@@ -13,6 +13,8 @@ import 'assets.dart';
 import 'clipboard.dart';
 import 'code_editor.dart';
 import 'commands.dart';
+import 'data_panel.dart';
+import 'data_store.dart';
 import 'history.dart';
 import 'inspector.dart';
 import 'outliner.dart';
@@ -47,6 +49,12 @@ class _EditorShellState extends State<EditorShell> {
   late final Workspace _workspace = Workspace(widget.project.directory);
   late final History _history = History(_workspace);
   late final AssetTree _assets = AssetTree(widget.project.directory);
+
+  late final DataStore _data = DataStore(widget.project.directory);
+
+  /// The data object being looked at, or null when the inspector is showing
+  /// the scene's selection.
+  String? _dataAsset;
 
   /// The selected objects. Empty when the scene itself is selected.
   final Set<String> _selected = {};
@@ -152,6 +160,9 @@ class _EditorShellState extends State<EditorShell> {
 
     setState(() {
       _selectedScene = null;
+      // Back to the scene: the inspector shows one thing, and it is whatever
+      // was touched last.
+      _dataAsset = null;
 
       if (range && _primary != null) {
         // Everything between the anchor and here, in the order the tree is
@@ -882,6 +893,10 @@ class _EditorShellState extends State<EditorShell> {
       _placePrefab(path);
       return;
     }
+    if (kind == AssetKind.dataObject) {
+      _attachData(path);
+      return;
+    }
     if (kind != AssetKind.mesh) {
       _say('${p.basename(path)} is a ${kind.label.toLowerCase()}. '
           'Meshes, prefabs and scenes are what a scene takes.');
@@ -904,6 +919,100 @@ class _EditorShellState extends State<EditorShell> {
 
     _run(AddObject(object, sceneId: open.id));
     _select(object.id);
+  }
+
+  // ---- data objects ----
+
+  /// Points the selection at a data object.
+  ///
+  /// Everything selected, not just one: attaching the same settings to forty
+  /// crates is the case this exists for, and doing it one at a time forty
+  /// times is not an improvement on typing the number forty times.
+  void _attachData(String path) {
+    final open = _working;
+    final scene = open?.scene;
+    if (open == null || scene == null) return;
+
+    final relative = _assets.relative(path);
+    if (_data[relative] == null) {
+      _say('${p.basename(path)} is not a readable data object.');
+      return;
+    }
+
+    final wanted = [
+      for (final id in _selected)
+        if (scene[id] case final object?)
+          if (!object.data.contains(relative)) object,
+    ];
+
+    if (wanted.isEmpty) {
+      _say(_selected.isEmpty
+          ? 'Select something first, then drop ${p.basename(path)} on it.'
+          : 'Already using ${p.basename(path)}.');
+      return;
+    }
+
+    for (final object in wanted) {
+      _run(SetDataLinks(
+        sceneId: open.id,
+        id: object.id,
+        name: object.name,
+        paths: [...object.data, relative],
+        what: 'Add ${p.basenameWithoutExtension(path)}',
+      ));
+    }
+    _say(wanted.length == 1
+        ? 'Added ${p.basename(path)} to ${wanted.single.name}.'
+        : 'Added ${p.basename(path)} to ${wanted.length} objects.');
+  }
+
+  void _detachData(String id, String relative) {
+    final open = _workspace.sceneHolding(id);
+    final object = open?.scene?[id];
+    if (open == null || object == null) return;
+
+    _run(SetDataLinks(
+      sceneId: open.id,
+      id: id,
+      name: object.name,
+      paths: [for (final path in object.data) if (path != relative) path],
+      what: 'Remove ${p.basenameWithoutExtension(relative)}',
+    ));
+  }
+
+  /// Shows a data object in the inspector, from wherever it was named.
+  void _showData(String relative) {
+    if (_data[relative] == null) {
+      _say('$relative is not in the project any more.');
+      return;
+    }
+    setState(() => _dataAsset = relative);
+  }
+
+  /// Writes the TypeScript a script imports a data object as.
+  ///
+  /// Generated rather than hand-written, so a field renamed here is a type
+  /// error in the script that reads it rather than an undefined at runtime.
+  /// That is most of what having the data in a file the editor understands
+  /// buys; the alternative is a string key and hope.
+  void _exportTypes(String relative) {
+    final data = _data[relative];
+    if (data == null) return;
+
+    final name = p.basenameWithoutExtension(relative);
+    final path = p.join(
+      widget.project.directory,
+      p.dirname(relative),
+      '$name.d.ts',
+    );
+    try {
+      File(path).writeAsStringSync(data.toTypeScript(name));
+    } on FileSystemException catch (error) {
+      _say('Could not write $name.d.ts: '
+          '${error.osError?.message ?? error.message}');
+      return;
+    }
+    _say('Wrote ${_assets.relative(path)}.');
   }
 
   // ---- prefabs ----
@@ -1355,6 +1464,15 @@ class _EditorShellState extends State<EditorShell> {
                               },
                               onProblem: _say,
                               onMakePrefab: _makePrefab,
+                              onSelectAsset: (asset) => setState(() {
+                                // Only a data object claims the inspector.
+                                // Selecting a mesh should not take the panel
+                                // away from the object being edited.
+                                _dataAsset =
+                                    asset?.kind == AssetKind.dataObject
+                                        ? _assets.relative(asset!.path)
+                                        : null;
+                              }),
                             ),
                           ],
                         ),
@@ -1365,6 +1483,18 @@ class _EditorShellState extends State<EditorShell> {
                         history: _history,
                         onLoad: _loadScene,
                         selectionCount: _selected.length,
+                        dataAsset: _dataAsset,
+                        dataPanel: _dataAsset == null
+                            ? null
+                            : DataPanel(
+                                key: ValueKey(_dataAsset),
+                                path: _dataAsset!,
+                                store: _data,
+                                onProblem: _say,
+                                onExportTypes: () => _exportTypes(_dataAsset!),
+                              ),
+                        onOpenData: _showData,
+                        onDetachData: _detachData,
                         onApplyPrefab: _applyPrefab,
                         onRevertPrefab: _revertPrefab,
                         onUnpackPrefab: _unpackPrefab,

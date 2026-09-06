@@ -397,4 +397,50 @@ void legacyScenes() {
       );
     });
   });
+
+  group('what an object references', () {
+    test('data objects survive a round trip', () {
+      final scene = EditorScene([
+        SceneObject(
+          id: 'crate',
+          name: 'Crate',
+          kind: ObjectKind.mesh,
+          data: ['data/weight.odata', 'data/faction.odata'],
+        ),
+      ]);
+
+      final back = SceneDocument.decode(SceneDocument.encode(scene)).scene;
+      expect(back['crate']!.data, ['data/weight.odata', 'data/faction.odata']);
+    });
+
+    test('an object with none says nothing about them', () {
+      final scene = EditorScene([
+        SceneObject(id: 'crate', name: 'Crate', kind: ObjectKind.mesh),
+      ]);
+      expect(SceneDocument.encode(scene), isNot(contains('"data"')));
+    });
+
+    test('a copy carries them, and does not share the list', () {
+      final object = SceneObject(
+        id: 'crate',
+        name: 'Crate',
+        kind: ObjectKind.mesh,
+        data: ['data/weight.odata'],
+      );
+      final copy = object.copyAs(id: 'other');
+      copy.data.add('data/faction.odata');
+
+      expect(object.data, ['data/weight.odata']);
+      expect(copy.data, hasLength(2));
+    });
+
+    test('a file naming something that is not a path is not read in', () {
+      final back = SceneDocument.decode('''
+{"formatVersion":3,"objects":[
+  {"id":"a","name":"A","kind":"mesh","data":["ok.odata",7,null]}
+]}''').scene;
+
+      expect(back['a']!.data, ['ok.odata']);
+    });
+  });
 }

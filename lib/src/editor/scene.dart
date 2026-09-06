@@ -46,7 +46,9 @@ class SceneObject {
     this.visible = true,
     this.meshAsset,
     this.prefab,
-  })  : weather = weather ?? WeatherState.of(condition),
+    List<String>? data,
+  })  : data = data ?? [],
+        weather = weather ?? WeatherState.of(condition),
         position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
         scale = scale ?? Vector3(1, 1, 1);
@@ -184,6 +186,16 @@ class SceneObject {
   /// Whether this object came from a prefab and still remembers it.
   bool get isPrefabInstance => prefab != null;
 
+  /// Data objects this one is configured by, as paths relative to the project.
+  ///
+  /// A reference rather than a copy, which is the whole point: forty crates
+  /// pointing at one `weight.odata` change together, and the value is edited
+  /// where it lives instead of being typed onto forty objects and missed on
+  /// thirty-nine. What is *in* the data object is not this object's business —
+  /// the file is the source of truth, and the editor, a script and a person
+  /// with a text editor all read the same one.
+  final List<String> data;
+
   IconData get icon => switch (kind) {
         ObjectKind.scene => Icons.public,
         ObjectKind.group => Icons.folder_outlined,
@@ -236,6 +248,7 @@ class SceneObject {
         visible: visible,
         meshAsset: meshAsset,
         prefab: prefab,
+        data: List<String>.from(data),
       );
 }
 

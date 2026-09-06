@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
+import 'data_object.dart';
+
 /// What an asset is, decided by its extension.
 ///
 /// Extension rather than content, because the browser has to label a thousand
@@ -19,6 +21,7 @@ enum AssetKind {
   style('Stylesheet', Icons.style_outlined),
   native('C++', Icons.memory),
   prefab('Prefab', Icons.widgets_outlined),
+  dataObject('Data object', Icons.dataset_outlined),
   audio('Audio', Icons.graphic_eq),
   data('Data', Icons.data_object),
   other('File', Icons.insert_drive_file_outlined);
@@ -39,6 +42,7 @@ enum AssetKind {
     '.css': style,
     '.cpp': native, '.cc': native, '.h': native, '.hpp': native,
     '.oprefab': prefab,
+    '.odata': dataObject,
     '.wav': audio, '.mp3': audio, '.ogg': audio,
     '.json': data, '.yaml': data, '.yml': data,
   };
@@ -311,6 +315,10 @@ class AssetTree {
     try {
       if (what.isFolder) {
         Directory(path).createSync();
+      } else if (what == NewAsset.dataObject) {
+        File(path).writeAsStringSync(
+          DataObject.blank(p.basenameWithoutExtension(unique)).toText(),
+        );
       } else {
         File(path).writeAsStringSync(what.starter ?? '');
       }
@@ -558,6 +566,24 @@ void step(double delta);
 ''',
   ),
 
+  dataObject(
+    label: 'Data object',
+    icon: Icons.dataset_outlined,
+    extension: '.odata',
+    suggested: 'settings',
+    // Written by DataObject.blank rather than as text here, so there is one
+    // definition of what a new one contains.
+    starter: null,
+  ),
+
+  json(
+    label: 'JSON',
+    icon: Icons.data_object,
+    extension: '.json',
+    suggested: 'data',
+    starter: '{}\n',
+  ),
+
   scene(
     label: 'Scene',
     icon: Icons.public,
@@ -609,6 +635,11 @@ enum NewAssetGroup {
   style('Style', Icons.style_outlined, [
     NewAsset.stylesheet,
     NewAsset.theme,
+  ]),
+
+  data('Data', Icons.dataset_outlined, [
+    NewAsset.dataObject,
+    NewAsset.json,
   ]);
 
   const NewAssetGroup(this.label, this.icon, this.members);

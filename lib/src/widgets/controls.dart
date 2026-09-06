@@ -195,6 +195,8 @@ class OrbisField extends StatelessWidget {
     this.mono = false,
     this.autofocus = false,
     this.onSubmitted,
+    this.onChanged,
+    this.focusNode,
     this.suffix,
   });
 
@@ -207,6 +209,11 @@ class OrbisField extends StatelessWidget {
 
   final bool autofocus;
   final ValueChanged<String>? onSubmitted;
+
+  /// Called on every keystroke, for a field whose value is live.
+  final ValueChanged<String>? onChanged;
+
+  final FocusNode? focusNode;
   final Widget? suffix;
 
   @override
@@ -227,8 +234,10 @@ class OrbisField extends StatelessWidget {
           Expanded(
             child: TextField(
               controller: controller,
+              focusNode: focusNode,
               autofocus: autofocus,
               onSubmitted: onSubmitted,
+              onChanged: onChanged,
               style: style,
               cursorColor: OrbisColors.ember,
               cursorWidth: 1.5,
@@ -362,6 +371,80 @@ class _NamePromptState extends State<_NamePrompt> {
         ),
         TextButton(onPressed: _accept, child: Text(widget.action)),
       ],
+    );
+  }
+}
+
+/// A text box that takes a value rather than a controller.
+///
+/// The controller version is right when the caller wants to drive the box —
+/// select its contents, put focus in it, read it back on submit. Most places
+/// only want "here is a string, tell me when it changes", and each of those
+/// writing its own StatefulWidget to own a controller is how a codebase ends
+/// up with six subtly different text boxes.
+///
+/// Reports on every keystroke, and adopts a value changed from outside only
+/// while the box does not have focus — otherwise a rebuild mid-word would put
+/// the cursor back at the start.
+class ValueField extends StatefulWidget {
+  const ValueField({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.hint,
+    this.mono = false,
+    this.onDone,
+  });
+
+  final String value;
+  final ValueChanged<String> onChanged;
+  final String? hint;
+  final bool mono;
+
+  /// Called when the box loses focus, for callers that seal an undo step.
+  final VoidCallback? onDone;
+
+  @override
+  State<ValueField> createState() => _ValueFieldState();
+}
+
+class _ValueFieldState extends State<ValueField> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.value);
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(() {
+      if (!_focus.hasFocus) widget.onDone?.call();
+    });
+  }
+
+  @override
+  void didUpdateWidget(ValueField old) {
+    super.didUpdateWidget(old);
+    if (widget.value != _controller.text && !_focus.hasFocus) {
+      _controller.text = widget.value;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return OrbisField(
+      controller: _controller,
+      focusNode: _focus,
+      hint: widget.hint,
+      mono: widget.mono,
+      onChanged: widget.onChanged,
+      onSubmitted: widget.onChanged,
     );
   }
 }

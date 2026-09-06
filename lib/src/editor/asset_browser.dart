@@ -20,6 +20,7 @@ class AssetBrowser extends StatefulWidget {
     required this.tree,
     required this.height,
     this.onOpenAsset,
+    this.onSelectAsset,
     this.onProblem,
     this.onMakePrefab,
   });
@@ -35,6 +36,13 @@ class AssetBrowser extends StatefulWidget {
 
   /// Called when somebody opens a file, rather than a folder.
   final ValueChanged<Asset>? onOpenAsset;
+
+  /// Called when the selection changes, including when it is cleared.
+  ///
+  /// One click, not two: a data object is edited in the inspector, and having
+  /// to double-click to see what is in a file would be a rule that applies to
+  /// exactly one kind of asset.
+  final ValueChanged<Asset?>? onSelectAsset;
 
   /// Called when a file operation fails, so the shell can say so.
   final ValueChanged<String>? onProblem;
@@ -210,10 +218,13 @@ class _AssetBrowserState extends State<AssetBrowser> {
                       tree: widget.tree,
                       folders: folders,
                       current: _directory,
-                      onOpen: (path) => setState(() {
-                        _directory = path;
-                        _selected = null;
-                      }),
+                      onOpen: (path) {
+                        setState(() {
+                          _directory = path;
+                          _selected = null;
+                        });
+                        widget.onSelectAsset?.call(null);
+                      },
                       onDropObject: widget.onMakePrefab,
                     ),
                     Expanded(
@@ -221,8 +232,10 @@ class _AssetBrowserState extends State<AssetBrowser> {
                         key: ValueKey('$_directory/$_revision'),
                         entries: entries,
                         selected: _selected,
-                        onSelect: (asset) =>
-                            setState(() => _selected = asset.path),
+                        onSelect: (asset) {
+                          setState(() => _selected = asset.path);
+                          widget.onSelectAsset?.call(asset);
+                        },
                         onDelete: _confirmDelete,
                         onRename: _promptRename,
                         onDropObject: widget.onMakePrefab == null

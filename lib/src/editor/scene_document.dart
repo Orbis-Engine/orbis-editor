@@ -125,6 +125,7 @@ abstract final class SceneDocument {
         if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
         if (object.prefab != null) 'prefab': object.prefab,
+        if (object.data.isNotEmpty) 'data': object.data,
       };
 
   /// One object from JSON, or null if it cannot be read.
@@ -216,6 +217,12 @@ abstract final class SceneDocument {
       visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
       prefab: entry['prefab'] is String ? entry['prefab']! as String : null,
+      data: entry['data'] is List
+          ? [
+              for (final path in entry['data']! as List)
+                if (path is String) path,
+            ]
+          : null,
     );
   }
 

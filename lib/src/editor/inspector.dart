@@ -33,6 +33,10 @@ class Inspector extends StatelessWidget {
     this.onApplyPrefab,
     this.onRevertPrefab,
     this.onUnpackPrefab,
+    this.dataAsset,
+    this.dataPanel,
+    this.onOpenData,
+    this.onDetachData,
   });
 
   /// The scene being looked at, which need not be the loaded one — a scene can
@@ -56,6 +60,23 @@ class Inspector extends StatelessWidget {
   final ValueChanged<String>? onApplyPrefab;
   final ValueChanged<String>? onRevertPrefab;
   final ValueChanged<String>? onUnpackPrefab;
+
+  /// A data object selected in the project browser, which the inspector shows
+  /// instead of the scene's selection.
+  ///
+  /// Instead rather than as well: two things claiming the same panel is how a
+  /// panel starts needing tabs, and what somebody clicked last is what they
+  /// are looking at.
+  final String? dataAsset;
+
+  /// The editor for [dataAsset]. Built by the shell, which owns the store.
+  final Widget? dataPanel;
+
+  /// Shows one of the selected object's data objects in the browser.
+  final ValueChanged<String>? onOpenData;
+
+  /// Takes one off the selected object.
+  final void Function(String id, String path)? onDetachData;
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +102,8 @@ class Inspector extends StatelessWidget {
             child: Text('INSPECTOR', style: OrbisText.section),
           ),
           Expanded(
-            child: entry == null
+            child: dataPanel ??
+                (entry == null
                 ? Center(
                     child: Text('No scene loaded.', style: OrbisText.caption),
                   )
@@ -120,10 +142,12 @@ class Inspector extends StatelessWidget {
                               scene: entry.scene!,
                               object: selected,
                               history: history,
+                              onOpenData: onOpenData,
+                              onDetachData: onDetachData,
                             ),
                           ),
                         ],
-                      )),
+                      ))),
           ),
         ],
       ),
@@ -240,6 +264,54 @@ class _PrefabAction extends StatelessWidget {
           expand: true,
           onPressed: onPressed,
         ),
+      ),
+    );
+  }
+}
+
+/// One data object an object points at.
+class _DataLink extends StatelessWidget {
+  const _DataLink({required this.path, this.onOpen, this.onRemove});
+
+  final String path;
+  final VoidCallback? onOpen;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          const Icon(Icons.dataset_outlined, size: 13,
+              color: OrbisColors.inkDim),
+          const SizedBox(width: Space.sm),
+          Expanded(
+            child: Tooltip(
+              message: path,
+              child: GestureDetector(
+                onTap: onOpen,
+                child: Text(
+                  path.split('/').last,
+                  overflow: TextOverflow.ellipsis,
+                  style: OrbisText.label.copyWith(color: OrbisColors.ink),
+                ),
+              ),
+            ),
+          ),
+          if (onRemove != null)
+            Tooltip(
+              message: 'Stop using this here',
+              child: GestureDetector(
+                onTap: onRemove,
+                child: const Padding(
+                  padding: EdgeInsets.all(Space.xs),
+                  child: Icon(Icons.close, size: 12,
+                      color: OrbisColors.inkDim),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -603,12 +675,16 @@ class _Fields extends StatelessWidget {
     required this.scene,
     required this.object,
     required this.history,
+    this.onOpenData,
+    this.onDetachData,
   });
 
   final String sceneId;
   final EditorScene scene;
   final SceneObject object;
   final History history;
+  final ValueChanged<String>? onOpenData;
+  final void Function(String id, String path)? onDetachData;
 
   @override
   Widget build(BuildContext context) {
@@ -660,7 +736,40 @@ class _Fields extends StatelessWidget {
           _weather(),
           _air(),
         ],
+        if (object.data.isNotEmpty) _data(),
       ],
+    );
+  }
+
+  /// The data objects this one takes its settings from.
+  ///
+  /// Listed rather than inlined: the values belong to the file, and showing
+  /// them here as though they were this object's own would invite somebody to
+  /// change one and be surprised when thirty-nine other objects changed with
+  /// it. The link is what this object owns; the values are edited where they
+  /// live, one click away.
+  Widget _data() {
+    return _ComponentSection(
+      title: 'Data',
+      icon: Icons.dataset_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final path in object.data)
+            _DataLink(
+              path: path,
+              onOpen: onOpenData == null ? null : () => onOpenData!(path),
+              onRemove: onDetachData == null
+                  ? null
+                  : () => onDetachData!(object.id, path),
+            ),
+          const SizedBox(height: Space.xs),
+          Text(
+            'Shared. Changing one of these changes it everywhere it is used.',
+            style: OrbisText.caption.copyWith(fontSize: 11),
+          ),
+        ],
+      ),
     );
   }
 

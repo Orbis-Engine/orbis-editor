@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/asset_browser.dart';
 import 'package:orbis_editor/src/editor/clipboard.dart';
+import 'package:orbis_editor/src/editor/data_object.dart';
+import 'package:orbis_editor/src/editor/data_panel.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
@@ -1409,6 +1411,189 @@ void main() {
       expect(find.widgetWithText(MenuItemButton, 'Delete'), findsOneWidget);
       // And still everything the empty space offers.
       expect(find.widgetWithText(SubmenuButton, 'Script'), findsOneWidget);
+    });
+  });
+
+  group('data objects', () {
+    Future<void> rightClickGrid(WidgetTester tester) async {
+      await tester.tapAt(
+        tester.getCenter(find.byType(AssetBrowser)),
+        buttons: kSecondaryButton,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// Makes one through the menu and leaves it selected.
+    Future<void> makeOne(WidgetTester tester, String name) async {
+      await rightClickGrid(tester);
+      await tester.tap(find.widgetWithText(SubmenuButton, 'Data'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byType(MenuItemButton),
+        matching: find.text('Data object'),
+      ));
+      await tester.pumpAndSettle();
+      await answerPrompt(tester, name, 'Create');
+    }
+
+    Finder tile(String name) => find.descendant(
+          of: find.byType(GridView),
+          matching: find.text(name),
+        );
+
+    /// Selects a file in the grid.
+    ///
+    /// The wait is the double-tap window: a tile answers both, so a single
+    /// tap is not a single tap until the timer for the second one has run
+    /// out, and pumpAndSettle does not run out a timer.
+    Future<void> select(WidgetTester tester, String name) async {
+      await tester.tap(tile(name));
+      await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 20));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('one is made with something already in it', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'ball');
+
+      final made = File(p.join(root.path, 'ball.odata'));
+      expect(made.existsSync(), isTrue);
+      expect(DataObject.read(made.readAsStringSync())!.fields, isNotEmpty);
+    });
+
+    testWidgets('selecting one edits it in the inspector', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'ball');
+
+      await select(tester, 'ball.odata');
+
+      expect(find.byType(DataPanel), findsOneWidget);
+      expect(find.text('Add a value'), findsOneWidget);
+    });
+
+    testWidgets('a value typed in reaches the file', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'ball');
+      await select(tester, 'ball.odata');
+
+      // The number the blank object starts with.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(FieldRow),
+          matching: find.byType(TextField),
+        ).first,
+        '12.5',
+      );
+      // Written shortly after the last keystroke rather than on every one.
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      final data = DataObject.read(
+        File(p.join(root.path, 'ball.odata')).readAsStringSync(),
+      )!;
+      expect(data.fields.first.asNumber, 12.5);
+    });
+
+    testWidgets('selecting an object puts the inspector back', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'ball');
+      await select(tester, 'ball.odata');
+      expect(find.byType(DataPanel), findsOneWidget);
+
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DataPanel), findsNothing);
+    });
+
+    testWidgets('selecting a mesh does not take the inspector', (tester) async {
+      Directory(p.join(root.path, 'assets')).createSync();
+      File(p.join(root.path, 'assets', 'rock.glb')).writeAsBytesSync([1]);
+
+      await open(tester);
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+      await openFolder(tester, 'assets');
+      await select(tester, 'rock.glb');
+
+      // Still the object: only a data object claims the panel.
+      expect(find.byType(DataPanel), findsNothing);
+    });
+
+    testWidgets('dropping one on the selection attaches it', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'weight');
+
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(tile('weight.odata')),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // Listed on the object, and named as what it is rather than a path.
+      expect(find.text('DATA'), findsOneWidget);
+      expect(find.text('weight.odata'), findsWidgets);
+    });
+
+    testWidgets('attaching is undoable', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'weight');
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(tile('weight.odata')),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.text('DATA'), findsOneWidget);
+
+      await press(tester, LogicalKeyboardKey.keyZ);
+      expect(find.text('DATA'), findsNothing);
+    });
+
+    testWidgets('what it says is saved with the scene', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'weight');
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(tile('weight.odata')),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.text('DATA'), findsOneWidget);
+
+      await save(tester);
+      final written =
+          File(p.join(root.path, 'scenes', 'main.oscene')).readAsStringSync();
+      expect(written, contains('weight.odata'));
+    });
+
+    testWidgets('the types it writes land beside it', (tester) async {
+      await open(tester);
+      await makeOne(tester, 'ball');
+      await select(tester, 'ball.odata');
+
+      await tester.tap(find.text('Write TypeScript types'));
+      await tester.pumpAndSettle();
+
+      final types = File(p.join(root.path, 'ball.d.ts'));
+      expect(types.existsSync(), isTrue);
+      expect(types.readAsStringSync(), contains('export interface'));
     });
   });
 }
