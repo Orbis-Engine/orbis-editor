@@ -13,6 +13,8 @@ import 'assets.dart';
 import 'clipboard.dart';
 import 'code_editor.dart';
 import 'commands.dart';
+import 'console.dart';
+import 'console_panel.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
 import 'script_build.dart';
@@ -68,6 +70,19 @@ class _EditorShellState extends State<EditorShell> {
   /// Whether the interface is drawn over the viewport.
   bool _showInterface = true;
 
+  /// How tall the strip of tabs above the bottom panels is.
+  static const double _tabStripHeight = 28;
+
+  /// Everything the editor has said. Kept, rather than shown for four seconds
+  /// in a corner and lost.
+  final EditorLog _log = EditorLog();
+
+  /// Puts Flutter's own errors in the console. Undone on dispose.
+  late final VoidCallback _stopCatching = _log.catchFlutterErrors();
+
+  /// Which of the bottom panels is showing.
+  bool _consoleOpen = false;
+
   /// The data object being looked at, or null when the inspector is showing
   /// the scene's selection.
   String? _dataAsset;
@@ -99,6 +114,9 @@ class _EditorShellState extends State<EditorShell> {
   @override
   void initState() {
     super.initState();
+    // Read once so the handlers are installed, since a late final is not
+    // initialised until something asks for it.
+    _stopCatching;
     _history.addListener(_onChanged);
     _workspace.addListener(_onChanged);
 
@@ -161,6 +179,10 @@ class _EditorShellState extends State<EditorShell> {
       ..removeListener(_onChanged)
       ..dispose();
     _assets.dispose();
+    // Flutter's error handlers are global: leaving ours installed would send
+    // the next editor window's errors, and a test's, into a log that is gone.
+    _stopCatching();
+    _log.dispose();
     super.dispose();
   }
 
@@ -457,7 +479,7 @@ class _EditorShellState extends State<EditorShell> {
       file.parent.createSync(recursive: true);
       file.writeAsStringSync(SceneDocument.encode(scene));
     } on FileSystemException catch (error) {
-      _say('Could not save the shared objects: ${error.message}');
+      _say('Could not save the shared objects: ${error.message}', level: LogLevel.error);
       return;
     }
 
@@ -609,7 +631,7 @@ class _EditorShellState extends State<EditorShell> {
     final open = _working;
     final scene = open?.scene;
     if (open == null || scene == null) {
-      _say('There is no scene loaded to add to.');
+      _say('There is no scene loaded to add to.', level: LogLevel.warning);
       return;
     }
 
@@ -770,7 +792,7 @@ class _EditorShellState extends State<EditorShell> {
     _clipboard.takeText(text?.text);
 
     if (_clipboard.isEmpty) {
-      _say('There is nothing on the clipboard to paste.');
+      _say('There is nothing on the clipboard to paste.', level: LogLevel.warning);
       return;
     }
 
@@ -847,10 +869,18 @@ class _EditorShellState extends State<EditorShell> {
     // A path is worth shortening to its file name; a subject like "too many
     // lights" is not a path and is left as it is.
     final subject = first.key.contains('/') ? p.basename(first.key) : null;
-    _say(fresh.length == 1
-        ? (subject == null ? first.value : '$subject: ${first.value}')
-        : '${fresh.length} things in this scene need attention. '
-            '${subject ?? first.key}: ${first.value}');
+    _say(
+      fresh.length == 1
+          ? (subject == null ? first.value : '$subject: ${first.value}')
+          : '${fresh.length} things in this scene need attention. '
+              '${subject ?? first.key}: ${first.value}',
+      level: LogLevel.warning,
+      // Every one of them, not just the first: the status bar has room for
+      // one line and the console does not.
+      detail: [
+        for (final note in fresh) '${note.key}: ${note.value}',
+      ].join('\n'),
+    );
   }
 
   /// Opens the project in a code editor, optionally on one file.
@@ -869,7 +899,12 @@ class _EditorShellState extends State<EditorShell> {
             '${CodeEditor.available ?? 'your editor'}.');
   }
 
-  void _say(String message) {
+  /// Says something, in both places it belongs.
+  ///
+  /// The status bar for somebody who is looking, the console for somebody who
+  /// was not — which, while they were reading the last message, they were not.
+  void _say(String message, {LogLevel level = LogLevel.info, String detail = ''}) {
+    _log.say(message, level: level, detail: detail);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1060,8 +1095,18 @@ class _EditorShellState extends State<EditorShell> {
     if (!mounted) return;
 
     if (built.ok) {
-      _say('Built $name.${built.output.isEmpty ? '' : ' With warnings.'}');
+      _say(
+        'Built $name.${built.output.isEmpty ? '' : ' With warnings.'}',
+        level: built.output.isEmpty ? LogLevel.info : LogLevel.warning,
+        detail: built.output,
+      );
       if (built.output.isEmpty) return;
+    } else {
+      _say(
+        '$name did not build.',
+        level: LogLevel.error,
+        detail: built.output,
+      );
     }
 
     await showDialog<void>(
@@ -1183,7 +1228,7 @@ class _EditorShellState extends State<EditorShell> {
         File(path).writeAsStringSync(one.text);
       } on FileSystemException catch (error) {
         _say('Could not write ${one.file}: '
-            '${error.osError?.message ?? error.message}');
+            '${error.osError?.message ?? error.message}', level: LogLevel.error);
         return;
       }
       written.add(one.file);
@@ -1224,7 +1269,7 @@ class _EditorShellState extends State<EditorShell> {
       prefab.toText(),
     );
     if (made.problem != null || made.path == null) {
-      _say('Could not save the prefab: ${made.problem}');
+      _say('Could not save the prefab: ${made.problem}', level: LogLevel.error);
       return;
     }
 
@@ -1622,9 +1667,22 @@ class _EditorShellState extends State<EditorShell> {
                                 );
                               }),
                             ),
+                            _BottomTabs(
+                              console: _consoleOpen,
+                              errors: _log.countOf(LogLevel.error),
+                              warnings: _log.countOf(LogLevel.warning),
+                              onPick: (console) =>
+                                  setState(() => _consoleOpen = console),
+                            ),
+                            if (_consoleOpen)
+                              ConsolePanel(
+                                log: _log,
+                                height: _browserHeight - _tabStripHeight,
+                              )
+                            else
                             AssetBrowser(
                               tree: _assets,
-                              height: _browserHeight,
+                              height: _browserHeight - _tabStripHeight,
                               onOpenAsset: (asset) {
                                 // A scene opens here; anything somebody would
                                 // type into goes where they type.
@@ -2239,6 +2297,148 @@ class _EditMenu extends StatelessWidget {
         label,
         style: OrbisText.label.copyWith(
           color: enabled ? OrbisColors.ink : OrbisColors.line,
+        ),
+      ),
+    );
+  }
+}
+
+/// The strip above the bottom panels.
+///
+/// Two things live down here and only one fits: what the project holds, and
+/// what the editor has to say about it. A tab rather than a second splitter,
+/// because a console is not something somebody watches — it is something they
+/// go to when a number beside its name says they should.
+class _BottomTabs extends StatelessWidget {
+  const _BottomTabs({
+    required this.console,
+    required this.errors,
+    required this.warnings,
+    required this.onPick,
+  });
+
+  /// Whether the console is the one showing.
+  final bool console;
+
+  final int errors;
+  final int warnings;
+  final ValueChanged<bool> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 28,
+      decoration: const BoxDecoration(
+        color: OrbisColors.surface,
+        border: Border(top: BorderSide(color: OrbisColors.lineSoft)),
+      ),
+      child: Row(
+        children: [
+          _Tab(
+            label: 'Project',
+            icon: Icons.folder_outlined,
+            selected: !console,
+            onTap: () => onPick(false),
+          ),
+          _Tab(
+            label: 'Console',
+            icon: Icons.terminal,
+            selected: console,
+            onTap: () => onPick(true),
+            // On the tab, so somebody who is not looking at the console still
+            // knows to. A message that only exists inside a panel nobody has
+            // opened is a message nobody has read.
+            badge: errors > 0
+                ? '$errors'
+                : (warnings > 0 ? '$warnings' : null),
+            badgeColour: errors > 0 ? OrbisColors.bad : OrbisColors.warn,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Tab extends StatefulWidget {
+  const _Tab({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+    this.badge,
+    this.badgeColour = OrbisColors.bad,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+  final String? badge;
+  final Color badgeColour;
+
+  @override
+  State<_Tab> createState() => _TabState();
+}
+
+class _TabState extends State<_Tab> {
+  bool _hovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colour = widget.selected
+        ? OrbisColors.ink
+        : (_hovering ? OrbisColors.inkMid : OrbisColors.inkDim);
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit: (_) => setState(() => _hovering = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: Space.md),
+          decoration: BoxDecoration(
+            color: widget.selected ? OrbisColors.ground : Colors.transparent,
+            border: Border(
+              // The selected tab is marked at the top, where the panel it
+              // opens is, rather than underlined like a tab above its content.
+              top: BorderSide(
+                color: widget.selected ? OrbisColors.ember : Colors.transparent,
+                width: 2,
+              ),
+              right: const BorderSide(color: OrbisColors.lineSoft),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(widget.icon, size: 13, color: colour),
+              const SizedBox(width: Space.sm),
+              Text(
+                widget.label.toUpperCase(),
+                style: OrbisText.section.copyWith(color: colour),
+              ),
+              if (widget.badge != null) ...[
+                const SizedBox(width: Space.sm),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: widget.badgeColour,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    widget.badge!,
+                    style: OrbisText.caption.copyWith(
+                      fontSize: 10,
+                      color: OrbisColors.ground,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

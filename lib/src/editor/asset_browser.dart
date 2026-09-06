@@ -302,8 +302,8 @@ class _Header extends StatelessWidget {
             onTap: onUp,
           ),
           const SizedBox(width: Space.sm),
-          Text('PROJECT', style: OrbisText.section),
-          const SizedBox(width: Space.sm),
+          // No title here: the tab above says what this panel is, and a
+          // heading that repeats the tab is a line of pixels saying nothing.
           Flexible(
             child: Text(
               crumb.isEmpty ? '/' : crumb,

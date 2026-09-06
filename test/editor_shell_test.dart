@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/asset_browser.dart';
 import 'package:orbis_editor/src/editor/clipboard.dart';
 import 'package:orbis_editor/src/editor/data_object.dart';
+import 'package:orbis_editor/src/editor/console_panel.dart';
 import 'package:orbis_editor/src/editor/data_panel.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
@@ -1754,6 +1755,106 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+  });
+
+  group('the console', () {
+    testWidgets('there are two panels at the bottom', (tester) async {
+      await open(tester);
+
+      expect(find.text('PROJECT'), findsOneWidget);
+      expect(find.text('CONSOLE'), findsOneWidget);
+      // The project one is showing to begin with.
+      expect(find.byType(AssetBrowser), findsOneWidget);
+      expect(find.byType(ConsolePanel), findsNothing);
+    });
+
+    testWidgets('opening it shows what the editor has said', (tester) async {
+      await open(tester);
+      await save(tester);
+
+      await tester.tap(find.text('CONSOLE'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ConsolePanel), findsOneWidget);
+      expect(find.byType(AssetBrowser), findsNothing);
+      expect(find.textContaining('Saved'), findsWidgets);
+    });
+
+    testWidgets('a message that has gone from the status bar is still there',
+        (tester) async {
+      await open(tester);
+      await save(tester);
+
+      // Long enough for the snack bar to have come and gone.
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('CONSOLE'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Saved'), findsWidgets);
+    });
+
+    testWidgets('a refusal is an error, and says so on the tab',
+        (tester) async {
+      Directory(p.join(root.path, 'assets')).createSync();
+      File(p.join(root.path, 'assets', 'rock.png')).writeAsBytesSync([1]);
+
+      await open(tester);
+      await openFolder(tester, 'assets');
+
+      final tile = find.descendant(
+        of: find.byType(GridView),
+        matching: find.text('rock.png'),
+      );
+      final gesture = await tester.startGesture(tester.getCenter(tile));
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // Kept, and counted where somebody who is not looking at the console
+      // will still see it.
+      await tester.tap(find.text('CONSOLE'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Meshes, prefabs and scenes'), findsWidgets);
+    });
+
+    testWidgets('it can be cleared', (tester) async {
+      await open(tester);
+      await save(tester);
+      await tester.tap(find.text('CONSOLE'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Saved'), findsWidgets);
+
+      await tester.tap(find.byIcon(Icons.delete_sweep_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nothing to report.'), findsOneWidget);
+    });
+
+    testWidgets('the filters hide a level', (tester) async {
+      await open(tester);
+      await save(tester);
+      await tester.tap(find.text('CONSOLE'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Saved'), findsWidgets);
+
+      await tester.tap(find.textContaining('Info '));
+      await tester.pumpAndSettle();
+
+      // Scoped to the panel: the snack bar that said the same thing is still
+      // on screen, because a snack bar goes away on its own timer and
+      // pumpAndSettle does not run one out.
+      expect(
+        find.descendant(
+          of: find.byType(ConsolePanel),
+          matching: find.textContaining('Saved'),
+        ),
+        findsNothing,
+      );
+      expect(find.text('Nothing at these levels.'), findsOneWidget);
     });
   });
 }
