@@ -58,6 +58,16 @@ class _EditorShellState extends State<EditorShell> {
 
   late final ScriptBuilder _builder = ScriptBuilder(widget.project.directory);
 
+  /// Interfaces read off disk, by path.
+  ///
+  /// Cached because the scene is rebuilt every frame and a canvas object asks
+  /// for its document each time. Cleared when the project folder changes, so
+  /// editing an interface shows up in the scene without reopening it.
+  final Map<String, UiDocument?> _interfaces = {};
+
+  /// Whether the interface is drawn over the viewport.
+  bool _showInterface = true;
+
   /// The data object being looked at, or null when the inspector is showing
   /// the scene's selection.
   String? _dataAsset;
@@ -610,6 +620,7 @@ class _EditorShellState extends State<EditorShell> {
       ObjectKind.group => 'Group',
       ObjectKind.scene => 'Scene',
       ObjectKind.weather => 'Weather',
+      ObjectKind.canvas => 'Canvas',
     });
 
     final object = SceneObject(
@@ -903,6 +914,10 @@ class _EditorShellState extends State<EditorShell> {
       _attachData(path);
       return;
     }
+    if (kind == AssetKind.canvas) {
+      _putInterfaceOnScene(path);
+      return;
+    }
     if (kind != AssetKind.mesh) {
       _say('${p.basename(path)} is a ${kind.label.toLowerCase()}. '
           'Meshes, prefabs and scenes are what a scene takes.');
@@ -928,6 +943,73 @@ class _EditorShellState extends State<EditorShell> {
   }
 
   // ---- interfaces ----
+
+  /// Puts an interface on the open scene.
+  ///
+  /// Onto the selected canvas if there is one, and onto a new canvas object if
+  /// there is not. Dropping a file and being told to make an object first
+  /// would be the editor knowing what somebody meant and refusing to do it.
+  void _putInterfaceOnScene(String path) {
+    final open = _working;
+    final scene = open?.scene;
+    if (open == null || scene == null) {
+      _say('There is no scene loaded to add to.');
+      return;
+    }
+
+    final relative = _assets.relative(path);
+    final selected = _primary == null ? null : scene[_primary!];
+
+    if (selected != null && selected.kind == ObjectKind.canvas) {
+      _run(SetInterface(
+        sceneId: open.id,
+        id: selected.id,
+        name: selected.name,
+        to: relative,
+      ));
+      _say('${selected.name} now shows ${p.basename(path)}.');
+      return;
+    }
+
+    final object = SceneObject(
+      id: _nextObjectId(),
+      name: _uniqueName(scene, p.basenameWithoutExtension(path)),
+      kind: ObjectKind.canvas,
+      interfaceAsset: relative,
+    );
+    _run(AddObject(object, sceneId: open.id));
+    _select(object.id);
+  }
+
+  /// The interface the open scene puts on screen, if any.
+  ///
+  /// The first visible canvas object, since a screen shows one interface at a
+  /// time. Two canvases both visible is a scene saying two things, and picking
+  /// the first is at least the one nearest the top of the tree.
+  UiDocument? get _sceneInterface {
+    final scene = _current?.scene;
+    if (scene == null) return null;
+
+    for (final object in scene.objects) {
+      if (object.kind != ObjectKind.canvas) continue;
+      if (!object.visible || !scene.isShown(object.id)) continue;
+
+      final path = object.interfaceAsset;
+      if (path == null) continue;
+      return _interfaces.putIfAbsent(path, () => _readInterface(path));
+    }
+    return null;
+  }
+
+  UiDocument? _readInterface(String relative) {
+    try {
+      final file = File(p.join(widget.project.directory, relative));
+      if (!file.existsSync()) return null;
+      return UiDocument.read(file.readAsStringSync());
+    } on FileSystemException {
+      return null;
+    }
+  }
 
   /// Opens a canvas for laying out.
   ///
@@ -957,9 +1039,8 @@ class _EditorShellState extends State<EditorShell> {
         ),
       ),
     );
-    // The browser watches the folder, so what changed on disk arrives on its
-    // own; this is only to bring the shell's own frame back.
-    if (mounted) setState(() {});
+    // Read again: the scene is showing what was on disk before it was edited.
+    if (mounted) setState(() => _interfaces.clear());
   }
 
   // ---- scripts ----
@@ -1520,6 +1601,11 @@ class _EditorShellState extends State<EditorShell> {
                                 },
                                 onDropAsset: _dropAsset,
                                 projectRoot: widget.project.directory,
+                                interface: _sceneInterface,
+                                showInterface: _showInterface,
+                                onToggleInterface: () => setState(
+                                  () => _showInterface = !_showInterface,
+                                ),
                                 onSceneNotes: _reportSceneNotes,
                                 // The viewport owns the clock; this is how
                                 // the tree and the inspector hear about it.
@@ -1595,6 +1681,9 @@ class _EditorShellState extends State<EditorShell> {
                                     _exportBindings(_dataAsset!),
                               ),
                         onOpenData: _showData,
+                        onOpenInterface: (path) => _openInterface(
+                          p.join(widget.project.directory, path),
+                        ),
                         onDetachData: _detachData,
                         onApplyPrefab: _applyPrefab,
                         onRevertPrefab: _revertPrefab,

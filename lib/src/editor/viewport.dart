@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:orbis_filament/orbis_filament.dart';
+import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
@@ -13,6 +14,7 @@ import 'commands.dart';
 import 'gizmo.dart';
 import 'history.dart';
 import 'scene.dart';
+import 'ui_canvas.dart';
 import 'workspace.dart';
 
 /// Where the viewer is standing, in orbit terms.
@@ -126,6 +128,9 @@ class SceneViewport extends StatefulWidget {
     required this.workspace,
     required this.camera,
     required this.onCameraChanged,
+    this.interface,
+    this.showInterface = true,
+    this.onToggleInterface,
     this.selected = const {},
     this.onDropAsset,
     this.projectRoot,
@@ -159,6 +164,22 @@ class SceneViewport extends StatefulWidget {
   /// Called with anything the scene asked for that the renderer could not
   /// give: a mesh that would not load, a light it has no room to shade.
   final ValueChanged<Map<String, String>>? onSceneNotes;
+
+  /// The interface a canvas object in the scene shows, already read.
+  ///
+  /// Read by the shell rather than here: the viewport draws what it is given
+  /// and does not open files, which is what keeps it testable without a
+  /// project on disk.
+  final UiDocument? interface;
+
+  /// Whether to draw the interface at all. Off while somebody is arranging
+  /// the scene behind it and does not want a full-screen heads-up display
+  /// over everything they are trying to look at.
+  final bool showInterface;
+
+  /// Turns that on and off. This is a view setting and not a scene edit —
+  /// hiding the canvas object is what hides the interface in the game.
+  final VoidCallback? onToggleInterface;
 
   /// The one of the selection the handles sit on, and whose transform a drag
   /// writes first. The others follow it.
@@ -540,6 +561,20 @@ class _SceneViewportState extends State<SceneViewport>
                 ),
               ),
             ),
+            // Over the scene and under the handles: an interface is drawn on
+            // top of the world in the game, and a gizmo you cannot reach
+            // because a heads-up display is over it is a gizmo that does not
+            // work. Ignoring the pointer for the same reason — this is a
+            // preview of the interface, not the interface.
+            if (widget.interface != null && widget.showInterface)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: UiCanvasView(
+                    document: widget.interface!,
+                    designing: false,
+                  ),
+                ),
+              ),
             // Over the outline, because a handle you cannot see is a handle
             // you cannot grab — and under nothing, because it has to be the
             // thing the pointer finds first.
@@ -563,6 +598,20 @@ class _SceneViewportState extends State<SceneViewport>
                 const _ViewportChip('Shaded'),
                 const SizedBox(width: Space.xs),
                 _ViewportChip(_summary),
+                // Only when there is one to hide. A switch for something that
+                // is not there is a switch that teaches somebody nothing.
+                if (widget.interface != null) ...[
+                  const SizedBox(width: Space.xs),
+                  _ViewportChip(
+                    'Interface',
+                    on: widget.showInterface,
+                    tooltip: 'Draws the scene\'s interface over the viewport. '
+                        'Turning it off here is for getting at what is behind '
+                        'it — hiding the canvas object is what hides it in the '
+                        'game.',
+                    onTap: widget.onToggleInterface,
+                  ),
+                ],
               ]),
             ),
             if (_rendererAvailable)
@@ -727,20 +776,49 @@ class _Placeholder extends StatelessWidget {
 }
 
 class _ViewportChip extends StatelessWidget {
-  const _ViewportChip(this.label);
+  const _ViewportChip(this.label, {this.on, this.onTap, this.tooltip});
 
   final String label;
 
+  /// Null for a chip that only says something. Set for one that is also a
+  /// switch, which then reads as on or off rather than as a label.
+  final bool? on;
+
+  final VoidCallback? onTap;
+  final String? tooltip;
+
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final lit = on ?? false;
+
+    Widget chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: Space.sm, vertical: 3),
       decoration: BoxDecoration(
-        color: OrbisColors.surface.withValues(alpha: 0.8),
+        color: on == null
+            ? OrbisColors.surface.withValues(alpha: 0.8)
+            : (lit
+                ? OrbisColors.emberWash
+                : OrbisColors.surface.withValues(alpha: 0.8)),
         borderRadius: BorderRadius.circular(Radii.control),
-        border: Border.all(color: OrbisColors.lineSoft),
+        border: Border.all(
+          color: lit ? OrbisColors.ember : OrbisColors.lineSoft,
+        ),
       ),
-      child: Text(label, style: OrbisText.caption.copyWith(fontSize: 11)),
+      child: Text(
+        label,
+        style: OrbisText.caption.copyWith(
+          fontSize: 11,
+          color: lit ? OrbisColors.ember : null,
+        ),
+      ),
+    );
+
+    if (tooltip != null) chip = Tooltip(message: tooltip!, child: chip);
+    if (onTap == null) return chip;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(onTap: onTap, child: chip),
     );
   }
 }

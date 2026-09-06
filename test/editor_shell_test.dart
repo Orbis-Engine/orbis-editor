@@ -15,6 +15,7 @@ import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
+import 'package:orbis_ui/orbis_ui.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:path/path.dart' as p;
 
@@ -1600,6 +1601,159 @@ void main() {
       final header = File(p.join(root.path, 'ball.h'));
       expect(header.existsSync(), isTrue);
       expect(header.readAsStringSync(), contains('namespace Ball'));
+    });
+  });
+
+  group('an interface on a scene', () {
+    /// Makes a .oui in the project and returns its tile in the grid.
+    Finder makeInterface(String name) {
+      File(p.join(root.path, '$name.oui')).writeAsStringSync(
+        const UiDocument(
+          name: 'Heads-up',
+          root: UiNode(
+            type: 'stack',
+            classes: 'w-full h-full',
+            children: [
+              UiNode(
+                type: 'text',
+                css: 'left: 40px; top: 40px',
+                text: 'Health 100',
+              ),
+            ],
+          ),
+        ).toText(),
+      );
+      return find.descendant(
+        of: find.byType(GridView),
+        matching: find.text('$name.oui'),
+      );
+    }
+
+    Future<void> dropOnViewport(WidgetTester tester, Finder tile) async {
+      final gesture = await tester.startGesture(tester.getCenter(tile));
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('dropping one makes a canvas object that shows it',
+        (tester) async {
+      final tile = makeInterface('hud');
+      await open(tester);
+      await dropOnViewport(tester, tile);
+
+      // An object in the tree, and the interface itself over the viewport.
+      expect(row('hud'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(SceneViewport),
+          matching: find.text('Health 100'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the object says which interface it shows', (tester) async {
+      final tile = makeInterface('hud');
+      await open(tester);
+      await dropOnViewport(tester, tile);
+
+      expect(find.text('INTERFACE'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(Inspector),
+          matching: find.text('hud.oui'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('it is saved with the scene and comes back', (tester) async {
+      final tile = makeInterface('hud');
+      await open(tester);
+      await dropOnViewport(tester, tile);
+      await save(tester);
+
+      final written =
+          File(p.join(root.path, 'scenes', 'main.oscene')).readAsStringSync();
+      expect(written, contains('hud.oui'));
+
+      final back = SceneDocument.decode(written).scene;
+      final canvas = back.objects
+          .firstWhere((o) => o.kind == ObjectKind.canvas);
+      expect(canvas.interfaceAsset, 'hud.oui');
+    });
+
+    testWidgets('hiding the object takes the interface off the scene',
+        (tester) async {
+      final tile = makeInterface('hud');
+      await open(tester);
+      await dropOnViewport(tester, tile);
+
+      Finder drawn() => find.descendant(
+            of: find.byType(SceneViewport),
+            matching: find.text('Health 100'),
+          );
+      expect(drawn(), findsOneWidget);
+
+      await tester.tap(find.descendant(
+        of: find.byType(Inspector),
+        matching: find.text('Hidden'),
+      ));
+      await tester.pumpAndSettle();
+
+      // What hides it here is what hides it in the game: the object's own
+      // visibility, not a view setting.
+      expect(drawn(), findsNothing);
+    });
+
+    testWidgets('the viewport can put it aside without changing the scene',
+        (tester) async {
+      final tile = makeInterface('hud');
+      await open(tester);
+      await dropOnViewport(tester, tile);
+      await save(tester);
+
+      await tester.tap(find.descendant(
+        of: find.byType(SceneViewport),
+        matching: find.text('Interface'),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.descendant(
+          of: find.byType(SceneViewport),
+          matching: find.text('Health 100'),
+        ),
+        findsNothing,
+      );
+      // A view setting, so the scene is still saved.
+      expect(unsavedMarker(), findsNothing);
+    });
+
+    testWidgets('dropping a second one onto the selected canvas replaces it',
+        (tester) async {
+      makeInterface('hud');
+      final other = makeInterface('menu');
+      await open(tester);
+
+      await dropOnViewport(tester, find.descendant(
+        of: find.byType(GridView),
+        matching: find.text('hud.oui'),
+      ));
+      await dropOnViewport(tester, other);
+
+      // One canvas, showing the second interface.
+      expect(row('hud'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(Inspector),
+          matching: find.text('menu.oui'),
+        ),
+        findsOneWidget,
+      );
     });
   });
 }

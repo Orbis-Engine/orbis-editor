@@ -12,7 +12,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
 /// therefore what the inspector shows.
-enum ObjectKind { scene, mesh, light, camera, group, weather }
+enum ObjectKind { scene, mesh, light, camera, group, weather, canvas }
 
 /// One object in the edited scene.
 ///
@@ -45,6 +45,7 @@ class SceneObject {
     this.receiveShadows = true,
     this.visible = true,
     this.meshAsset,
+    this.interfaceAsset,
     this.prefab,
     List<String>? data,
   })  : data = data ?? [],
@@ -175,6 +176,13 @@ class SceneObject {
   /// to load it keeps the file honest about what the scene says.
   String? meshAsset;
 
+  /// The interface this canvas shows, as a path relative to the project.
+  ///
+  /// A reference, like a mesh and like a data object. The `.oui` is the
+  /// document and this says which one is on screen — so one interface can be
+  /// on two scenes, and changing it changes both.
+  String? interfaceAsset;
+
   /// The prefab this came from, as a path relative to the project.
   ///
   /// Null for an ordinary object. Set on every object in an instance, root
@@ -203,6 +211,7 @@ class SceneObject {
         ObjectKind.light => Icons.wb_sunny_outlined,
         ObjectKind.camera => Icons.videocam_outlined,
         ObjectKind.weather => Icons.cloud_outlined,
+        ObjectKind.canvas => Icons.web_asset,
       };
 
   /// Whether this object is drawn.
@@ -247,6 +256,7 @@ class SceneObject {
         receiveShadows: receiveShadows,
         visible: visible,
         meshAsset: meshAsset,
+        interfaceAsset: interfaceAsset,
         prefab: prefab,
         data: List<String>.from(data),
       );

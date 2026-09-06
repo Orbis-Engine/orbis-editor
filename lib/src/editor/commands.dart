@@ -1314,3 +1314,46 @@ class UnpackPrefab extends EditorCommand {
     scene.invalidate();
   }
 }
+
+/// Changes which interface a canvas object shows.
+///
+/// A reference rather than a copy, like a mesh: the `.oui` is the document and
+/// the scene says which one is on screen, so one interface can be on two
+/// scenes and editing it changes both.
+class SetInterface extends EditorCommand {
+  SetInterface({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  final String? to;
+
+  String? _was;
+
+  @override
+  String get label => to == null ? 'Clear $name' : 'Set $name';
+
+  @override
+  void apply(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    _was = object.interfaceAsset;
+    object.interfaceAsset = to;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    object.interfaceAsset = _was;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+}

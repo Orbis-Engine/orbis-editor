@@ -124,6 +124,7 @@ abstract final class SceneDocument {
         // the file and out of everybody's diffs.
         if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
+        if (object.interfaceAsset != null) 'interface': object.interfaceAsset,
         if (object.prefab != null) 'prefab': object.prefab,
         if (object.data.isNotEmpty) 'data': object.data,
       };
@@ -216,6 +217,8 @@ abstract final class SceneDocument {
       receiveShadows: flag('receiveShadows'),
       visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
+      interfaceAsset:
+          entry['interface'] is String ? entry['interface']! as String : null,
       prefab: entry['prefab'] is String ? entry['prefab']! as String : null,
       data: entry['data'] is List
           ? [

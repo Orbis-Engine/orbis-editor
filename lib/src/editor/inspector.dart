@@ -37,6 +37,7 @@ class Inspector extends StatelessWidget {
     this.dataPanel,
     this.onOpenData,
     this.onDetachData,
+    this.onOpenInterface,
   });
 
   /// The scene being looked at, which need not be the loaded one — a scene can
@@ -77,6 +78,9 @@ class Inspector extends StatelessWidget {
 
   /// Takes one off the selected object.
   final void Function(String id, String path)? onDetachData;
+
+  /// Opens the interface a canvas object shows.
+  final ValueChanged<String>? onOpenInterface;
 
   @override
   Widget build(BuildContext context) {
@@ -144,6 +148,7 @@ class Inspector extends StatelessWidget {
                               history: history,
                               onOpenData: onOpenData,
                               onDetachData: onDetachData,
+                              onOpenInterface: onOpenInterface,
                             ),
                           ),
                         ],
@@ -677,6 +682,7 @@ class _Fields extends StatelessWidget {
     required this.history,
     this.onOpenData,
     this.onDetachData,
+    this.onOpenInterface,
   });
 
   final String sceneId;
@@ -685,6 +691,7 @@ class _Fields extends StatelessWidget {
   final History history;
   final ValueChanged<String>? onOpenData;
   final void Function(String id, String path)? onDetachData;
+  final ValueChanged<String>? onOpenInterface;
 
   @override
   Widget build(BuildContext context) {
@@ -736,8 +743,63 @@ class _Fields extends StatelessWidget {
           _weather(),
           _air(),
         ],
+        if (object.kind == ObjectKind.canvas) _interface(),
         if (object.data.isNotEmpty) _data(),
       ],
+    );
+  }
+
+  /// Which interface this canvas puts on screen.
+  ///
+  /// A reference and not a copy, which is the same rule as a mesh and a data
+  /// object: the `.oui` is the document, and two scenes showing the same one
+  /// both change when it changes.
+  Widget _interface() {
+    final shown = object.interfaceAsset;
+
+    return _ComponentSection(
+      title: 'Interface',
+      icon: Icons.web_asset,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (shown == null)
+            Text(
+              'Nothing yet. Drag a .oui from the project onto the viewport.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            )
+          else ...[
+            Row(
+              children: [
+                const Icon(Icons.web_asset, size: 13,
+                    color: OrbisColors.inkDim),
+                const SizedBox(width: Space.sm),
+                Expanded(
+                  child: Tooltip(
+                    message: shown,
+                    child: GestureDetector(
+                      onTap: onOpenInterface == null
+                          ? null
+                          : () => onOpenInterface!(shown),
+                      child: Text(
+                        shown.split('/').last,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            OrbisText.label.copyWith(color: OrbisColors.ink),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: Space.xs),
+            Text(
+              'Drawn over the scene. Hidden here hides it in the game too.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
