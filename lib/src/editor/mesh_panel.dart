@@ -36,6 +36,8 @@ class MeshPanel extends StatelessWidget {
     required this.format,
     required this.onFormat,
     required this.onExport,
+    required this.outline,
+    required this.onOutline,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -71,6 +73,13 @@ class MeshPanel extends StatelessWidget {
   /// Paints the selected faces with the slot at this position.
   final ValueChanged<int> onPaint;
 
+  /// The outline this shape was drawn from, if it was drawn.
+  final PolyShape? outline;
+
+  /// Called when its height or facing changes. [live] is set while a slider
+  /// is moving.
+  final void Function(PolyShape next, {required bool live}) onOutline;
+
   /// Which format an export writes.
   final MeshFormat format;
   final ValueChanged<MeshFormat> onFormat;
@@ -83,6 +92,7 @@ class MeshPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (outline != null) _outlineSection(),
         if (shape != null) _shapeSection(),
         _editSection(),
         _materialsSection(),
@@ -437,6 +447,65 @@ extension on MeshPanel {
 }
 
 extension on MeshPanel {
+  /// The numbers a drawn shape still has.
+  ///
+  /// Only while it is still the outline: once somebody edits the geometry
+  /// itself the outline cannot describe it any more, and a height slider that
+  /// silently threw away an extrude would be worse than not having one.
+  Widget _outlineSection() {
+    final drawn = outline!;
+    return _Section(
+      title: 'Drawn shape',
+      icon: Icons.polyline_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (geometry != null)
+            Text(
+              'Edited since it was drawn, so the outline no longer describes '
+              'it. Its corners are still here if you undo back.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            )
+          else ...[
+            Text(
+              '${drawn.points.length} corners',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+            SliderRow(
+              label: 'Height',
+              value: drawn.height,
+              min: -8,
+              max: 8,
+              decimals: 2,
+              onChanged: (value) => onOutline(
+                PolyShape(
+                  points: drawn.points,
+                  height: value,
+                  flipped: drawn.flipped,
+                ),
+                live: true,
+              ),
+            ),
+            OrbisButton(
+              label: 'Turn it over',
+              icon: Icons.flip_outlined,
+              expand: true,
+              tone: ButtonTone.quiet,
+              onPressed: () => onOutline(
+                PolyShape(
+                  points: drawn.points,
+                  height: drawn.height,
+                  flipped: !drawn.flipped,
+                ),
+                live: false,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// The way out.
   ///
   /// Not because the engine needs it — it reads its own files — but because a

@@ -12,6 +12,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
+import 'drawing.dart';
 import 'gizmo.dart';
 import 'snapping.dart';
 import 'history.dart';
@@ -210,6 +211,10 @@ class SceneViewport extends StatefulWidget {
     this.seeThroughElements = false,
     required this.snapping,
     this.onSnapping,
+    this.drawing,
+    this.onDrawPoint,
+    this.onDrawFinish,
+    this.onTool,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -278,6 +283,27 @@ class SceneViewport extends StatefulWidget {
   /// What a drag lands on. Passed in rather than owned here, so four views of
   /// one scene agree about the grid.
   final Snapping snapping;
+
+  /// The outline or cut being drawn, if one is.
+  ///
+  /// Owned by the shell, so the same drawing appears in all four views and
+  /// can be finished in a different one from the one it was started in.
+  final Drawing? drawing;
+
+  /// Called with a point a click landed on, and the plane it landed on.
+  ///
+  /// The plane travels with the point because the first click is what decides
+  /// it: whichever surface was under the pointer then is the one the rest of
+  /// the outline is drawn on, whatever is under the pointer later.
+  final void Function(Vector3 at, Vector3 origin, Vector3 normal, int? face)?
+      onDrawPoint;
+
+  /// Called when a click lands back on the first point, which is how somebody
+  /// says they have finished.
+  final VoidCallback? onDrawFinish;
+
+  /// Starts or stops a drawing tool.
+  final ValueChanged<ViewportTool>? onTool;
 
   /// Called when the chip or a key changes it.
   final ValueChanged<Snapping>? onSnapping;
@@ -1067,6 +1093,102 @@ class _SceneViewportState extends State<SceneViewport>
     widget.onSelectElements?.call(found.toList(), add: add);
   }
 
+  /// Puts down a point for whichever tool is drawing.
+  ///
+  /// The first one decides the plane. For a cut that is the face under the
+  /// pointer and nothing else will do; for a shape it is a face if there is
+  /// one and the ground otherwise, because a plan is usually drawn on the
+  /// floor and sometimes on top of a wall.
+  void _drawAt(Offset local) {
+    final drawing = widget.drawing;
+    final surface = _surface;
+    final report = widget.onDrawPoint;
+    if (drawing == null || surface == null || report == null) return;
+    if (!drawing.tool.isDrawing) return;
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+
+    // Once the plane is down, every later point is on it — a plane worked out
+    // afresh each click would follow whatever happened to be behind.
+    final already = drawing.placeOn(ray.origin, ray.direction);
+    if (already != null) {
+      if (drawing.wouldClose(already)) {
+        widget.onDrawFinish?.call();
+        return;
+      }
+      report(already, drawing.origin!, drawing.normal!, drawing.face);
+      return;
+    }
+
+    final onFace = _faceUnder(local);
+    if (onFace != null) {
+      report(onFace.at, onFace.origin, onFace.normal, onFace.face);
+      return;
+    }
+    if (drawing.tool == ViewportTool.cut) return;
+
+    // The ground, at the height the grid is drawn at. A plan is drawn on the
+    // floor unless somebody aimed at something.
+    final at = PolyShape.onPlane(
+      ray.origin,
+      ray.direction,
+      Vector3.zero(),
+      Vector3(0, 1, 0),
+    );
+    if (at == null) return;
+    report(at, Vector3.zero(), Vector3(0, 1, 0), null);
+  }
+
+  /// The face of the shape being edited that a pixel lands on, with its
+  /// plane. Null when nothing of it is under the pointer.
+  ({Vector3 at, Vector3 origin, Vector3 normal, int face})? _faceUnder(
+    Offset local,
+  ) {
+    final editing = widget.editing;
+    final surface = _surface;
+    if (editing == null || surface == null) return null;
+
+    final found = _pickerFor(editing, surface).faceAt(local);
+    if (found == null) return null;
+
+    final face = editing.mesh.faces[found];
+    // Into the world, because the drawing is in the world and the object may
+    // be somewhere else entirely.
+    final centre = editing.transform.transformed3(editing.mesh.centreOf(face));
+    final normal = (editing.transform.rotated3(
+      editing.mesh.normalOf(face).clone(),
+    ))
+      ..normalize();
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+    final at = PolyShape.onPlane(ray.origin, ray.direction, centre, normal);
+    if (at == null) return null;
+
+    return (at: at, origin: centre, normal: normal, face: found);
+  }
+
+  /// Follows the pointer while drawing, so the line reaches it.
+  void _hoverDraw(Offset local) {
+    final drawing = widget.drawing;
+    final surface = _surface;
+    if (drawing == null || surface == null || !drawing.tool.isDrawing) return;
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+    final at = drawing.placeOn(ray.origin, ray.direction) ??
+        _faceUnder(local)?.at ??
+        PolyShape.onPlane(
+          ray.origin,
+          ray.direction,
+          Vector3.zero(),
+          Vector3(0, 1, 0),
+        );
+    if (at == drawing.hovering) return;
+    setState(() => drawing.hovering = at);
+  }
+
   /// What a pixel lands on, in whatever mode is on.
   Object? _elementAt(Offset pixel) {
     final editing = widget.editing;
@@ -1193,6 +1315,17 @@ class _SceneViewportState extends State<SceneViewport>
                 ),
               ),
             ),
+            if (widget.drawing?.tool.isDrawing ?? false)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: DrawingPainter(
+                      drawing: widget.drawing!,
+                      camera: widget.camera,
+                    ),
+                  ),
+                ),
+              ),
             if (_box != null)
               Positioned.fromRect(
                 rect: _box!,
@@ -1215,6 +1348,31 @@ class _SceneViewportState extends State<SceneViewport>
                 const SizedBox(width: Space.xs),
                 _ViewportChip(_summary),
                 const SizedBox(width: Space.xs),
+                if (widget.onTool != null) ...[
+                  for (final tool in [
+                    ViewportTool.polyShape,
+                    // Only when there is something to cut. A button that
+                    // cannot do anything teaches nobody when it could.
+                    if (widget.editing != null) ViewportTool.cut,
+                  ]) ...[
+                    _ViewportChip(
+                      tool.label,
+                      on: widget.drawing?.tool == tool,
+                      tooltip: tool == ViewportTool.polyShape
+                          ? 'Click to put down corners, click the first one '
+                              'again or press enter to finish. Backspace takes '
+                              'one back, escape gives up.'
+                          : 'Click along a face from one edge to another, or '
+                              'round in a loop. Enter finishes.',
+                      onTap: () => widget.onTool!(tool),
+                    ),
+                    const SizedBox(width: Space.xs),
+                  ],
+                  if (widget.drawing?.tool.isDrawing ?? false)
+                    _ViewportChip(
+                      '${widget.drawing!.points.length} points',
+                    ),
+                ],
                 _ViewportChip(
                   widget.snapping.on
                       ? 'Grid ${_gridLabel(widget.snapping.step)}'
@@ -1400,6 +1558,10 @@ class _SceneViewportState extends State<SceneViewport>
       },
       child: MouseRegion(
         onHover: (event) {
+          if (widget.drawing?.tool.isDrawing ?? false) {
+            _hoverDraw(event.localPosition);
+            return;
+          }
           if (widget.editing != null) {
             final under = _elementAt(event.localPosition);
             if (under != _hoveredElement) {
@@ -1423,6 +1585,14 @@ class _SceneViewportState extends State<SceneViewport>
           // it away from a name half-typed in the inspector.
           _flyFocus.requestFocus();
 
+          // A tool that is being drawn takes every click: putting a point
+          // down and selecting something are different enough that guessing
+          // between them would get one of them wrong constantly.
+          if (widget.drawing?.tool.isDrawing ?? false) {
+            _drawAt(details.localPosition);
+            return;
+          }
+
           // While somebody is editing a mesh, a click is about its parts.
           // Picking a different object out from under them mid-extrude is not
           // something anybody means by clicking on their own geometry.
@@ -1439,6 +1609,9 @@ class _SceneViewportState extends State<SceneViewport>
         onPanStart: (details) {
           // Already handled as a trackpad gesture.
           if (_onTrackpad) return;
+          // Drawing is clicks, not drags: a drag here would orbit the view
+          // out from under the plane being drawn on.
+          if (widget.drawing?.tool.isDrawing ?? false) return;
           // A handle first: a drag that starts on one is a transform, and
           // anywhere else is the view turning. Nothing to hold down and no
           // mode to be in — the handles are the mode.

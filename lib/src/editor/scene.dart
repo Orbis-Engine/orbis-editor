@@ -52,6 +52,7 @@ class SceneObject {
     this.shape,
     this.geometry,
     List<Surface>? surfaces,
+    this.outline,
     this.interfaceAsset,
     this.prefab,
     List<String>? data,
@@ -203,7 +204,17 @@ class SceneObject {
   bool get isParametric => shape != null && geometry == null;
 
   /// The geometry as it stands, whichever of the two it came from.
-  Mesh? get currentMesh => geometry ?? shape?.build();
+  /// An outline somebody drew and pulled up, kept so it can be redrawn.
+  ///
+  /// Beside [shape] rather than one of its kinds, because a shape is a set of
+  /// numbers and this is a set of points — and beside [geometry] rather than
+  /// replaced by it, so a wall can still be moved by dragging the corner it
+  /// belongs to a week later. Editing the mesh directly fills in [geometry],
+  /// and from then on that wins: an outline cannot describe a face that has
+  /// been extruded.
+  PolyShape? outline;
+
+  Mesh? get currentMesh => geometry ?? outline?.build() ?? shape?.build();
 
   /// The materials this shape's faces can be painted with.
   ///
@@ -296,6 +307,7 @@ class SceneObject {
         meshAsset: meshAsset,
         shape: shape,
         geometry: geometry?.copy(),
+        outline: outline?.copy(),
         surfaces: [...surfaces],
         interfaceAsset: interfaceAsset,
         prefab: prefab,

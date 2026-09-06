@@ -1544,3 +1544,55 @@ class SetSurfaces extends EditorCommand {
     host.sceneFor(sceneId)?.invalidate();
   }
 }
+
+
+/// Changes the outline a shape was drawn from.
+class SetOutline extends EditorCommand {
+  SetOutline({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.to,
+    this.gesture,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  PolyShape to;
+
+  /// Set while a slider is moving, so the run is one step.
+  final Object? gesture;
+
+  @override
+  Object? get mergeKey => gesture;
+
+  PolyShape? _was;
+
+  @override
+  String get label => 'Reshape $name';
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetOutline) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    _was ??= object.outline;
+    object.outline = to;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    object.outline = _was;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+}

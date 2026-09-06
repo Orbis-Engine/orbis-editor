@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' hide Clipboard;
 import 'package:flutter/services.dart' as services;
 import 'package:path/path.dart' as p;
+import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
 
 import '../launcher/project.dart';
 import '../theme/orbis_theme.dart';
@@ -18,6 +19,7 @@ import 'console_panel.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
 import 'dock.dart';
+import 'drawing.dart';
 import 'dock_view.dart';
 import 'game_view.dart';
 import 'geometry_store.dart';
@@ -323,6 +325,175 @@ class _EditorShellState extends State<EditorShell> {
     _geometry.forget(chosen.object.id);
     _geometry.pathFor(chosen.object);
     setState(() {});
+  }
+
+  /// Changes a drawn shape's height, or turns it over.
+  void _setOutline(SceneObject object, PolyShape next, {required bool live}) {
+    final entry = _workspace.sceneHolding(object.id);
+    if (entry == null) return;
+    if (!live) _gesture = Object();
+
+    _run(SetOutline(
+      sceneId: entry.id,
+      id: object.id,
+      name: object.name,
+      to: next,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+    _geometry.forget(object.id);
+    _geometry.pathFor(object);
+    setState(() {});
+  }
+
+  /// The outline or cut being drawn, if one is.
+  ///
+  /// One for the editor rather than one a viewport, so the same drawing shows
+  /// in all four views and can be finished in a different one from the one it
+  /// was started in.
+  final Drawing _drawing = Drawing();
+
+  /// Starts or stops a drawing tool.
+  void _useTool(ViewportTool tool) {
+    setState(() {
+      if (_drawing.tool == tool) {
+        _drawing.clear();
+        return;
+      }
+      _drawing.start(tool);
+      if (tool == ViewportTool.cut && _shapeSelected == null) {
+        _drawing.clear();
+        _say('Select a shape to cut first.', level: LogLevel.warning);
+      }
+    });
+  }
+
+  /// Puts down one point.
+  void _drawPoint(Vector3 at, Vector3 origin, Vector3 normal, int? face) {
+    setState(() {
+      _drawing.planeAt(origin, normal, onFace: face);
+      _drawing.add(at);
+    });
+  }
+
+  /// Finishes whatever is being drawn.
+  void _finishDrawing() {
+    if (!_drawing.canFinish) {
+      _say(
+        _drawing.tool == ViewportTool.cut
+            ? 'A cut needs two points, both on the edge of a face.'
+            : 'A shape needs three points.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    switch (_drawing.tool) {
+      case ViewportTool.polyShape:
+        _makeDrawnShape();
+      case ViewportTool.cut:
+        _applyCut();
+      case ViewportTool.none:
+        break;
+    }
+  }
+
+  /// Turns the outline into an object.
+  void _makeDrawnShape() {
+    final open = _working;
+    final scene = open?.scene;
+    if (open == null || scene == null) return;
+
+    final normal = _drawing.normal ?? Vector3(0, 1, 0);
+    if (outlineCrosses(_drawing.points, normal)) {
+      _say('That outline crosses itself.', level: LogLevel.warning);
+      return;
+    }
+
+    // The points are kept relative to where the object stands, so moving the
+    // object later moves the outline with it rather than leaving the two
+    // describing different places.
+    final middle = Vector3.zero();
+    for (final at in _drawing.points) {
+      middle.add(at);
+    }
+    middle.scale(1 / _drawing.points.length);
+
+    final outline = PolyShape(
+      points: [for (final at in _drawing.points) at - middle],
+      height: 2,
+    );
+
+    final object = SceneObject(
+      id: _nextObjectId(),
+      name: _uniqueName(scene, 'Shape'),
+      kind: ObjectKind.shape,
+      position: middle,
+      outline: outline,
+      colour: const Color(0xFF8E99A8),
+    );
+
+    _run(AddObject(object, sceneId: open.id));
+    setState(_drawing.clear);
+    _select(object.id);
+    _geometry.forget(object.id);
+    _refreshGeometry();
+    _say('Drew ${object.name}. Its height is in the inspector.');
+  }
+
+  /// Cuts the face the path was drawn on.
+  void _applyCut() {
+    final chosen = _shapeSelected;
+    final face = _drawing.face;
+    if (chosen == null || face == null) {
+      _say('There is no face to cut.', level: LogLevel.warning);
+      return;
+    }
+
+    final next = chosen.mesh.copy();
+    if (face < 0 || face >= next.faces.length) {
+      setState(_drawing.clear);
+      return;
+    }
+
+    // Into the object's own space, which is where its geometry lives.
+    final inverse = Matrix4.inverted(chosen.entry.scene!.worldOf(
+      chosen.object.id,
+    ));
+    final path = [
+      for (final at in _drawing.points) inverse.transformed3(at.clone()),
+    ];
+
+    final made = next.cutFace(next.faces[face], path);
+    if (made.isEmpty) {
+      _say(
+        'A cut has to start and end on the edge of the face, or come back '
+        'to where it began.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: 'Cut',
+    ));
+    setState(() {
+      _drawing.clear();
+      // What came out of the cut, because that is what somebody is about to
+      // extrude — which is why they cut it.
+      _elements = ElementSelection(faces: {
+        for (var i = 0; i < next.faces.length; i++)
+          if (made.contains(next.faces[i])) i,
+      });
+      _elementMode = ElementMode.face;
+      _context = EditContext.element;
+    });
+    _geometry.forget(chosen.object.id);
+    _geometry.pathFor(chosen.object);
+    _say('Cut into ${made.length} faces.');
   }
 
   /// Which format the export button writes. A view setting: not saved, not
@@ -1597,6 +1768,9 @@ class _EditorShellState extends State<EditorShell> {
                     format: _format,
                     onFormat: (one) => setState(() => _format = one),
                     onExport: () => _exportShape(selected),
+                    outline: selected.outline,
+                    onOutline: (next, {required live}) =>
+                        _setOutline(selected, next, live: live),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
@@ -1641,6 +1815,10 @@ class _EditorShellState extends State<EditorShell> {
             onSelectElements: _selectElements,
             seeThroughElements: _seeThrough,
             snapping: _snapping,
+            drawing: _drawing,
+            onDrawPoint: _drawPoint,
+            onDrawFinish: _finishDrawing,
+            onTool: _useTool,
             onSnapping: (next) => setState(() {
               _snapping
                 ..on = next.on
@@ -2243,6 +2421,9 @@ class _EditorShellState extends State<EditorShell> {
         // geometry and G goes round the three ways of selecting it, which is
         // what somebody presses without thinking about it.
         const SingleActivator(LogicalKeyboardKey.escape): _LeaveEditIntent(),
+        const SingleActivator(LogicalKeyboardKey.enter): _FinishDrawIntent(),
+        const SingleActivator(LogicalKeyboardKey.numpadEnter):
+            _FinishDrawIntent(),
         const SingleActivator(LogicalKeyboardKey.keyG): _CycleModeIntent(),
         // The brackets, which is where every tool with a brush size puts
         // them.
@@ -2278,9 +2459,21 @@ class _EditorShellState extends State<EditorShell> {
       child: Actions(
         actions: {
           _LeaveEditIntent: CallbackAction<_LeaveEditIntent>(onInvoke: (_) {
+            // A drawing first: somebody halfway through an outline who
+            // presses escape means the outline, not the geometry.
+            if (_drawing.tool.isDrawing) {
+              setState(_drawing.clear);
+              return null;
+            }
             _setContext(EditContext.object);
             return null;
           }),
+          _FinishDrawIntent: CallbackAction<_FinishDrawIntent>(
+            onInvoke: (_) {
+              if (_drawing.tool.isDrawing) _finishDrawing();
+              return null;
+            },
+          ),
           _GridIntent: CallbackAction<_GridIntent>(onInvoke: (intent) {
             setState(() {
               _snapping.step =
@@ -2306,6 +2499,13 @@ class _EditorShellState extends State<EditorShell> {
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
           _DeleteIntent: CallbackAction<_DeleteIntent>(
             onInvoke: (_) {
+              // While drawing, backspace takes back the last point rather
+              // than deleting what happens to be selected — which would be a
+              // very unwelcome surprise halfway through an outline.
+              if (_drawing.tool.isDrawing) {
+                setState(_drawing.undo);
+                return null;
+              }
               _deleteSelection();
               return null;
             },
@@ -3088,6 +3288,11 @@ class _GridIntent extends Intent {
   const _GridIntent(this.coarser);
 
   final bool coarser;
+}
+
+/// Finishes whatever is being drawn.
+class _FinishDrawIntent extends Intent {
+  const _FinishDrawIntent();
 }
 
 class _CycleModeIntent extends Intent {

@@ -134,6 +134,7 @@ abstract final class SceneDocument {
         // worth reading even once it is not that any more.
         if (object.shape != null) 'shape': object.shape!.toJson(),
         if (object.geometry != null) 'geometry': object.geometry!.toJson(),
+        if (object.outline != null) 'outline': object.outline!.toJson(),
         if (object.surfaces.isNotEmpty)
           'surfaces': [for (final one in object.surfaces) one.toJson()],
         if (object.prefab != null) 'prefab': object.prefab,
@@ -232,6 +233,7 @@ abstract final class SceneDocument {
           entry['interface'] is String ? entry['interface']! as String : null,
       shape: Shape.fromJson(entry['shape']),
       geometry: Mesh.fromJson(entry['geometry']),
+      outline: PolyShape.fromJson(entry['outline']),
       surfaces: entry['surfaces'] is List
           ? [
               for (final one in entry['surfaces']! as List) ?Surface.fromJson(one),
