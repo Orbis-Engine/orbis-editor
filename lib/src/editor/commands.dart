@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:orbis_light/orbis_light.dart';
+import 'package:orbis_weather/orbis_weather.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import 'history.dart';
 import 'scene.dart';
-import 'sky.dart';
-import 'weather.dart';
 
 /// Which of an object's three vectors an edit is touching.
 enum TransformField {

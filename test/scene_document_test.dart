@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_light/orbis_light.dart';
+import 'package:orbis_weather/orbis_weather.dart';
+import 'package:orbis_editor/src/editor/colour.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
-import 'package:orbis_editor/src/editor/weather.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -124,7 +125,7 @@ void main() {
     test('the weather comes back as it was set', () {
       final air = WeatherState.of(WeatherCondition.misty).copyWith(
         cloudCover: 0.43,
-        fogColour: const Color(0xFF334455),
+        fogColour: const Tint.hex(0x334455),
         mistSize: 45,
         windSpeed: 7.5,
       );
@@ -147,7 +148,7 @@ void main() {
       expect(after.windDirection, 210);
       expect(after.transitionSeconds, 14);
       expect(after.weather.cloudCover, 0.43);
-      expect(after.weather.fogColour.toARGB32(), 0xFF334455);
+      expect(after.weather.fogColour.colour.toARGB32(), 0xFF334455);
       expect(after.weather.mistSize, 45);
       expect(after.weather.windSpeed, 7.5);
     });

@@ -40,6 +40,8 @@ dependencies:
   # Orbis-Engine/orbis.
   orbis_filament:
     path: ../orbis/packages/orbis_filament
+  orbis_weather:
+    path: ../orbis/packages/orbis_weather
 
   # Where a light's watts, metres and degrees become the lumens, lux and
   # radians a renderer takes. The editor authors the first and sends the

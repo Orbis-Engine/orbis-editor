@@ -2,11 +2,11 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:orbis_light/orbis_light.dart';
+import 'package:orbis_weather/orbis_weather.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import 'colour.dart';
 import 'scene.dart';
-import 'sky.dart';
-import 'weather.dart';
 
 /// The extension a scene file carries.
 const String sceneExtension = '.oscene';
@@ -220,7 +220,7 @@ abstract final class SceneDocument {
   /// What the air is doing, as JSON.
   static Map<String, Object?> _airToJson(WeatherState air) => {
         'cover': air.cloudCover,
-        'colour': _hex(air.fogColour),
+        'colour': _hex(air.fogColour.colour),
         'density': air.fogDensity,
         'height': air.fogHeight,
         'falloff': air.fogFalloff,
@@ -249,7 +249,7 @@ abstract final class SceneDocument {
 
     return WeatherState(
       cloudCover: number('cover', preset.cloudCover),
-      fogColour: _readColour(raw['colour'], fallback: preset.fogColour),
+      fogColour: _readColour(raw['colour'], fallback: preset.fogColour.colour).tint,
       fogDensity: number('density', preset.fogDensity),
       fogHeight: number('height', preset.fogHeight),
       fogFalloff: number('falloff', preset.fogFalloff),
@@ -380,7 +380,7 @@ abstract final class SceneDocument {
           fogColour: _readColour(
             _fogField(parsed, 'colour'),
             fallback: const Color(0xFF7D8794),
-          ),
+          ).tint,
           fogDensity: _fogNumber(parsed, 'density', 0),
           fogHeight: _fogNumber(parsed, 'height', 0),
           fogFalloff: _fogNumber(parsed, 'falloff', 0.2),

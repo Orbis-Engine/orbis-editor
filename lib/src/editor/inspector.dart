@@ -3,15 +3,15 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
+import 'package:orbis_weather/orbis_weather.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
+import 'colour.dart';
 import 'commands.dart';
 import 'history.dart';
 import 'scene.dart';
-import 'sky.dart';
-import 'weather.dart';
 import 'workspace.dart';
 
 /// Properties of whatever is selected.
@@ -1003,9 +1003,9 @@ class _Fields extends StatelessWidget {
         children: [
           ColourRow(
             label: 'Colour',
-            value: air.fogColour,
+            value: air.fogColour.colour,
             onChanged: (value) {
-              _setAir(air.copyWith(fogColour: value));
+              _setAir(air.copyWith(fogColour: value.tint));
               history.seal();
             },
           ),

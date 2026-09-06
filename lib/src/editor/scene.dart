@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
+import 'package:orbis_weather/orbis_weather.dart';
 
-import 'sky.dart';
-import 'weather.dart';
+import 'colour.dart';
+
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// What kind of thing an object is, which decides what components it has and
@@ -934,7 +935,7 @@ class EditorScene {
       lights: lights,
       sky: _skyFrom(
         base: _greyed(
-          driven ? sky.skyColour : skyColour,
+          driven ? sky.skyColour : skyColour.tint,
           (air?.greying ?? 0) * 0.8,
         ),
         ambientLux: ambientLux,
@@ -1001,7 +1002,7 @@ class EditorScene {
     final heading = WeatherState.windFrom(object.windDirection);
 
     return OrbisFog(
-      colour: linearFromColour(now.fogColour),
+      colour: now.fogColour.linear,
       density: now.fogDensity,
       height: now.fogHeight,
       heightFalloff: now.fogFalloff,
@@ -1074,7 +1075,7 @@ class EditorScene {
   /// else entirely, and nothing in the picture agreed with anything else.
   /// Here the cloud is lit by the same direction the scene is.
   OrbisSky _skyFrom({
-    required Color base,
+    required Tint base,
     required double ambientLux,
     required List<OrbisLight> lights,
     required SceneObject? lit,
@@ -1083,7 +1084,7 @@ class EditorScene {
     required SceneObject? weather,
     required double flash,
   }) {
-    final ground = linearFromColour(base);
+    final ground = base.linear;
     final strike = _strikeFrom(air, weather);
 
     // Which way the body is, taken from the light that is actually lighting
@@ -1150,9 +1151,9 @@ class EditorScene {
   );
 
   /// The strike this instant, or none if the sky is not that kind of sky.
-  OrbisStrike _strikeFrom(WeatherState? now, SceneObject? object) =>
+  Strike _strikeFrom(WeatherState? now, SceneObject? object) =>
       now == null || object == null || now.lightning <= 0
-      ? OrbisStrike.none
+      ? Strike.none
       : WeatherState.strikeAt(clock, now.lightning);
 
   /// The cloud in the sky, which is not the same thing as the fog.
@@ -1217,8 +1218,8 @@ class EditorScene {
   }
 
   /// A colour dragged towards the flat grey of a covered sky.
-  static Color _greyed(Color colour, double amount) =>
-      Color.lerp(colour, const Color(0xFF9BA3AB), amount.clamp(0.0, 1.0))!;
+  static Tint _greyed(Tint colour, double amount) =>
+      Tint.lerp(colour, const Tint.hex(0x9BA3AB), amount);
 
   /// One authored light, in the units the renderer takes.
   ///
@@ -1253,9 +1254,10 @@ class EditorScene {
 
     final described = Light(
       type: object.lightType,
-      color: linearFromColour(
-        _greyed(sky?.lightColour ?? object.colour, now?.greying ?? 0),
-      ),
+      color: _greyed(
+        sky?.lightColour ?? object.colour.tint,
+        now?.greying ?? 0,
+      ).linear,
       // Cloud does not switch the sun off. A heavy overcast still passes a
       // good tenth of it, which is why a wet afternoon is grey rather than
       // dark: the camera opens up and the world stays legible.

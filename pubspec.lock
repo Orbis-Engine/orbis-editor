@@ -310,6 +310,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  orbis_weather:
+    dependency: "direct main"
+    description:
+      path: "../orbis/packages/orbis_weather"
+      relative: true
+    source: path
+    version: "0.1.0"
   package_config:
     dependency: transitive
     description:
