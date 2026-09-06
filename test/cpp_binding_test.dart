@@ -105,6 +105,14 @@ extern "C" void orbis_stop(void) {}
       expect(built.ok, isTrue, reason: built.output);
     });
 
+    test('it reads through an address rather than calling in', () {
+      // The difference between a value that is safe to read once and one that
+      // is safe to read inside a loop over everything.
+      final header = ball().toCpp('ball');
+      expect(header, contains('::orbis::number_at'));
+      expect(header, contains('static const double *at'));
+    });
+
     test('a field renamed here breaks the build there', () {
       // The whole reason to generate the header rather than write it.
       final renamed = ball();

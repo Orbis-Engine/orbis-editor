@@ -250,17 +250,23 @@ class DataObject {
     List<String> reader(DataField field) => switch (field.type) {
           DataType.number => [
               'inline double ${field.key}(double fallback = 0) {',
-              '  return ::orbis::number(asset, "${field.key}", fallback);',
+              '  static const double *at =',
+              '      ::orbis::number_at(asset, "${field.key}", 0.0);',
+              '  return at ? *at : fallback;',
               '}',
             ],
           DataType.toggle => [
               'inline bool ${field.key}(bool fallback = false) {',
-              '  return ::orbis::toggle(asset, "${field.key}", fallback);',
+              '  static const bool *at =',
+              '      ::orbis::toggle_at(asset, "${field.key}", false);',
+              '  return at ? *at : fallback;',
               '}',
             ],
           DataType.text || DataType.colour || DataType.asset => [
               'inline const char *${field.key}() {',
-              '  return ::orbis::text(asset, "${field.key}");',
+              '  static const char *const *at =',
+              '      ::orbis::text_at(asset, "${field.key}");',
+              '  return at ? *at : nullptr;',
               '}',
             ],
           // A vector is three numbers under one key, read as three: the host
@@ -268,10 +274,12 @@ class DataObject {
           // shape for the sake of one type.
           DataType.vector => [
               'inline double ${field.key}(int axis, double fallback = 0) {',
-              '  static const char *const keys[3] = {',
-              '      "${field.key}.x", "${field.key}.y", "${field.key}.z"};',
-              '  if (axis < 0 || axis > 2) return fallback;',
-              '  return ::orbis::number(asset, keys[axis], fallback);',
+              '  static const double *at[3] = {',
+              '      ::orbis::number_at(asset, "${field.key}.x", 0.0),',
+              '      ::orbis::number_at(asset, "${field.key}.y", 0.0),',
+              '      ::orbis::number_at(asset, "${field.key}.z", 0.0)};',
+              '  if (axis < 0 || axis > 2 || !at[axis]) return fallback;',
+              '  return *at[axis];',
               '}',
             ],
         };
@@ -287,9 +295,10 @@ class DataObject {
       '',
       '#include "orbis_script.h"',
       '',
-      '/// Read every frame rather than copied at start: the value is a file',
-      '/// somebody can change while the game is running, and that is the',
-      '/// reason it is a data object rather than a constant in this header.',
+      '/// Each value is resolved to its address once and read through the',
+      '/// pointer after that: the read costs a load from memory, and the',
+      '/// value behind it still changes when somebody edits the file. That',
+      '/// is what makes these safe to call inside a loop over everything.',
       'namespace $type {',
       '',
       'inline constexpr const char *asset = "$importName$extension";',

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:orbis_native/orbis_native.dart';
@@ -29,82 +28,11 @@ class ScriptBuilder {
 
   /// The engine headers a script is compiled against.
   ///
-  /// Found rather than configured, in the order of what is most likely to be
-  /// right: what somebody said explicitly, then the package config, then the
-  /// packages themselves.
-  late final List<String> includes = _findIncludes();
-
-  /// The packages whose `include` folders a script needs.
-  static const _packages = ['orbis_native', 'orbis_core'];
-
-  static List<String> _findIncludes() {
-    final said = Platform.environment['ORBIS_INCLUDE'];
-    if (said != null && said.isNotEmpty) {
-      return said.split(Platform.isWindows ? ';' : ':');
-    }
-
-    final fromConfig = _fromPackageConfig();
-    if (fromConfig.isNotEmpty) return fromConfig;
-
-    try {
-      // Works in a plain Dart VM. Flutter's isolate does not support it, so
-      // this is the last resort rather than the first.
-      return ScriptRunner.engineIncludes();
-    } on Object {
-      return const [];
-    }
-  }
-
-  /// The include folders named by the running build's own package config.
-  ///
-  /// Walked up from the working directory, which is the editor's package root
-  /// when it is run from source and under test. A packaged editor has no
-  /// package config and carries the headers beside it instead; ORBIS_INCLUDE
-  /// is how it says where.
-  static List<String> _fromPackageConfig() {
-    File? config;
-    for (var at = Directory.current;; at = at.parent) {
-      final candidate =
-          File(p.join(at.path, '.dart_tool', 'package_config.json'));
-      if (candidate.existsSync()) {
-        config = candidate;
-        break;
-      }
-      if (at.parent.path == at.path) break;
-    }
-    if (config == null) return const [];
-
-    final Object? parsed;
-    try {
-      parsed = jsonDecode(config.readAsStringSync());
-    } on Object {
-      return const [];
-    }
-    if (parsed is! Map<String, Object?>) return const [];
-
-    final listed = parsed['packages'];
-    if (listed is! List) return const [];
-
-    final found = <String>[];
-    for (final entry in listed) {
-      if (entry is! Map<String, Object?>) continue;
-      if (!_packages.contains(entry['name'])) continue;
-
-      final root = entry['rootUri'];
-      if (root is! String) continue;
-
-      // Relative to the config file's own folder, which is what the format
-      // says and what a path dependency always is.
-      final resolved = config.uri.resolve(
-        root.endsWith('/') ? root : '$root/',
-      );
-      final include = resolved.resolve('include/');
-      if (Directory.fromUri(include).existsSync()) {
-        found.add(include.toFilePath());
-      }
-    }
-    return found;
-  }
+  /// Found by the same code the runtime uses, so the header the editor checks
+  /// against cannot differ from the one a script is loaded through. A packaged
+  /// editor has no package config to read and carries the headers instead;
+  /// ORBIS_INCLUDE is how it says where.
+  late final List<String> includes = ScriptRunner.engineIncludes();
 
   /// What went wrong before a compiler was even reached, or null.
   String? get problem {
