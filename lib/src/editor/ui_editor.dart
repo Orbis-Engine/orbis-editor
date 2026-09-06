@@ -7,7 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
-import 'inspector.dart' show ChoiceRow, FieldRow, SliderRow;
+import 'inspector.dart' show FieldRow, SliderRow;
 import 'ui_canvas.dart';
 
 /// The elements somebody can put on a canvas.
@@ -93,8 +93,12 @@ class _UiEditorState extends State<UiEditor> {
 
   bool _previewing = false;
   bool _outlines = true;
-  bool _safeArea = true;
+  bool _guides = true;
   bool _dirty = false;
+
+  /// The document as a drag started, so a whole drag is one undo step rather
+  /// than one per frame of it.
+  UiDocument? _before;
 
   UiNode? get _element =>
       _selected == null ? null : _document.root.at(_selected!);
@@ -158,12 +162,73 @@ class _UiEditorState extends State<UiEditor> {
     final parent = _document.root.at(into);
     if (parent == null) return;
 
+    var made = what.make();
+    // Placed rather than dropped at the origin when its parent does not lay
+    // it out: everything added to a stack landing in the same corner and on
+    // top of the last one is not an interface, it is a pile.
+    if (parent.type == 'stack') {
+      final at = 48.0 + parent.children.length * 24;
+      made = made.placeAt(at, at);
+    }
+
     _change(
       _document.copyWith(
-        root: _document.root.insertAt(into, parent.children.length, what.make()),
+        root: _document.root.insertAt(into, parent.children.length, made),
       ),
       select: [...into, parent.children.length],
     );
+  }
+
+  /// Moves an element while it is being dragged.
+  ///
+  /// The whole drag is one step. Without this an undo would walk back through
+  /// every frame of the movement, which is a hundred presses to put something
+  /// back where it was.
+  void _move(List<int> path, Offset to) {
+    final element = _document.root.at(path);
+    if (element == null) return;
+
+    // The fraction is kept while the pointer is down. Rounding every frame
+    // throws away a fraction of a pixel each time, and a slow drag ends up
+    // behind the pointer by however long somebody took over it.
+    final next = _document.copyWith(
+      root: _document.root
+          .replaceAt(path, element.placeAt(to.dx, to.dy, round: false)),
+    );
+
+    if (_before == null) {
+      _before = _document;
+      _change(next);
+    } else {
+      // Already recorded: replace the document without pushing another step.
+      setState(() {
+        _document = next;
+        _dirty = true;
+      });
+    }
+  }
+
+  /// Lands the dragged element on a whole pixel.
+  ///
+  /// A file full of positions to fourteen decimal places is a file whose diff
+  /// is unreadable, and the difference is not visible on any screen.
+  void _moveDone() {
+    _before = null;
+
+    final path = _selected;
+    final element = path == null ? null : _document.root.at(path);
+    final at = element?.placed;
+    if (path == null || element == null || at == null) return;
+    if (at.left == at.left.roundToDouble() &&
+        at.top == at.top.roundToDouble()) {
+      return;
+    }
+
+    setState(() {
+      _document = _document.copyWith(
+        root: _document.root.replaceAt(path, element.placeAt(at.left, at.top)),
+      );
+    });
   }
 
   void _remove(List<int> path) {
@@ -277,10 +342,12 @@ class _UiEditorState extends State<UiEditor> {
                           hovered: _previewing ? null : _hovered,
                           designing: !_previewing,
                           showOutlines: _outlines,
-                          showSafeArea: _safeArea,
+                          showGuides: _guides,
                           onSelect: (path) =>
                               setState(() => _selected = path),
                           onHover: (path) => setState(() => _hovered = path),
+                          onMove: _move,
+                          onMoved: _moveDone,
                         ),
                       ),
                       _Side(
@@ -348,8 +415,11 @@ class _UiEditorState extends State<UiEditor> {
             onChanged: (value) => setState(() => _previewing = value),
           ),
           const SizedBox(width: Space.xs),
+          // Named after what they actually take away. "Outlines" that leaves
+          // a canvas frame and a safe area on screen reads as a toggle that
+          // did nothing.
           _Toggle(
-            label: 'Outlines',
+            label: 'Element outlines',
             icon: Icons.select_all,
             on: _outlines && !_previewing,
             onChanged: _previewing
@@ -358,12 +428,12 @@ class _UiEditorState extends State<UiEditor> {
           ),
           const SizedBox(width: Space.xs),
           _Toggle(
-            label: 'Safe area',
+            label: 'Canvas guides',
             icon: Icons.crop_free,
-            on: _safeArea && !_previewing,
+            on: _guides && !_previewing,
             onChanged: _previewing
                 ? null
-                : (value) => setState(() => _safeArea = value),
+                : (value) => setState(() => _guides = value),
           ),
         ],
       ),
@@ -548,6 +618,18 @@ class _Side extends StatelessWidget {
 
   /// Sizes worth having one press away. Every one is a real screen somebody
   /// ships to, rather than a round number.
+  /// What each fit means, since the name is three words and the behaviour is
+  /// the thing somebody is choosing between.
+  static const _fitExplains = <CanvasFit, String>{
+    CanvasFit.width: 'The width always fills the screen. The bottom of a '
+        'taller screen is empty and a shorter one cuts the bottom off.',
+    CanvasFit.height: 'The height always fits. A wider screen has space at '
+        'the sides and a narrower one cuts them off.',
+    CanvasFit.contain: 'All of it fits, with space where the shape does not '
+        'match. Nothing is ever cut off.',
+    CanvasFit.none: 'Not scaled. Pixels are pixels, however big the screen is.',
+  };
+
   static const _sizes = <String, (double, double)>{
     '1920 × 1080': (1920, 1080),
     '2560 × 1440': (2560, 1440),
@@ -686,20 +768,27 @@ class _Side extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: Space.sm),
-                      ChoiceRow(
-                        label: 'On screen',
-                        options: [
-                          for (final fit in CanvasFit.values) fit.label,
+                      Text('ON SCREEN', style: OrbisText.section),
+                      const SizedBox(height: Space.xs),
+                      // Chips that wrap rather than four segments sharing one
+                      // row: "Match height" does not fit in a quarter of a
+                      // 296-wide panel, and a label clipped in half is a
+                      // control nobody can read.
+                      Wrap(
+                        spacing: Space.xs,
+                        runSpacing: Space.xs,
+                        children: [
+                          for (final fit in CanvasFit.values)
+                            _Chip(
+                              label: fit.label,
+                              tooltip: _fitExplains[fit],
+                              selected: document.canvas.fit == fit,
+                              onTap: () =>
+                                  onCanvas(document.canvas.copyWith(fit: fit)),
+                            ),
                         ],
-                        selected: document.canvas.fit.label,
-                        onSelect: (label) {
-                          for (final fit in CanvasFit.values) {
-                            if (fit.label == label) {
-                              onCanvas(document.canvas.copyWith(fit: fit));
-                            }
-                          }
-                        },
                       ),
+                      const SizedBox(height: Space.sm),
                       SliderRow(
                         label: 'Safe area',
                         value: document.canvas.safeArea * 100,
@@ -767,16 +856,29 @@ class _Chip extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.icon,
+    this.tooltip,
     this.selected = false,
   });
 
   final String label;
   final VoidCallback onTap;
   final IconData? icon;
+  final String? tooltip;
   final bool selected;
 
   @override
   Widget build(BuildContext context) {
+    final chip = _chip();
+    return tooltip == null
+        ? chip
+        : Tooltip(
+            message: tooltip!,
+            waitDuration: const Duration(milliseconds: 400),
+            child: chip,
+          );
+  }
+
+  Widget _chip() {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(

@@ -18,13 +18,19 @@ void main() {
   const menu = UiDocument(
     name: 'Main menu',
     root: UiNode(
-      type: 'column',
-      classes: 'w-full h-full p-8 gap-4',
+      type: 'stack',
+      classes: 'w-full h-full',
       children: [
-        UiNode(type: 'text', classes: 'text-3xl', text: 'Orbis'),
+        UiNode(
+          type: 'text',
+          classes: 'text-3xl',
+          css: 'left: 80px; top: 60px',
+          text: 'Orbis',
+        ),
         UiNode(
           type: 'row',
           classes: 'gap-2',
+          css: 'left: 80px; top: 160px',
           children: [
             UiNode(type: 'button', text: 'Play'),
             UiNode(type: 'button', text: 'Quit'),
@@ -105,7 +111,7 @@ void main() {
       await tester.tap(find.text('Quit'));
       await tester.pumpAndSettle();
 
-      // The innermost element, not the column it is three levels inside.
+      // The innermost element, not the row it sits in or the stack under it.
       expect(picked, [1, 1]);
     });
 
@@ -137,6 +143,27 @@ void main() {
           of: find.byType(UiCanvasView),
           matching: find.text(text),
         );
+
+    /// Drags something by an exact amount.
+    ///
+    /// Not tester.drag: that pads the movement to clear the drag slop, so the
+    /// pointer does not travel the distance it was asked to and a test that
+    /// checks the thing followed it measures the padding instead.
+    Future<void> dragBy(
+      WidgetTester tester,
+      Finder what,
+      Offset by, {
+      int steps = 12,
+    }) async {
+      final pointer = await tester.startGesture(tester.getCenter(what));
+      await tester.pump(const Duration(milliseconds: 40));
+      for (var i = 0; i < steps; i++) {
+        await pointer.moveBy(by / steps.toDouble());
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await pointer.up();
+      await tester.pumpAndSettle();
+    }
 
     Future<UiEditor> open(WidgetTester tester, {UiDocument? document}) async {
       final path = p.join(root.path, 'menu.oui');
@@ -209,6 +236,133 @@ void main() {
       expect(guides, findsNothing);
       // And the interface is still there, which is the point of the toggle.
       expect(onCanvas('Orbis'), findsOneWidget);
+    });
+
+    int outlinesOn(WidgetTester tester) => tester
+        .widgetList<DecoratedBox>(find.descendant(
+          of: find.byType(UiCanvasView),
+          matching: find.byType(DecoratedBox),
+        ))
+        .length;
+
+    Finder guides() =>
+        find.byWidgetPredicate((w) => w is CustomPaint && w.painter != null);
+
+    testWidgets('turning element outlines off leaves only the selection',
+        (tester) async {
+      await open(tester);
+      expect(outlinesOn(tester), greaterThan(1));
+
+      await tester.tap(find.widgetWithText(Container, 'Element outlines').first);
+      await tester.pumpAndSettle();
+
+      // One left: the selected element keeps its mark, because taking away
+      // the thing that answers "what am I editing" is a lost selection rather
+      // than a view mode.
+      expect(outlinesOn(tester), 1);
+    });
+
+    testWidgets('the canvas guides have a toggle of their own', (tester) async {
+      await open(tester);
+      expect(guides(), findsWidgets);
+
+      await tester.tap(find.widgetWithText(Container, 'Canvas guides').first);
+      await tester.pumpAndSettle();
+
+      expect(guides(), findsNothing);
+      // And the elements are still outlined: two controls, two things.
+      expect(outlinesOn(tester), greaterThan(1));
+    });
+
+    testWidgets('an element on a stack stays under the pointer',
+        (tester) async {
+      await open(tester);
+
+      final pointer =
+          await tester.startGesture(tester.getCenter(onCanvas('Orbis')));
+      await tester.pump(const Duration(milliseconds: 40));
+
+      // Past the slop first. Flutter does not call a drag a drag until the
+      // pointer has moved far enough to mean it, and that first bit of
+      // movement is swallowed — in the editor as much as in this test.
+      for (var i = 0; i < 6; i++) {
+        await pointer.moveBy(const Offset(8, 4));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+
+      final wasAt = tester.getTopLeft(onCanvas('Orbis'));
+      for (var i = 0; i < 10; i++) {
+        await pointer.moveBy(const Offset(12, 6));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      final nowAt = tester.getTopLeft(onCanvas('Orbis'));
+      await pointer.up();
+      await tester.pumpAndSettle();
+
+      // On screen, not in canvas units. The canvas is zoomed to fit the panel,
+      // so an element that moved by the drag in canvas units would lag the
+      // pointer by exactly the zoom. What it has to do is stay under it.
+      expect(nowAt.dx - wasAt.dx, closeTo(120, 1));
+      expect(nowAt.dy - wasAt.dy, closeTo(60, 1));
+    });
+
+    testWidgets('where it was dragged to is what gets saved', (tester) async {
+      await open(tester);
+
+      final before = menu.root.children.first.placed!;
+      await dragBy(tester, onCanvas('Orbis'), const Offset(120, 60));
+      await tester.tap(find.widgetWithText(Container, 'Save').first);
+      await tester.pumpAndSettle();
+
+      final written = UiDocument.read(
+        File(p.join(root.path, 'menu.oui')).readAsStringSync(),
+      )!;
+      final after = written.root.children.first.placed!;
+
+      // Further than the drag in canvas units, because the canvas is scaled
+      // down to fit: a hundred and twenty pixels of pointer is more than a
+      // hundred and twenty pixels of a 1920-wide canvas shown in less.
+      expect(after.left, greaterThan(before.left + 120));
+      expect(after.top, greaterThan(before.top + 60));
+    });
+
+    testWidgets('a whole drag is one undo step', (tester) async {
+      await open(tester);
+
+      await dragBy(tester, onCanvas('Orbis'), const Offset(80, 0));
+      await tester.tap(find.widgetWithText(Container, 'Undo').first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(Container, 'Save').first);
+      await tester.pumpAndSettle();
+      final written = UiDocument.read(
+        File(p.join(root.path, 'menu.oui')).readAsStringSync(),
+      )!;
+
+      // One press put it back, not eighty.
+      expect(
+        written.root.children.first.placed!.left,
+        menu.root.children.first.placed!.left,
+      );
+    });
+
+    testWidgets('an element a column lays out is not draggable',
+        (tester) async {
+      const flowed = UiDocument(
+        root: UiNode(
+          type: 'column',
+          classes: 'w-full h-full p-8',
+          children: [UiNode(type: 'text', text: 'Row one')],
+        ),
+      );
+      await open(tester, document: flowed);
+
+      await dragBy(tester, onCanvas('Row one'), const Offset(100, 100));
+
+      // Nothing to save: a position its parent throws away on the next layout
+      // is not a move, it is a lie.
+      expect(find.widgetWithText(Container, 'Save •'), findsNothing);
+      expect(onCanvas('Row one'), findsOneWidget);
     });
 
     testWidgets('the canvas size can be changed', (tester) async {
