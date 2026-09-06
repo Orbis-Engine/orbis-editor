@@ -31,6 +31,7 @@ import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
 import 'scene.dart';
+import 'surface.dart';
 import 'scene_document.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
@@ -215,6 +216,57 @@ class _EditorShellState extends State<EditorShell> {
       // sees that it changed.
       _elements = _elements.copy();
     });
+  }
+
+  /// Changes a shape's material slots.
+  void _setSurfaces(
+    SceneObject object,
+    List<Surface> surfaces, {
+    required bool live,
+  }) {
+    final entry = _workspace.sceneHolding(object.id);
+    if (entry == null) return;
+    if (!live) _gesture = Object();
+
+    _run(SetSurfaces(
+      sceneId: entry.id,
+      id: object.id,
+      name: object.name,
+      to: surfaces,
+      what: 'Materials',
+      // A slider run folds into one step; adding a slot does not.
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+    _geometry.forget(object.id);
+    _geometry.pathFor(object);
+    setState(() {});
+  }
+
+  /// Paints the selected faces with one of the shape's material slots.
+  void _paintFaces(int slot) {
+    final chosen = _shapeSelected;
+    if (chosen == null || _elements.faces.isEmpty) return;
+
+    final next = chosen.mesh.copy();
+    var painted = 0;
+    for (final at in _elements.faces) {
+      if (at < 0 || at >= next.faces.length) continue;
+      next.faces[at].material = slot;
+      painted++;
+    }
+    if (painted == 0) return;
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: 'Paint',
+    ));
+    _geometry.forget(chosen.object.id);
+    _geometry.pathFor(chosen.object);
+    setState(() {});
   }
 
   /// Takes a mesh a viewport drag has changed.
@@ -1349,6 +1401,10 @@ class _EditorShellState extends State<EditorShell> {
                     seeThrough: _seeThrough,
                     onSeeThrough: (value) =>
                         setState(() => _seeThrough = value),
+                    surfaces: selected.surfaces,
+                    onSurfaces: (surfaces, {required live}) =>
+                        _setSurfaces(selected, surfaces, live: live),
+                    onPaint: (slot) => _paintFaces(slot),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),

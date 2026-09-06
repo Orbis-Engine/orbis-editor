@@ -8,6 +8,8 @@ import 'package:orbis_weather/orbis_weather.dart';
 
 import 'package:orbis_mesh/orbis_mesh.dart';
 
+import 'surface.dart';
+
 import 'colour.dart';
 
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -49,10 +51,12 @@ class SceneObject {
     this.meshAsset,
     this.shape,
     this.geometry,
+    List<Surface>? surfaces,
     this.interfaceAsset,
     this.prefab,
     List<String>? data,
   })  : data = data ?? [],
+        surfaces = surfaces ?? [],
         weather = weather ?? WeatherState.of(condition),
         position = position ?? Vector3.zero(),
         rotation = rotation ?? Vector3.zero(),
@@ -201,6 +205,13 @@ class SceneObject {
   /// The geometry as it stands, whichever of the two it came from.
   Mesh? get currentMesh => geometry ?? shape?.build();
 
+  /// The materials this shape's faces can be painted with.
+  ///
+  /// Ordered, because `Face.material` is a position in this list. Removing
+  /// one would repoint every face after it, so nothing removes from the
+  /// middle — a slot is emptied by being painted over, not by going.
+  final List<Surface> surfaces;
+
   /// The interface this canvas shows, as a path relative to the project.
   ///
   /// A reference, like a mesh and like a data object. The `.oui` is the
@@ -285,6 +296,7 @@ class SceneObject {
         meshAsset: meshAsset,
         shape: shape,
         geometry: geometry?.copy(),
+        surfaces: [...surfaces],
         interfaceAsset: interfaceAsset,
         prefab: prefab,
         data: List<String>.from(data),

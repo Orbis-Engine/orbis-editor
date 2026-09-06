@@ -4,6 +4,7 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:path/path.dart' as p;
 
 import 'scene.dart';
+import 'surface.dart';
 
 /// Geometry built in the editor, on its way to the renderer.
 ///
@@ -42,7 +43,7 @@ class GeometryStore {
 
     final name = '${object.id}.glb';
     final relative = p.join('.orbis', 'geometry', name);
-    final stamp = _stampOf(mesh);
+    final stamp = _stampOf(mesh, object.surfaces);
 
     if (_written[object.id] == stamp) {
       // Written already, unless somebody deleted it underneath us.
@@ -51,8 +52,10 @@ class GeometryStore {
 
     try {
       folder.createSync(recursive: true);
-      File(p.join(projectRoot, relative))
-          .writeAsBytesSync(mesh.toGlb(name: object.name));
+      File(p.join(projectRoot, relative)).writeAsBytesSync(mesh.toGlb(
+        name: object.name,
+        materials: [for (final one in object.surfaces) one.toGlb()],
+      ));
     } on FileSystemException {
       return null;
     }
@@ -65,7 +68,7 @@ class GeometryStore {
   bool isStale(SceneObject object) {
     final mesh = object.currentMesh;
     if (mesh == null) return false;
-    return _written[object.id] != _stampOf(mesh);
+    return _written[object.id] != _stampOf(mesh, object.surfaces);
   }
 
   /// Forgets an object, so the next ask writes again.
@@ -88,16 +91,26 @@ class GeometryStore {
   /// This is asked once a frame per shape, and hashing ten thousand vertices
   /// to find out that nothing moved is the kind of work that only shows up
   /// once somebody has a level full of them.
-  static String _stampOf(Mesh mesh) {
+  static String _stampOf(Mesh mesh, List<Surface> surfaces) {
     var total = 0.0;
     for (final at in mesh.positions) {
       total += at.x + at.y * 3 + at.z * 7;
     }
     var corners = 0;
+    var painted = 0;
     for (final face in mesh.faces) {
       corners += face.vertices.length;
+      // Which material each face wears, folded in: painting a face changes
+      // nothing about where its corners are, and without this the file is
+      // never written again.
+      painted = painted * 31 + face.material;
     }
-    return '${mesh.positions.length}/${mesh.faces.length}/$corners/'
-        '${total.toStringAsFixed(4)}';
+    var materials = 0;
+    for (final one in surfaces) {
+      materials = materials * 31 + Object.hash(one.name, one.colour,
+          one.metallic, one.roughness, one.emissive, one.doubleSided);
+    }
+    return '${mesh.positions.length}/${mesh.faces.length}/$corners/$painted/'
+        '$materials/${total.toStringAsFixed(4)}';
   }
 }

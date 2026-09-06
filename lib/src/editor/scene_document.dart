@@ -9,6 +9,7 @@ import 'colour.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 
 import 'scene.dart';
+import 'surface.dart';
 
 /// The extension a scene file carries.
 const String sceneExtension = '.oscene';
@@ -133,6 +134,8 @@ abstract final class SceneDocument {
         // worth reading even once it is not that any more.
         if (object.shape != null) 'shape': object.shape!.toJson(),
         if (object.geometry != null) 'geometry': object.geometry!.toJson(),
+        if (object.surfaces.isNotEmpty)
+          'surfaces': [for (final one in object.surfaces) one.toJson()],
         if (object.prefab != null) 'prefab': object.prefab,
         if (object.data.isNotEmpty) 'data': object.data,
       };
@@ -229,6 +232,11 @@ abstract final class SceneDocument {
           entry['interface'] is String ? entry['interface']! as String : null,
       shape: Shape.fromJson(entry['shape']),
       geometry: Mesh.fromJson(entry['geometry']),
+      surfaces: entry['surfaces'] is List
+          ? [
+              for (final one in entry['surfaces']! as List) ?Surface.fromJson(one),
+            ]
+          : null,
       prefab: entry['prefab'] is String ? entry['prefab']! as String : null,
       data: entry['data'] is List
           ? [

@@ -7,6 +7,7 @@ import 'history.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 
 import 'scene.dart';
+import 'surface.dart';
 
 /// Which of an object's three vectors an edit is touching.
 enum TransformField {
@@ -1477,6 +1478,69 @@ class SetGeometry extends EditorCommand {
     object
       ..geometry = _was
       ..shape = _wasShape;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+}
+
+
+/// Replaces a shape's material slots.
+///
+/// The whole list rather than one slot, for the same reason geometry is the
+/// whole mesh: a slot's position in the list is what a face points at, so an
+/// edit to one is a fact about all of them.
+class SetSurfaces extends EditorCommand {
+  SetSurfaces({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.to,
+    required this.what,
+    this.gesture,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  List<Surface> to;
+  final String what;
+
+  /// Set while a slider is being dragged, so a gesture is one step.
+  final Object? gesture;
+
+  @override
+  Object? get mergeKey => gesture;
+
+  List<Surface>? _was;
+
+  @override
+  String get label => '$what on $name';
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetSurfaces) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    _was ??= [...object.surfaces];
+    object.surfaces
+      ..clear()
+      ..addAll(to);
+    host.sceneFor(sceneId)?.invalidate();
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    final was = _was;
+    if (object == null || was == null) return;
+    object.surfaces
+      ..clear()
+      ..addAll(was);
     host.sceneFor(sceneId)?.invalidate();
   }
 }

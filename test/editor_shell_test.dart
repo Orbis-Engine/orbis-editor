@@ -14,6 +14,8 @@ import 'package:orbis_editor/src/editor/dock_view.dart';
 import 'package:orbis_editor/src/editor/game_view.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
+import 'package:orbis_editor/src/editor/mesh_panel.dart';
+import 'package:orbis_editor/src/editor/surface.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
@@ -2399,6 +2401,76 @@ void main() {
 
       // Back out to the object, which is what escape is for.
       expect(find.textContaining('Click'), findsNothing);
+    });
+
+    /// The materials panel as it stands, so its callbacks can be driven
+    /// without fighting a lazy list for a button below the fold.
+    MeshPanel panelIn(WidgetTester tester) =>
+        tester.widget<MeshPanel>(find.byType(MeshPanel));
+
+    testWidgets('a material slot is added and painted onto a face',
+        (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
+      await tester.pumpAndSettle();
+
+      panelIn(tester).onSurfaces(const [Surface(name: 'Stone')], live: false);
+      await tester.pumpAndSettle();
+      expect(shapeIn(tester).surfaces, hasLength(1));
+
+      // A second, so painting with one is a choice rather than the only
+      // thing that could have happened.
+      panelIn(tester).onSurfaces(
+        const [Surface(name: 'Stone'), Surface(name: 'Brass', metallic: 1)],
+        live: false,
+      );
+      await tester.pumpAndSettle();
+
+      // Picked through the model rather than the viewport: what is under
+      // test is painting, and where a click lands is somebody else's test.
+      final viewport = tester.widget<SceneViewport>(find.byType(SceneViewport));
+      viewport.onPickElement!(0, add: false);
+      await tester.pumpAndSettle();
+
+      panelIn(tester).onPaint(1);
+      await tester.pumpAndSettle();
+
+      final mesh = shapeIn(tester).currentMesh!;
+      expect(mesh.faces[0].material, 1);
+      expect(mesh.faces[1].material, 0, reason: 'nothing else was painted');
+    });
+
+    testWidgets('painting is one undoable step', (tester) async {
+      await open(tester);
+      await addShape(tester, 'Cube');
+      await scrollInspector(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
+      await tester.pumpAndSettle();
+
+      panelIn(tester).onSurfaces(
+        const [Surface(name: 'Stone'), Surface(name: 'Brass')],
+        live: false,
+      );
+      await tester.pumpAndSettle();
+
+      final viewport = tester.widget<SceneViewport>(find.byType(SceneViewport));
+      viewport.onPickElement!(2, add: false);
+      await tester.pumpAndSettle();
+      panelIn(tester).onPaint(1);
+      await tester.pumpAndSettle();
+      expect(shapeIn(tester).currentMesh!.faces[2].material, 1);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+
+      expect(shapeIn(tester).currentMesh!.faces[2].material, 0);
+      expect(shapeIn(tester).surfaces, hasLength(2),
+          reason: 'the slots are a separate step and are still there');
     });
 
     testWidgets('the object actions are offered without a selection',

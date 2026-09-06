@@ -3,7 +3,8 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
-import 'inspector.dart' show ChoiceRow, SliderRow;
+import 'inspector.dart' show ChoiceRow, ColourRow, SliderRow;
+import 'surface.dart';
 import 'mesh_edit.dart';
 import 'mesh_tools.dart';
 
@@ -29,6 +30,9 @@ class MeshPanel extends StatelessWidget {
     required this.onAmount,
     required this.seeThrough,
     required this.onSeeThrough,
+    required this.surfaces,
+    required this.onSurfaces,
+    required this.onPaint,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -54,6 +58,16 @@ class MeshPanel extends StatelessWidget {
   final bool seeThrough;
   final ValueChanged<bool> onSeeThrough;
 
+  /// What this shape's faces can be painted with.
+  final List<Surface> surfaces;
+
+  /// Called with the whole list whenever one of them changes. [live] is set
+  /// while a slider is being dragged, so the run is one step to undo.
+  final void Function(List<Surface> surfaces, {required bool live}) onSurfaces;
+
+  /// Paints the selected faces with the slot at this position.
+  final ValueChanged<int> onPaint;
+
   bool get _parametric => shape != null && geometry == null;
 
   @override
@@ -63,6 +77,7 @@ class MeshPanel extends StatelessWidget {
       children: [
         if (shape != null) _shapeSection(),
         _editSection(),
+        _materialsSection(),
       ],
     );
   }
@@ -349,6 +364,168 @@ class _ActionRow extends StatelessWidget {
 }
 
 /// A titled block, matching the inspector's other sections.
+extension on MeshPanel {
+  /// The material slots, and what paints with them.
+  Widget _materialsSection() {
+    // Which slot each face wears, so a slot can say how much of the shape it
+    // covers — the fastest way to find the one somebody is looking for.
+    final mesh = geometry ?? shape?.build();
+    final worn = <int, int>{};
+    for (final face in mesh?.faces ?? const <Face>[]) {
+      worn[face.material] = (worn[face.material] ?? 0) + 1;
+    }
+    final painting = context_ == EditContext.element &&
+        mode == ElementMode.face &&
+        selection.faces.isNotEmpty;
+
+    return _Section(
+      title: 'Materials',
+      icon: Icons.palette_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (surfaces.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.xs),
+              child: Text(
+                'One material, the renderer\'s own. Add a slot to paint '
+                'faces with something else.',
+                style: OrbisText.caption.copyWith(fontSize: 11),
+              ),
+            ),
+          for (var i = 0; i < surfaces.length; i++) ...[
+            _SurfaceRow(
+              slot: i,
+              surface: surfaces[i],
+              faces: worn[i] ?? 0,
+              painting: painting,
+              onPaint: () => onPaint(i),
+              onChanged: (next, {required live}) {
+                final all = [...surfaces];
+                all[i] = next;
+                onSurfaces(all, live: live);
+              },
+            ),
+            const SizedBox(height: Space.xs),
+          ],
+          OrbisButton(
+            label: 'Add material',
+            icon: Icons.add,
+            expand: true,
+            tone: ButtonTone.quiet,
+            onPressed: () => onSurfaces(
+              [
+                ...surfaces,
+                Surface(name: 'Material ${surfaces.length + 1}'),
+              ],
+              live: false,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One material slot: what it looks like, how much of the shape wears it, and
+/// the button that paints more of it.
+class _SurfaceRow extends StatelessWidget {
+  const _SurfaceRow({
+    required this.slot,
+    required this.surface,
+    required this.faces,
+    required this.painting,
+    required this.onPaint,
+    required this.onChanged,
+  });
+
+  final int slot;
+  final Surface surface;
+  final int faces;
+
+  /// Whether there are faces selected for the paint button to act on.
+  final bool painting;
+  final VoidCallback onPaint;
+  final void Function(Surface next, {required bool live}) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(Space.xs),
+      decoration: BoxDecoration(
+        color: OrbisColors.ground,
+        borderRadius: BorderRadius.circular(Radii.control),
+        border: Border.all(color: OrbisColors.lineSoft),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: surface.colour,
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: OrbisColors.lineSoft),
+                ),
+              ),
+              const SizedBox(width: Space.xs),
+              Expanded(
+                child: Text(
+                  surface.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: OrbisText.body.copyWith(fontSize: 11.5),
+                ),
+              ),
+              Text(
+                faces == 0 ? 'unused' : '$faces',
+                style: OrbisText.caption.copyWith(fontSize: 10.5),
+              ),
+              const SizedBox(width: Space.xs),
+              // Only when there is something to paint. A button that does
+              // nothing teaches somebody nothing about when it would.
+              if (painting)
+                OrbisButton(
+                  label: 'Paint',
+                  icon: Icons.format_paint_outlined,
+                  tone: ButtonTone.primary,
+                  onPressed: onPaint,
+                ),
+            ],
+          ),
+          const SizedBox(height: Space.xs),
+          ColourRow(
+            label: 'Colour',
+            value: surface.colour,
+            onChanged: (colour) =>
+                onChanged(surface.copyWith(colour: colour), live: false),
+          ),
+          SliderRow(
+            label: 'Metal',
+            value: surface.metallic,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) =>
+                onChanged(surface.copyWith(metallic: value), live: true),
+          ),
+          SliderRow(
+            label: 'Rough',
+            value: surface.roughness,
+            min: 0,
+            max: 1,
+            decimals: 2,
+            onChanged: (value) =>
+                onChanged(surface.copyWith(roughness: value), live: true),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Section extends StatelessWidget {
   const _Section({
     required this.title,
