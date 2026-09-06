@@ -775,6 +775,9 @@ class _AssetMenuState extends State<AssetMenu> {
             child: Text(group.label, style: OrbisText.label),
           ),
         const Divider(height: 9, color: OrbisColors.line),
+        // The documents, which are what somebody opens rather than what they
+        // write: a scene and a screen, not a file to type into.
+        _make(NewAsset.canvas),
         _make(NewAsset.scene),
       ],
       child: widget.child,

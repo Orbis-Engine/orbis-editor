@@ -16,12 +16,15 @@ import 'commands.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
 import 'script_build.dart';
+import 'ui_editor.dart';
 import 'history.dart';
 import 'inspector.dart';
 import 'outliner.dart';
 import 'prefab.dart';
 import 'scene.dart';
 import 'scene_document.dart';
+import 'package:orbis_ui/orbis_ui.dart';
+
 import 'viewport.dart';
 import 'workspace.dart';
 
@@ -924,6 +927,41 @@ class _EditorShellState extends State<EditorShell> {
     _select(object.id);
   }
 
+  // ---- interfaces ----
+
+  /// Opens a canvas for laying out.
+  ///
+  /// A screen of its own rather than a panel. A canvas is a design surface at
+  /// a fixed size, and one squeezed into the space beside a 3D viewport is a
+  /// view too small to lay anything out in next to a viewport nobody is
+  /// looking at.
+  Future<void> _openInterface(String path) async {
+    final File file = File(path);
+    if (!file.existsSync()) {
+      _say('${p.basename(path)} is not in the project any more.');
+      return;
+    }
+
+    final document = UiDocument.read(file.readAsStringSync());
+    if (document == null) {
+      _say('${p.basename(path)} is not a readable interface.');
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => UiEditor(
+          path: path,
+          document: document,
+          onProblem: _say,
+        ),
+      ),
+    );
+    // The browser watches the folder, so what changed on disk arrives on its
+    // own; this is only to bring the shell's own frame back.
+    if (mounted) setState(() {});
+  }
+
   // ---- scripts ----
 
   /// Compiles a C++ script and says what the compiler said.
@@ -1506,6 +1544,10 @@ class _EditorShellState extends State<EditorShell> {
                                 // type into goes where they type.
                                 if (asset.kind == AssetKind.scene) {
                                   _openScene(asset.path);
+                                  return;
+                                }
+                                if (asset.kind == AssetKind.canvas) {
+                                  _openInterface(asset.path);
                                   return;
                                 }
                                 const editable = {

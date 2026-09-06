@@ -55,6 +55,11 @@ dependencies:
   # thing the runtime loads.
   orbis_native:
     path: ../orbis/packages/orbis_native
+
+  # The interface model and the widgets it builds. The same package a game
+  # draws its interface with, so what the canvas shows is what ships.
+  orbis_ui:
+    path: ../orbis/packages/orbis_ui
   path: ^1.9.0
   path_provider: ^2.1.5
 

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:orbis_ui/orbis_ui.dart';
+
 import 'data_object.dart';
 
 /// What an asset is, decided by its extension.
@@ -22,6 +24,7 @@ enum AssetKind {
   native('C++', Icons.memory),
   prefab('Prefab', Icons.widgets_outlined),
   dataObject('Data object', Icons.dataset_outlined),
+  canvas('Canvas', Icons.web_asset),
   audio('Audio', Icons.graphic_eq),
   data('Data', Icons.data_object),
   other('File', Icons.insert_drive_file_outlined);
@@ -43,6 +46,7 @@ enum AssetKind {
     '.cpp': native, '.cc': native, '.h': native, '.hpp': native,
     '.oprefab': prefab,
     '.odata': dataObject,
+    '.oui': canvas,
     '.wav': audio, '.mp3': audio, '.ogg': audio,
     '.json': data, '.yaml': data, '.yml': data,
   };
@@ -325,6 +329,10 @@ class AssetTree {
     try {
       if (what.isFolder) {
         Directory(path).createSync();
+      } else if (what == NewAsset.canvas) {
+        File(path).writeAsStringSync(
+          UiDocument.blank(p.basenameWithoutExtension(unique)).toText(),
+        );
       } else if (what == NewAsset.dataObject) {
         File(path).writeAsStringSync(
           DataObject.blank(p.basenameWithoutExtension(unique)).toText(),
@@ -642,6 +650,16 @@ struct Drift {
     starter: '{}\n',
   ),
 
+  canvas(
+    label: 'Canvas',
+    icon: Icons.web_asset,
+    extension: '.oui',
+    suggested: 'screen',
+    // Written by UiDocument.blank rather than as text here, so there is one
+    // definition of what a new canvas holds.
+    starter: null,
+  ),
+
   scene(
     label: 'Scene',
     icon: Icons.public,
@@ -715,5 +733,9 @@ enum NewAssetGroup {
   final List<NewAsset> members;
 
   /// The kinds that sit on the menu itself rather than in a group.
-  static const List<NewAsset> loose = [NewAsset.folder, NewAsset.scene];
+  static const List<NewAsset> loose = [
+    NewAsset.folder,
+    NewAsset.canvas,
+    NewAsset.scene,
+  ];
 }
