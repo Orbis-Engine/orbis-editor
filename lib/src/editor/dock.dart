@@ -13,7 +13,8 @@ enum PanelKind {
   viewport('Scene', Icons.videocam_outlined),
   game('Game', Icons.sports_esports_outlined),
   project('Project', Icons.folder_outlined),
-  console('Console', Icons.terminal);
+  console('Console', Icons.terminal),
+  uvs('UVs', Icons.grid_on_outlined);
 
   const PanelKind(this.label, this.icon);
 

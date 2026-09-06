@@ -33,6 +33,9 @@ class MeshPanel extends StatelessWidget {
     required this.surfaces,
     required this.onSurfaces,
     required this.onPaint,
+    required this.format,
+    required this.onFormat,
+    required this.onExport,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -68,6 +71,11 @@ class MeshPanel extends StatelessWidget {
   /// Paints the selected faces with the slot at this position.
   final ValueChanged<int> onPaint;
 
+  /// Which format an export writes.
+  final MeshFormat format;
+  final ValueChanged<MeshFormat> onFormat;
+  final VoidCallback onExport;
+
   bool get _parametric => shape != null && geometry == null;
 
   @override
@@ -78,6 +86,7 @@ class MeshPanel extends StatelessWidget {
         if (shape != null) _shapeSection(),
         _editSection(),
         _materialsSection(),
+        _exportSection(),
       ],
     );
   }
@@ -420,6 +429,55 @@ extension on MeshPanel {
               ],
               live: false,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+extension on MeshPanel {
+  /// The way out.
+  ///
+  /// Not because the engine needs it — it reads its own files — but because a
+  /// shape blocked out here is often the start of something finished
+  /// somewhere else, and a tool that can only be a dead end is one people
+  /// stop putting real work into.
+  Widget _exportSection() {
+    return _Section(
+      title: 'Export',
+      icon: Icons.ios_share_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ChoiceRow(
+            label: 'Format',
+            options: [for (final one in MeshFormat.values) one.label],
+            selected: format.label,
+            onSelect: (label) => onFormat(
+              MeshFormat.values.firstWhere((one) => one.label == label),
+            ),
+          ),
+          const SizedBox(height: Space.xs),
+          Text(
+            switch (format) {
+              MeshFormat.obj =>
+                'Keeps faces as they were drawn, and brings a .mtl.',
+              MeshFormat.glb => 'What the engine itself loads.',
+              MeshFormat.stl => 'Triangles and nothing else. What a printer '
+                  'takes.',
+              MeshFormat.ply => 'Triangles with their normals and '
+                  'coordinates.',
+            },
+            style: OrbisText.caption.copyWith(fontSize: 11),
+          ),
+          const SizedBox(height: Space.xs),
+          OrbisButton(
+            label: 'Export shape',
+            icon: Icons.save_alt,
+            expand: true,
+            tone: ButtonTone.quiet,
+            onPressed: onExport,
           ),
         ],
       ),

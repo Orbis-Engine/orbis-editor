@@ -33,6 +33,7 @@ import 'prefab.dart';
 import 'scene.dart';
 import 'snapping.dart';
 import 'surface.dart';
+import 'uv_panel.dart';
 import 'scene_document.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
@@ -197,6 +198,186 @@ class _EditorShellState extends State<EditorShell> {
   /// scene agree about the grid — and a view setting, not a document one: it
   /// is not saved and it is not undone.
   final Snapping _snapping = Snapping();
+
+  /// What a drag in the coordinate view does.
+  UvGesture _uvGesture = UvGesture.move;
+
+  /// The coordinate view, and the rule's numbers under it.
+  ///
+  /// One panel rather than a section of the inspector: a texture is looked at
+  /// while the shape is being turned in the viewport, and something that
+  /// takes half a sidebar wants to be somewhere somebody chose to put it.
+  Widget _uvEditor() {
+    final chosen = _shapeSelected;
+    final mesh = chosen?.mesh;
+    final faces = mesh == null ? const <Face>[] : _elements.facesIn(mesh);
+    // Only meaningful for faces: a vertex has as many coordinates as it has
+    // faces, and asking which one somebody means is a question with no good
+    // answer.
+    final wrongMode = _context == EditContext.element &&
+        _elementMode != ElementMode.face;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (wrongMode)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.xs),
+            child: Text(
+              'Texture coordinates belong to faces. Press G until Faces is on.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+          ),
+        UvPanel(
+          mesh: mesh,
+          selection: _elementMode == ElementMode.face
+              ? _elements
+              : nothingSelected,
+          gesture: _uvGesture,
+          onGesture: (one) => setState(() => _uvGesture = one),
+          onNudge: (by) => _editUvs('Move texture', (mesh, faces) {
+            mesh.nudgeUvs(faces, by);
+          }),
+          onScale: (by) => _editUvs('Scale texture', (mesh, faces) {
+            mesh.scaleUvs(faces, by);
+          }),
+          onTurn: (degrees) => _editUvs('Turn texture', (mesh, faces) {
+            mesh.turnUvs(faces, degrees);
+          }),
+          onDone: () => _gesture = null,
+          onAction: _runUvAction,
+        ),
+        if (faces.length == 1 && !faces.single.uv.isManual) ...[
+          const SizedBox(height: Space.sm),
+          UvRuleControls(
+            uv: faces.single.uv,
+            onChanged: (next, {required live}) => _editUvs(
+              'Texture',
+              (mesh, faces) {
+                for (final face in faces) {
+                  face.uv = next;
+                }
+              },
+              live: live,
+            ),
+            onDone: () => _gesture = null,
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Runs one of the coordinate buttons.
+  void _runUvAction(UvAction action) {
+    _editUvs(action.label, (mesh, faces) {
+      switch (action) {
+        case UvAction.freeze:
+          mesh.freezeUvs(faces);
+        case UvAction.release:
+          mesh.releaseUvs(faces);
+        case UvAction.fit:
+          mesh.fitUvs(faces);
+        case UvAction.planar:
+          mesh.projectPlanar(faces);
+        case UvAction.box:
+          mesh.projectBox(faces);
+      }
+    }, live: false);
+  }
+
+  /// One coordinate edit, on a copy, through the undo stack.
+  ///
+  /// [live] folds a run of them into one step, which is what a drag or a
+  /// slider needs and what a button must not have — two presses of Fit are
+  /// two things somebody did.
+  void _editUvs(
+    String what,
+    void Function(Mesh mesh, List<Face> faces) change, {
+    bool live = true,
+  }) {
+    final chosen = _shapeSelected;
+    if (chosen == null) return;
+
+    final next = chosen.mesh.copy();
+    final faces = _elements.facesIn(next);
+    if (faces.isEmpty) return;
+
+    change(next, faces);
+
+    if (!live) {
+      _gesture = null;
+    } else {
+      _gesture ??= Object();
+    }
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: what,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+
+    _geometry.forget(chosen.object.id);
+    _geometry.pathFor(chosen.object);
+    setState(() {});
+  }
+
+  /// Which format the export button writes. A view setting: not saved, not
+  /// undone, and remembered only for as long as the editor is open.
+  MeshFormat _format = MeshFormat.obj;
+
+  /// Writes a shape out, into the project's own exports folder.
+  ///
+  /// Inside the project rather than wherever a file dialog was last pointed:
+  /// an export is a thing somebody made and will want again, and a folder
+  /// beside the scenes is where they will look for it.
+  Future<void> _exportShape(SceneObject object) async {
+    final mesh = object.currentMesh;
+    if (mesh == null || mesh.isEmpty) {
+      _say('There is no geometry to export.');
+      return;
+    }
+
+    final name = await promptForName(
+      context,
+      title: 'Export ${object.name}',
+      initial: object.name,
+      hint: 'Goes in exports/, as .${_format.extension}.',
+      action: 'Export',
+    );
+    if (!mounted || name == null || name.isEmpty) return;
+    if (name.contains(p.separator)) {
+      _say('A file name cannot contain a path.');
+      return;
+    }
+
+    final folder = Directory(
+      p.join(widget.project.directory, 'exports'),
+    );
+    final files = mesh.writeAs(
+      _format,
+      name: name,
+      materials: [for (final one in object.surfaces) one.toGlb()],
+    );
+
+    try {
+      folder.createSync(recursive: true);
+      for (final file in files) {
+        File(p.join(folder.path, file.name)).writeAsBytesSync(file.bytes);
+      }
+    } on FileSystemException catch (error) {
+      _say('Could not write the export: ${error.message}');
+      return;
+    }
+
+    // Both names when there are two: an OBJ without the library it names is a
+    // grey model and no clue why.
+    _say('Exported ${files.map((one) => one.name).join(' and ')} to '
+        'exports/.');
+  }
 
   /// Whether picking reaches what is behind the surface.
   ///
@@ -1413,6 +1594,9 @@ class _EditorShellState extends State<EditorShell> {
                     onSurfaces: (surfaces, {required live}) =>
                         _setSurfaces(selected, surfaces, live: live),
                     onPaint: (slot) => _paintFaces(slot),
+                    format: _format,
+                    onFormat: (one) => setState(() => _format = one),
+                    onExport: () => _exportShape(selected),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
@@ -1527,6 +1711,10 @@ class _EditorShellState extends State<EditorShell> {
             }),
             ),
       PanelKind.console => ConsolePanel(log: _log),
+      PanelKind.uvs => SingleChildScrollView(
+          padding: const EdgeInsets.all(Space.sm),
+          child: _uvEditor(),
+        ),
     };
   }
 
@@ -2814,6 +3002,7 @@ class _ViewMenu extends StatelessWidget {
     (PanelKind.game, 'game'),
     (PanelKind.project, 'project'),
     (PanelKind.console, 'console'),
+    (PanelKind.uvs, 'uvs'),
   ];
 
   @override

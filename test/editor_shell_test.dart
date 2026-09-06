@@ -2508,13 +2508,16 @@ void main() {
       await scrollInspector(tester);
 
       final was = shapeIn(tester).shape!.steps;
-      await tester.drag(
-        find.descendant(
-          of: find.widgetWithText(FieldRow, 'Steps'),
-          matching: find.byType(Slider),
-        ),
-        const Offset(60, 0),
+      final slider = find.descendant(
+        of: find.widgetWithText(FieldRow, 'Steps'),
+        matching: find.byType(Slider),
       );
+      // Scrolled to rather than assumed: the inspector's lazy list builds
+      // what is near the viewport, and a widget it has built can still be
+      // above the top of it.
+      await tester.ensureVisible(slider);
+      await tester.pumpAndSettle();
+      await tester.drag(slider, const Offset(60, 0));
       await tester.pumpAndSettle();
 
       expect(shapeIn(tester).shape!.steps, isNot(was));
