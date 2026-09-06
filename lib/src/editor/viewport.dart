@@ -201,6 +201,7 @@ class SceneViewport extends StatefulWidget {
     this.interface,
     this.showInterface = true,
     this.onToggleInterface,
+    this.previewOf,
     this.selected = const {},
     this.onDropAsset,
     this.projectRoot,
@@ -250,6 +251,13 @@ class SceneViewport extends StatefulWidget {
   /// Turns that on and off. This is a view setting and not a scene edit —
   /// hiding the canvas object is what hides the interface in the game.
   final VoidCallback? onToggleInterface;
+
+  /// What a selected camera sees, shown in the corner.
+  ///
+  /// Built by the shell rather than here, so the viewport does not have to
+  /// know how a game view is put together — and so the preview and the game
+  /// panel are the same widget rather than two things that agree for now.
+  final Widget Function(SceneObject camera)? previewOf;
 
   /// The one of the selection the handles sit on, and whose transform a drag
   /// writes first. The others follow it.
@@ -686,6 +694,19 @@ class _SceneViewportState extends State<SceneViewport>
   Duration _lastTold = Duration.zero;
   static const Duration _tellInterval = Duration(milliseconds: 250);
 
+  /// The preview to show, or null when nothing that has a view is selected.
+  Widget? get _preview {
+    final make = widget.previewOf;
+    if (make == null || widget.selected.length != 1) return null;
+
+    final scene = widget.workspace.loaded?.scene;
+    final object = scene?[widget.selected.first];
+    if (object == null || object.kind != ObjectKind.camera) return null;
+    if (!object.visible || !scene!.isShown(object.id)) return null;
+
+    return make(object);
+  }
+
   bool get _rendererAvailable =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
@@ -813,6 +834,16 @@ class _SceneViewportState extends State<SceneViewport>
                 ],
               ]),
             ),
+            // What the selected camera sees, in the corner. Unity puts this
+            // bottom-right; it is bottom-left here because that is the corner
+            // this editor leaves empty, and a preview under the transform
+            // tools would cover the thing somebody is about to press.
+            if (_preview != null)
+              Positioned(
+                left: Space.md,
+                bottom: 52,
+                child: _CameraPreview(child: _preview!),
+              ),
             if (_rendererAvailable)
               Positioned(
                 left: Space.md,
@@ -1202,4 +1233,50 @@ class _SelectionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SelectionPainter old) => true;
+}
+
+/// A small window onto what a camera sees.
+///
+/// Deliberately small and in a corner: it answers "is this shot right" without
+/// becoming the thing somebody is looking at. Anything bigger is the game
+/// view, which is a panel and can be docked wherever it is wanted.
+class _CameraPreview extends StatelessWidget {
+  const _CameraPreview({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 240,
+      height: 135,
+      decoration: BoxDecoration(
+        color: OrbisColors.ground,
+        borderRadius: BorderRadius.circular(Radii.control),
+        border: Border.all(color: OrbisColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            height: 20,
+            padding: const EdgeInsets.symmetric(horizontal: Space.sm),
+            alignment: Alignment.centerLeft,
+            child: Text('CAMERA', style: OrbisText.section),
+          ),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(Radii.control),
+              ),
+              // Nothing in it takes the pointer: it is a picture of the shot,
+              // and a click here should still select what is behind it in the
+              // viewport.
+              child: IgnorePointer(child: child),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

@@ -17,6 +17,9 @@ import 'console.dart';
 import 'console_panel.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
+import 'dock.dart';
+import 'dock_view.dart';
+import 'game_view.dart';
 import 'script_build.dart';
 import 'ui_editor.dart';
 import 'history.dart';
@@ -70,8 +73,6 @@ class _EditorShellState extends State<EditorShell> {
   /// Whether the interface is drawn over the viewport.
   bool _showInterface = true;
 
-  /// How tall the strip of tabs above the bottom panels is.
-  static const double _tabStripHeight = 28;
 
   /// Everything the editor has said. Kept, rather than shown for four seconds
   /// in a corner and lost.
@@ -80,8 +81,6 @@ class _EditorShellState extends State<EditorShell> {
   /// Puts Flutter's own errors in the console. Undone on dispose.
   late final VoidCallback _stopCatching = _log.catchFlutterErrors();
 
-  /// Which of the bottom panels is showing.
-  bool _consoleOpen = false;
 
   /// The data object being looked at, or null when the inspector is showing
   /// the scene's selection.
@@ -94,10 +93,7 @@ class _EditorShellState extends State<EditorShell> {
   String? _primary;
 
   bool _playing = false;
-  OrbitCamera _camera = OrbitCamera();
-  double _browserHeight = 190;
 
-  static const _minimumBrowserHeight = 120.0;
 
   /// What the renderer has already been heard on, so a note is said once
   /// rather than on every frame of a drag. A subject that stops being
@@ -977,6 +973,198 @@ class _EditorShellState extends State<EditorShell> {
     _select(object.id);
   }
 
+
+  // ---- panels ----
+
+  /// How the panels are arranged. Data, so it survives being closed.
+  late DockLayout _layout = _readLayout() ?? DockLayout.standard();
+
+  /// A camera per scene view.
+  ///
+  /// Four views onto one world is four places to be standing. Without one
+  /// each, the second view would jump to wherever the first was looking the
+  /// moment anybody moved it.
+  final Map<String, OrbitCamera> _cameras = {};
+
+  /// The view last used, which is the one F frames in.
+  String _using = 'scene';
+
+  OrbitCamera _cameraFor(String id) => _cameras[id] ??= OrbitCamera();
+
+  /// The camera of the view being worked in.
+  OrbitCamera get _camera => _cameraFor(_using);
+
+  set _camera(OrbitCamera camera) => _cameras[_using] = camera;
+
+  /// Where the layout is kept: with the project, since it is about this
+  /// project's panels rather than about the editor.
+  File get _layoutFile =>
+      File(p.join(widget.project.directory, '.orbis', 'layout.json'));
+
+  DockLayout? _readLayout() {
+    try {
+      final file = _layoutFile;
+      if (!file.existsSync()) return null;
+      return DockLayout.read(file.readAsStringSync());
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  void _relayout(DockLayout layout) {
+    setState(() => _layout = layout);
+    try {
+      final file = _layoutFile;
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(layout.toText());
+    } on FileSystemException {
+      // Not worth a message. A layout that cannot be saved comes back as the
+      // standard one, which is a small loss and not one worth interrupting
+      // somebody over.
+    }
+  }
+
+  /// One panel, whatever it happens to be.
+  ///
+  /// The layout says what goes where and this says what each one is. Keeping
+  /// the two apart is what lets the arrangement be a file and a drag rather
+  /// than a widget tree somebody has to edit.
+  Widget _buildPanel(BuildContext context, DockPanel panel) {
+    final selected = _primary == null ? null : _inspected?.scene?[_primary!];
+
+    return switch (panel.kind) {
+      PanelKind.outliner => Outliner(
+            workspace: _workspace,
+            selected: _selected,
+            primary: _primary,
+            onSelect: _select,
+            onSelectScene: (entry) => setState(() {
+            _selected.clear();
+            _primary = null;
+            _selectedScene = entry.id;
+            }),
+            onLoadScene: _loadScene,
+            onMove: _move,
+            onDelete: _delete,
+            onCloseScene: _closeScene,
+            ),
+      PanelKind.inspector => Inspector(
+            entry: _inspected,
+            object: selected,
+            history: _history,
+            onLoad: _loadScene,
+            selectionCount: _selected.length,
+            dataAsset: _dataAsset,
+            dataPanel: _dataAsset == null
+            ? null
+            : DataPanel(
+            key: ValueKey(_dataAsset),
+            path: _dataAsset!,
+            store: _data,
+            onProblem: _say,
+            onExportTypes: () =>
+            _exportBindings(_dataAsset!),
+            ),
+            onOpenData: _showData,
+            onOpenInterface: (path) => _openInterface(
+            p.join(widget.project.directory, path),
+            ),
+            onDetachData: _detachData,
+            onApplyPrefab: _applyPrefab,
+            onRevertPrefab: _revertPrefab,
+            onUnpackPrefab: _unpackPrefab,
+            ),
+      PanelKind.viewport => SceneViewport(
+            workspace: _workspace,
+            camera: _cameraFor(panel.id),
+            onCameraChanged: (camera) =>
+            setState(() => _camera = camera),
+            selected: _selected,
+            primary: _primary,
+            history: _history,
+            onPick: (id, {required bool add}) {
+              // Whichever view was last used is the one F frames in.
+              _using = panel.id;
+            // Clicking empty space clears the
+            // selection, which is how somebody puts the
+            // handles away without reaching for a menu.
+            if (id == null) {
+            if (add) return;
+            setState(() {
+            _selected.clear();
+            _primary = null;
+            _selectedScene = null;
+            });
+            return;
+            }
+            _select(id, additive: add);
+            },
+            onDropAsset: _dropAsset,
+            projectRoot: widget.project.directory,
+            interface: _sceneInterface,
+            showInterface: _showInterface,
+            onToggleInterface: () => setState(
+            () => _showInterface = !_showInterface,
+            ),
+            previewOf: (camera) => GameView(
+              workspace: _workspace,
+              projectRoot: widget.project.directory,
+              through: camera,
+              plain: true,
+            ),
+            onSceneNotes: _reportSceneNotes,
+            // The viewport owns the clock; this is how
+            // the tree and the inspector hear about it.
+            onClock: () {
+            if (mounted) setState(() {});
+            },
+            ),
+      PanelKind.game => GameView(
+          workspace: _workspace,
+          projectRoot: widget.project.directory,
+          interface: _sceneInterface,
+        ),
+      PanelKind.project => AssetBrowser(
+            tree: _assets,
+                        onOpenAsset: (asset) {
+            // A scene opens here; anything somebody would
+            // type into goes where they type.
+            if (asset.kind == AssetKind.scene) {
+            _openScene(asset.path);
+            return;
+            }
+            if (asset.kind == AssetKind.canvas) {
+            _openInterface(asset.path);
+            return;
+            }
+            const editable = {
+            AssetKind.script,
+            AssetKind.style,
+            AssetKind.native,
+            AssetKind.data,
+            AssetKind.material,
+            };
+            if (editable.contains(asset.kind)) {
+            _openInCode(asset.path);
+            }
+            },
+            onProblem: _say,
+            onMakePrefab: _makePrefab,
+            onBuild: (asset) => _buildScript(asset.path),
+            onSelectAsset: (asset) => setState(() {
+            // Only a data object claims the inspector.
+            // Selecting a mesh should not take the panel
+            // away from the object being edited.
+            _dataAsset =
+            asset?.kind == AssetKind.dataObject
+            ? _assets.relative(asset!.path)
+            : null;
+            }),
+            ),
+      PanelKind.console => ConsolePanel(log: _log),
+    };
+  }
+
   // ---- interfaces ----
 
   /// Puts an interface on the open scene.
@@ -1487,7 +1675,6 @@ class _EditorShellState extends State<EditorShell> {
   @override
   Widget build(BuildContext context) {
     final open = _current;
-    final selected = _primary == null ? null : open?.scene?[_primary!];
 
     return Shortcuts(
       shortcuts: {
@@ -1582,6 +1769,8 @@ class _EditorShellState extends State<EditorShell> {
                   onSave: _save,
                   onSaveAs: _saveAs,
                   onNewScene: () => _newScene(),
+                  layout: _layout,
+                  onLayout: _relayout,
                   onOpenInCode: _openInCode,
                   onReveal: () {
                     final problem =
@@ -1597,157 +1786,14 @@ class _EditorShellState extends State<EditorShell> {
                   onPaste: _paste,
                   onDuplicate: _duplicate,
                 ),
+                // The panels, arranged as the layout says. What is where is
+                // data — saved with the project, put back exactly, and
+                // changed by dragging a tab rather than by editing this.
                 Expanded(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Outliner(
-                        workspace: _workspace,
-                        selected: _selected,
-                        primary: _primary,
-                        onSelect: _select,
-                        onSelectScene: (entry) => setState(() {
-                          _selected.clear();
-                          _primary = null;
-                          _selectedScene = entry.id;
-                        }),
-                        onLoadScene: _loadScene,
-                        onMove: _move,
-                        onDelete: _delete,
-                        onCloseScene: _closeScene,
-                      ),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
-                              child: SceneViewport(
-                                workspace: _workspace,
-                                camera: _camera,
-                                onCameraChanged: (camera) =>
-                                    setState(() => _camera = camera),
-                                selected: _selected,
-                                primary: _primary,
-                                history: _history,
-                                onPick: (id, {required bool add}) {
-                                  // Clicking empty space clears the
-                                  // selection, which is how somebody puts the
-                                  // handles away without reaching for a menu.
-                                  if (id == null) {
-                                    if (add) return;
-                                    setState(() {
-                                      _selected.clear();
-                                      _primary = null;
-                                      _selectedScene = null;
-                                    });
-                                    return;
-                                  }
-                                  _select(id, additive: add);
-                                },
-                                onDropAsset: _dropAsset,
-                                projectRoot: widget.project.directory,
-                                interface: _sceneInterface,
-                                showInterface: _showInterface,
-                                onToggleInterface: () => setState(
-                                  () => _showInterface = !_showInterface,
-                                ),
-                                onSceneNotes: _reportSceneNotes,
-                                // The viewport owns the clock; this is how
-                                // the tree and the inspector hear about it.
-                                onClock: () {
-                                  if (mounted) setState(() {});
-                                },
-                              ),
-                            ),
-                            _Splitter(
-                              onDrag: (delta) => setState(() {
-                                _browserHeight = (_browserHeight - delta).clamp(
-                                  _minimumBrowserHeight,
-                                  MediaQuery.sizeOf(context).height - 320,
-                                );
-                              }),
-                            ),
-                            _BottomTabs(
-                              console: _consoleOpen,
-                              errors: _log.countOf(LogLevel.error),
-                              warnings: _log.countOf(LogLevel.warning),
-                              onPick: (console) =>
-                                  setState(() => _consoleOpen = console),
-                            ),
-                            if (_consoleOpen)
-                              ConsolePanel(
-                                log: _log,
-                                height: _browserHeight - _tabStripHeight,
-                              )
-                            else
-                            AssetBrowser(
-                              tree: _assets,
-                              height: _browserHeight - _tabStripHeight,
-                              onOpenAsset: (asset) {
-                                // A scene opens here; anything somebody would
-                                // type into goes where they type.
-                                if (asset.kind == AssetKind.scene) {
-                                  _openScene(asset.path);
-                                  return;
-                                }
-                                if (asset.kind == AssetKind.canvas) {
-                                  _openInterface(asset.path);
-                                  return;
-                                }
-                                const editable = {
-                                  AssetKind.script,
-                                  AssetKind.style,
-                                  AssetKind.native,
-                                  AssetKind.data,
-                                  AssetKind.material,
-                                };
-                                if (editable.contains(asset.kind)) {
-                                  _openInCode(asset.path);
-                                }
-                              },
-                              onProblem: _say,
-                              onMakePrefab: _makePrefab,
-                              onBuild: (asset) => _buildScript(asset.path),
-                              onSelectAsset: (asset) => setState(() {
-                                // Only a data object claims the inspector.
-                                // Selecting a mesh should not take the panel
-                                // away from the object being edited.
-                                _dataAsset =
-                                    asset?.kind == AssetKind.dataObject
-                                        ? _assets.relative(asset!.path)
-                                        : null;
-                              }),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Inspector(
-                        entry: _inspected,
-                        object: selected,
-                        history: _history,
-                        onLoad: _loadScene,
-                        selectionCount: _selected.length,
-                        dataAsset: _dataAsset,
-                        dataPanel: _dataAsset == null
-                            ? null
-                            : DataPanel(
-                                key: ValueKey(_dataAsset),
-                                path: _dataAsset!,
-                                store: _data,
-                                onProblem: _say,
-                                onExportTypes: () =>
-                                    _exportBindings(_dataAsset!),
-                              ),
-                        onOpenData: _showData,
-                        onOpenInterface: (path) => _openInterface(
-                          p.join(widget.project.directory, path),
-                        ),
-                        onDetachData: _detachData,
-                        onApplyPrefab: _applyPrefab,
-                        onRevertPrefab: _revertPrefab,
-                        onUnpackPrefab: _unpackPrefab,
-                      ),
-                    ],
+                  child: DockView(
+                    layout: _layout,
+                    panel: _buildPanel,
+                    onChanged: _relayout,
                   ),
                 ),
                 _StatusBar(
@@ -1837,6 +1883,8 @@ class _TopBar extends StatelessWidget {
     required this.onNewScene,
     required this.onOpenInCode,
     required this.onReveal,
+    required this.layout,
+    required this.onLayout,
     required this.onUndo,
     required this.onRedo,
     required this.selectionCount,
@@ -1860,6 +1908,10 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onNewScene;
   final VoidCallback onOpenInCode;
   final VoidCallback onReveal;
+
+  /// How the panels are arranged, and how to change it.
+  final DockLayout layout;
+  final ValueChanged<DockLayout> onLayout;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
   final int selectionCount;
@@ -1908,6 +1960,11 @@ class _TopBar extends StatelessWidget {
             onCut: onCut,
             onPaste: onPaste,
             onDuplicate: onDuplicate,
+          ),
+          const SizedBox(width: Space.xs),
+          _ViewMenu(
+            layout: layout,
+            onLayout: onLayout,
           ),
           const SizedBox(width: Space.md),
           // Labelled with what they would undo, so the tooltip answers the
@@ -2303,143 +2360,96 @@ class _EditMenu extends StatelessWidget {
   }
 }
 
-/// The strip above the bottom panels.
+/// Where the panels are, and whether they can be moved.
 ///
-/// Two things live down here and only one fits: what the project holds, and
-/// what the editor has to say about it. A tab rather than a second splitter,
-/// because a console is not something somebody watches — it is something they
-/// go to when a number beside its name says they should.
-class _BottomTabs extends StatelessWidget {
-  const _BottomTabs({
-    required this.console,
-    required this.errors,
-    required this.warnings,
-    required this.onPick,
-  });
+/// An arrangement somebody has settled into is worth keeping, and a layout
+/// that can always be pulled apart eventually is — by a drag that was meant to
+/// be something else. So it locks. And the two arrangements worth one press
+/// are here, because building a four-view layout by dragging is a minute of
+/// somebody's time every time they want one.
+class _ViewMenu extends StatelessWidget {
+  const _ViewMenu({required this.layout, required this.onLayout});
 
-  /// Whether the console is the one showing.
-  final bool console;
+  final DockLayout layout;
+  final ValueChanged<DockLayout> onLayout;
 
-  final int errors;
-  final int warnings;
-  final ValueChanged<bool> onPick;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 28,
-      decoration: const BoxDecoration(
-        color: OrbisColors.surface,
-        border: Border(top: BorderSide(color: OrbisColors.lineSoft)),
-      ),
-      child: Row(
-        children: [
-          _Tab(
-            label: 'Project',
-            icon: Icons.folder_outlined,
-            selected: !console,
-            onTap: () => onPick(false),
-          ),
-          _Tab(
-            label: 'Console',
-            icon: Icons.terminal,
-            selected: console,
-            onTap: () => onPick(true),
-            // On the tab, so somebody who is not looking at the console still
-            // knows to. A message that only exists inside a panel nobody has
-            // opened is a message nobody has read.
-            badge: errors > 0
-                ? '$errors'
-                : (warnings > 0 ? '$warnings' : null),
-            badgeColour: errors > 0 ? OrbisColors.bad : OrbisColors.warn,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Tab extends StatefulWidget {
-  const _Tab({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-    this.badge,
-    this.badgeColour = OrbisColors.bad,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-  final String? badge;
-  final Color badgeColour;
-
-  @override
-  State<_Tab> createState() => _TabState();
-}
-
-class _TabState extends State<_Tab> {
-  bool _hovering = false;
+  /// The panels that can be opened, in a sensible order.
+  static const _openable = [
+    (PanelKind.outliner, 'outliner'),
+    (PanelKind.inspector, 'inspector'),
+    (PanelKind.viewport, 'scene'),
+    (PanelKind.game, 'game'),
+    (PanelKind.project, 'project'),
+    (PanelKind.console, 'console'),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final colour = widget.selected
-        ? OrbisColors.ink
-        : (_hovering ? OrbisColors.inkMid : OrbisColors.inkDim);
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovering = true),
-      onExit: (_) => setState(() => _hovering = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: Space.md),
-          decoration: BoxDecoration(
-            color: widget.selected ? OrbisColors.ground : Colors.transparent,
-            border: Border(
-              // The selected tab is marked at the top, where the panel it
-              // opens is, rather than underlined like a tab above its content.
-              top: BorderSide(
-                color: widget.selected ? OrbisColors.ember : Colors.transparent,
-                width: 2,
-              ),
-              right: const BorderSide(color: OrbisColors.lineSoft),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(widget.icon, size: 13, color: colour),
-              const SizedBox(width: Space.sm),
-              Text(
-                widget.label.toUpperCase(),
-                style: OrbisText.section.copyWith(color: colour),
-              ),
-              if (widget.badge != null) ...[
-                const SizedBox(width: Space.sm),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 5,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
-                    color: widget.badgeColour,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    widget.badge!,
-                    style: OrbisText.caption.copyWith(
-                      fontSize: 10,
-                      color: OrbisColors.ground,
-                    ),
-                  ),
-                ),
-              ],
-            ],
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(OrbisColors.raised),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Radii.panel),
+            side: const BorderSide(color: OrbisColors.line),
           ),
         ),
+      ),
+      menuChildren: [
+        MenuItemButton(
+          onPressed: () => onLayout(
+            layout.copyWith(locked: !layout.locked),
+          ),
+          leadingIcon: Icon(
+            layout.locked ? Icons.lock_outline : Icons.lock_open_outlined,
+            size: 14,
+            color: layout.locked ? OrbisColors.ember : OrbisColors.inkMid,
+          ),
+          child: Text(
+            layout.locked ? 'Unlock the layout' : 'Lock the layout',
+            style: OrbisText.label,
+          ),
+        ),
+        const Divider(height: 9, color: OrbisColors.line),
+        MenuItemButton(
+          onPressed: () =>
+              onLayout(DockLayout.standard().copyWith(locked: layout.locked)),
+          leadingIcon: const Icon(Icons.view_quilt_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('One view', style: OrbisText.label),
+        ),
+        MenuItemButton(
+          onPressed: () =>
+              onLayout(DockLayout.fourViews().copyWith(locked: layout.locked)),
+          leadingIcon: const Icon(Icons.grid_view_outlined,
+              size: 14, color: OrbisColors.inkMid),
+          child: Text('Four views', style: OrbisText.label),
+        ),
+        const Divider(height: 9, color: OrbisColors.line),
+        // Opening one that is already open shows it rather than adding a
+        // second, which is why every one of these can be pressed at any time.
+        for (final (kind, id) in _openable)
+          MenuItemButton(
+            onPressed: () => onLayout(
+              layout.add(DockPanel(id: id, kind: kind)),
+            ),
+            leadingIcon: Icon(
+              kind.icon,
+              size: 14,
+              color: layout.holds(id)
+                  ? OrbisColors.ember
+                  : OrbisColors.inkMid,
+            ),
+            child: Text(kind.label, style: OrbisText.label),
+          ),
+      ],
+      builder: (context, controller, child) => OrbisButton(
+        label: layout.locked ? 'View •' : 'View',
+        icon: Icons.dashboard_outlined,
+        tone: ButtonTone.quiet,
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
       ),
     );
   }

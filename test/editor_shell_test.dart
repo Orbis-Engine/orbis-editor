@@ -9,6 +9,9 @@ import 'package:orbis_editor/src/editor/clipboard.dart';
 import 'package:orbis_editor/src/editor/data_object.dart';
 import 'package:orbis_editor/src/editor/console_panel.dart';
 import 'package:orbis_editor/src/editor/data_panel.dart';
+import 'package:orbis_editor/src/editor/dock.dart';
+import 'package:orbis_editor/src/editor/dock_view.dart';
+import 'package:orbis_editor/src/editor/game_view.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
 import 'package:orbis_editor/src/editor/outliner.dart';
@@ -18,6 +21,7 @@ import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
+import 'package:orbis_editor/src/widgets/controls.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
@@ -1443,6 +1447,23 @@ void main() {
           matching: find.text(name),
         );
 
+    /// Scrolls the inspector to the bottom.
+    ///
+    /// Its sections are a lazy list, so one below the fold is not built and a
+    /// finder cannot see it. Which sections fit depends on the window and on
+    /// how the panels are arranged, so a test that assumes one is on screen is
+    /// a test that breaks when somebody moves a panel.
+    Future<void> scrollInspector(WidgetTester tester) async {
+      await tester.drag(
+        find.descendant(
+          of: find.byType(Inspector),
+          matching: find.byType(ListView),
+        ),
+        const Offset(0, -600),
+      );
+      await tester.pumpAndSettle();
+    }
+
     /// Selects a file in the grid.
     ///
     /// The wait is the double-tap window: a tile answers both, so a single
@@ -1539,6 +1560,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Listed on the object, and named as what it is rather than a path.
+      await scrollInspector(tester);
       expect(find.text('DATA'), findsOneWidget);
       expect(find.text('weight.odata'), findsWidgets);
     });
@@ -1557,6 +1579,7 @@ void main() {
       await tester.pump();
       await gesture.up();
       await tester.pumpAndSettle();
+      await scrollInspector(tester);
       expect(find.text('DATA'), findsOneWidget);
 
       await press(tester, LogicalKeyboardKey.keyZ);
@@ -1577,6 +1600,7 @@ void main() {
       await tester.pump();
       await gesture.up();
       await tester.pumpAndSettle();
+      await scrollInspector(tester);
       expect(find.text('DATA'), findsOneWidget);
 
       await save(tester);
@@ -1949,6 +1973,154 @@ void main() {
       final after =
           tester.widgetList<Text>(find.textContaining('m/s')).first.data;
       expect(after, isNot(before));
+    });
+  });
+
+  group('arranging the panels', () {
+    Future<void> viewMenu(WidgetTester tester, String item) async {
+      // The toolbar button, not the word "Viewport" wherever else it appears
+      // — and it gains a dot when the layout is locked.
+      await tester.tap(find.byWidgetPredicate(
+        (widget) => widget is OrbisButton && widget.label.startsWith('View'),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byType(MenuItemButton),
+        matching: find.text(item),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the editor opens with the panels it always had',
+        (tester) async {
+      await open(tester);
+
+      expect(find.byType(Outliner), findsOneWidget);
+      expect(find.byType(SceneViewport), findsOneWidget);
+      expect(find.byType(Inspector), findsOneWidget);
+      expect(find.byType(AssetBrowser), findsOneWidget);
+    });
+
+    testWidgets('four views is four scene panels at once', (tester) async {
+      await open(tester);
+      await viewMenu(tester, 'Four views');
+
+      expect(find.byType(SceneViewport), findsNWidgets(4));
+      // Each one is a camera of its own, so moving one does not move the rest.
+      expect(find.text('SCENE 2'), findsOneWidget);
+      expect(find.text('SCENE 4'), findsOneWidget);
+    });
+
+    testWidgets('and back to one', (tester) async {
+      await open(tester);
+      await viewMenu(tester, 'Four views');
+      await viewMenu(tester, 'One view');
+
+      expect(find.byType(SceneViewport), findsOneWidget);
+    });
+
+    testWidgets('the game view is a tab beside the scene', (tester) async {
+      await open(tester);
+      expect(find.text('GAME'), findsOneWidget);
+      expect(find.byType(GameView), findsNothing);
+
+      await tester.tap(find.text('GAME'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(GameView), findsOneWidget);
+      // One at a time: the scene view is behind it, not beside it.
+      expect(find.byType(SceneViewport), findsNothing);
+    });
+
+    testWidgets('a panel can be closed and opened again', (tester) async {
+      await open(tester);
+      await viewMenu(tester, 'Console');
+      expect(find.byType(ConsolePanel), findsOneWidget);
+
+      // Closing the console leaves the project browser where it was.
+      await viewMenu(tester, 'Project');
+      expect(find.byType(AssetBrowser), findsOneWidget);
+    });
+
+    testWidgets('the arrangement is remembered', (tester) async {
+      await open(tester);
+      await viewMenu(tester, 'Four views');
+      expect(
+        File(p.join(root.path, '.orbis', 'layout.json')).existsSync(),
+        isTrue,
+      );
+
+      // Opened again, the panels are where they were left.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await open(tester);
+
+      expect(find.byType(SceneViewport), findsNWidgets(4));
+    });
+
+    testWidgets('locking says so and stops the tabs being dragged',
+        (tester) async {
+      await open(tester);
+      await viewMenu(tester, 'Lock the layout');
+
+      expect(find.textContaining('View •'), findsOneWidget);
+      // Nothing to drag: a locked layout draws its tabs without handles.
+      expect(find.byType(Draggable<PanelDrag>), findsNothing);
+
+      await viewMenu(tester, 'Unlock the layout');
+      expect(find.byType(Draggable<PanelDrag>), findsWidgets);
+    });
+
+    testWidgets('a saved layout that cannot be read is not fatal',
+        (tester) async {
+      Directory(p.join(root.path, '.orbis')).createSync(recursive: true);
+      File(p.join(root.path, '.orbis', 'layout.json'))
+          .writeAsStringSync('not a layout at all');
+
+      await open(tester);
+
+      // The standard arrangement, rather than an editor that will not open.
+      expect(find.byType(SceneViewport), findsOneWidget);
+      expect(find.byType(Inspector), findsOneWidget);
+    });
+  });
+
+  group('the camera preview', () {
+    testWidgets('selecting a camera shows what it sees', (tester) async {
+      await open(tester);
+      expect(find.text('CAMERA'), findsNothing);
+
+      await tester.tap(row('Camera'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CAMERA'), findsOneWidget);
+    });
+
+    testWidgets('selecting anything else takes it away', (tester) async {
+      await open(tester);
+      await tester.tap(row('Camera'));
+      await tester.pumpAndSettle();
+      expect(find.text('CAMERA'), findsOneWidget);
+
+      await tester.tap(row('Crate'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CAMERA'), findsNothing);
+    });
+
+    testWidgets('hiding the camera takes it away too', (tester) async {
+      await open(tester);
+      await tester.tap(row('Camera'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.descendant(
+        of: find.byType(Inspector),
+        matching: find.text('Hidden'),
+      ));
+      await tester.pumpAndSettle();
+
+      // A camera that is not in the scene has no shot to preview.
+      expect(find.text('CAMERA'), findsNothing);
     });
   });
 }

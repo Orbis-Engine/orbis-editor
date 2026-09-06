@@ -11,10 +11,15 @@ import 'console.dart';
 /// somebody spends reading a compiler error are the four seconds it takes for
 /// the next message to replace it.
 class ConsolePanel extends StatefulWidget {
-  const ConsolePanel({super.key, required this.log, required this.height});
+  const ConsolePanel({super.key, required this.log, this.height});
 
   final EditorLog log;
-  final double height;
+  /// How tall to be, or null to fill whatever it is put in.
+  ///
+  /// Null is the ordinary case now that panels are docked: a panel in a
+  /// layout is given its space by the layout, and one that insisted on a
+  /// height would fight whatever it was docked beside.
+  final double? height;
 
   @override
   State<ConsolePanel> createState() => _ConsolePanelState();
@@ -63,9 +68,7 @@ class _ConsolePanelState extends State<ConsolePanel> {
         if (_showing.contains(entry.level)) entry,
     ].reversed.toList();
 
-    return SizedBox(
-      height: widget.height,
-      child: Container(
+    final panel = Container(
         decoration: const BoxDecoration(color: OrbisColors.surface),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -95,8 +98,11 @@ class _ConsolePanelState extends State<ConsolePanel> {
             ),
           ],
         ),
-      ),
     );
+
+    return widget.height == null
+        ? panel
+        : SizedBox(height: widget.height, child: panel);
   }
 
   Widget _header() {

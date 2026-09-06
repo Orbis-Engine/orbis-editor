@@ -18,7 +18,7 @@ class AssetBrowser extends StatefulWidget {
   const AssetBrowser({
     super.key,
     required this.tree,
-    required this.height,
+    this.height,
     this.onOpenAsset,
     this.onSelectAsset,
     this.onProblem,
@@ -27,7 +27,12 @@ class AssetBrowser extends StatefulWidget {
   });
 
   final AssetTree tree;
-  final double height;
+  /// How tall to be, or null to fill whatever it is put in.
+  ///
+  /// Null is the ordinary case now that panels are docked: a panel in a
+  /// layout is given its space by the layout, and one that insisted on a
+  /// height would fight whatever it was docked beside.
+  final double? height;
 
   /// Called when somebody drags an object out of the scene and drops it here.
   ///
@@ -188,12 +193,11 @@ class _AssetBrowserState extends State<AssetBrowser> {
     final entries = widget.tree.read(_directory);
     final folders = widget.tree.folders();
 
-    return SizedBox(
-      height: widget.height,
+    return _sized(
       // One menu for the whole panel: the header button, the empty space
       // between tiles and every file in the grid all open the same one,
       // rather than a menu controller per file in the project.
-      child: AssetMenu(
+      AssetMenu(
         onCreate: _promptCreate,
         child: Container(
           decoration: const BoxDecoration(
@@ -268,6 +272,9 @@ class _AssetBrowserState extends State<AssetBrowser> {
       ),
     );
   }
+
+  Widget _sized(Widget child) =>
+      widget.height == null ? child : SizedBox(height: widget.height, child: child);
 }
 
 class _Header extends StatelessWidget {
