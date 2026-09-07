@@ -241,6 +241,8 @@ class _EditorShellState extends State<EditorShell> {
       tool: _drawing.tool,
       onTool: _useTool,
       drawing: _drawing,
+      snapping: _snapping,
+      onSnapping: (_) => setState(() {}),
     );
   }
 
@@ -387,6 +389,79 @@ class _EditorShellState extends State<EditorShell> {
     _geometry.forget(object.id);
     _geometry.pathFor(object);
     setState(() {});
+  }
+
+  /// The arrow keys, as shortcuts.
+  ///
+  /// Built rather than written out: four directions times three modifiers is
+  /// twelve lines that say the same thing, and one of them would be wrong.
+  static final Map<ShortcutActivator, Intent> _nudges = {
+    for (final (key, axis, sign) in [
+      (LogicalKeyboardKey.arrowLeft, _x, -1),
+      (LogicalKeyboardKey.arrowRight, _x, 1),
+      (LogicalKeyboardKey.arrowUp, _z, -1),
+      (LogicalKeyboardKey.arrowDown, _z, 1),
+    ]) ...{
+      SingleActivator(key): _NudgeIntent(axis, sign),
+      SingleActivator(key, alt: true): _NudgeIntent(axis, sign * 10),
+    },
+    // Up and down are the exception: there is no arrow for them, so shift
+    // turns the near-and-far pair into a high-and-low one.
+    SingleActivator(LogicalKeyboardKey.arrowUp, shift: true):
+        _NudgeIntent(_y, 1),
+    SingleActivator(LogicalKeyboardKey.arrowDown, shift: true):
+        _NudgeIntent(_y, -1),
+    SingleActivator(LogicalKeyboardKey.arrowUp, shift: true, alt: true):
+        _NudgeIntent(_y, 10),
+    SingleActivator(LogicalKeyboardKey.arrowDown, shift: true, alt: true):
+        _NudgeIntent(_y, -10),
+  };
+
+  static final Vector3 _x = Vector3(1, 0, 0);
+  static final Vector3 _y = Vector3(0, 1, 0);
+  static final Vector3 _z = Vector3(0, 0, 1);
+
+  /// Moves the selection a whole number of squares.
+  ///
+  /// One press, one step on the undo stack — unlike a drag, which is one step
+  /// however many frames it took. Pressing an arrow twice is two things
+  /// somebody did.
+  void _nudge(Vector3 axis, int squares) {
+    final scene = _working?.scene;
+    final entry = _working;
+    if (scene == null || entry == null) return;
+
+    final ids = [
+      for (final id in _selected)
+        if (scene[id] != null && scene[id]!.kind != ObjectKind.scene) id,
+    ];
+    if (ids.isEmpty) return;
+
+    // The grid's step even when the grid is off: an arrow key is a request
+    // for a definite amount, and the definite amount on offer is a square.
+    final by = axis * (_snapping.step * squares);
+    final changes = <String, ({Vector3 from, Vector3 to})>{};
+    for (final id in ids) {
+      final object = scene[id]!;
+      final parentId = object.parentId;
+      final local = parentId == null || !scene.contains(parentId)
+          ? by
+          : Matrix4.inverted(scene.worldOf(parentId)).rotated3(by.clone());
+      changes[id] = (
+        from: object.position.clone(),
+        to: object.position + local,
+      );
+    }
+
+    _run(TransformMany(
+      sceneId: entry.id,
+      field: TransformField.position,
+      what: ids.length == 1 ? scene[ids.first]!.name : '${ids.length} objects',
+      changes: changes,
+    ));
+    // Sealed, so the next press is its own step rather than merging into
+    // this one the way a drag's frames do.
+    _history.seal();
   }
 
   /// Changes where an object begins and ends.
@@ -2589,6 +2664,11 @@ class _EditorShellState extends State<EditorShell> {
             _GridIntent(true),
         const SingleActivator(LogicalKeyboardKey.bracketLeft):
             _GridIntent(false),
+        // Whole squares at a time, which is the one way of placing something
+        // that needs no aim at all. The arrows work the floor, because that
+        // is where things are arranged; shift takes them up and down, and
+        // holding option does ten at once.
+        ..._nudges,
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true):
             _SaveIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
@@ -2632,6 +2712,10 @@ class _EditorShellState extends State<EditorShell> {
               return null;
             },
           ),
+          _NudgeIntent: CallbackAction<_NudgeIntent>(onInvoke: (intent) {
+            _nudge(intent.axis, intent.squares);
+            return null;
+          }),
           _GridIntent: CallbackAction<_GridIntent>(onInvoke: (intent) {
             setState(() {
               _snapping.step =
@@ -3488,6 +3572,17 @@ class _GridIntent extends Intent {
 }
 
 /// Finishes whatever is being drawn.
+/// Moves the selection by whole squares.
+class _NudgeIntent extends Intent {
+  const _NudgeIntent(this.axis, this.squares);
+
+  /// Which way, as a unit vector.
+  final Vector3 axis;
+
+  /// How many squares, signed.
+  final int squares;
+}
+
 class _FinishDrawIntent extends Intent {
   const _FinishDrawIntent();
 }

@@ -7,6 +7,7 @@ import 'drawing.dart';
 import 'inspector.dart' show ChoiceRow, ColourRow, SliderRow;
 import 'mesh_edit.dart';
 import 'mesh_tools.dart';
+import 'snapping.dart';
 import 'surface.dart';
 
 /// The modelling tools, as a place rather than a section.
@@ -46,6 +47,8 @@ class ModellingPanel extends StatelessWidget {
     required this.tool,
     required this.onTool,
     required this.drawing,
+    required this.snapping,
+    required this.onSnapping,
   });
 
   /// What the selected shape was made from, if it is still that.
@@ -90,6 +93,11 @@ class ModellingPanel extends StatelessWidget {
   final ValueChanged<ViewportTool> onTool;
   final Drawing drawing;
 
+  /// Where a drag lands. Mutated in place and handed back, so the editor can
+  /// notice and redraw.
+  final Snapping snapping;
+  final ValueChanged<Snapping> onSnapping;
+
   /// Whether there is a shape to work on at all.
   bool get hasShape => shape != null || geometry != null;
 
@@ -98,6 +106,7 @@ class ModellingPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _gridSection(),
         _drawSection(),
         if (!hasShape)
           Padding(
@@ -114,6 +123,68 @@ class ModellingPanel extends StatelessWidget {
         ],
       ],
     );
+  }
+
+  /// Where a drag lands.
+  ///
+  /// Beside the drawing tools rather than in the inspector, because it is a
+  /// property of how somebody is working rather than of any one object — the
+  /// same answer for everything they place.
+  Widget _gridSection() {
+    return _Section(
+      title: 'Grid',
+      icon: Icons.grid_4x4,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          OrbisButton(
+            label: snapping.on
+                ? 'Snapping to ${_gridLabel(snapping.step)}'
+                : 'Snapping off',
+            icon: snapping.on ? Icons.grid_on : Icons.grid_off,
+            expand: true,
+            tone: snapping.on ? ButtonTone.primary : ButtonTone.quiet,
+            onPressed: () => onSnapping(snapping..on = !snapping.on),
+          ),
+          if (snapping.on) ...[
+            const SizedBox(height: Space.xs),
+            ChoiceRow(
+              label: 'Put on the line',
+              options: [for (final one in SnapTo.values) one.label],
+              selected: snapping.to.label,
+              onSelect: (label) => onSnapping(
+                snapping
+                  ..to = SnapTo.values.firstWhere((one) => one.label == label),
+              ),
+            ),
+            const SizedBox(height: Space.xs),
+            Text(
+              switch (snapping.to) {
+                SnapTo.pivot => 'Wherever the shape\'s own origin is.',
+                SnapTo.base => 'Its underside, so it stands on the line '
+                    'rather than through it.',
+                SnapTo.centre => 'Its middle, so it straddles the line.',
+                SnapTo.top => 'Its top, for hanging it from something.',
+              },
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+            const SizedBox(height: Space.xs),
+            Text(
+              'The brackets change the size. The arrows move by whole '
+              'squares — hold shift for up and down, option for ten at a '
+              'time.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static String _gridLabel(double step) {
+    if (step < 0.01) return '${(step * 1000).round()}mm';
+    if (step < 1) return '${(step * 100).round()}cm';
+    return '${step.toStringAsFixed(step % 1 == 0 ? 0 : 1)}m';
   }
 
   /// The two tools that are drawn rather than clicked.

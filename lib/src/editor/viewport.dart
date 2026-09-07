@@ -405,6 +405,11 @@ class _SceneViewportState extends State<SceneViewport>
   /// object being dragged looked like before it started.
   Vector3? _grabbed;
 
+  /// How far the part being put on the line is from the handle, along the
+  /// axis being dragged. Worked out once, at the start, for the same reason
+  /// the pivot is.
+  double _grabbedAnchor = 0;
+
   /// Where the handle stood when the drag began.
   ///
   /// Not read from the gizmo each frame, which is the whole point. The gizmo
@@ -492,6 +497,13 @@ class _SceneViewportState extends State<SceneViewport>
     final middle = _selectedElements.pivotIn(editing.mesh);
     if (middle == null) return null;
     return editing.transform.transformed3(middle);
+  }
+
+  /// A number with its sign always shown, because a drag has a direction and
+  /// up two squares is not the same answer as down two.
+  static String _signed(double value, int decimals) {
+    final text = value.toStringAsFixed(decimals);
+    return text.startsWith('-') ? text : '+$text';
   }
 
   /// A grid step as somebody would say it: millimetres below a centimetre,
@@ -618,8 +630,48 @@ class _SceneViewportState extends State<SceneViewport>
       _dragging = axis;
       _grabbed = grabbed;
       _grabbedPivot = gizmo.pivot.clone();
+      _grabbedAnchor = _anchorOn(axis, gizmo.pivot);
     });
     return true;
+  }
+
+  /// How far the snapping anchor is from the handle, for the object the
+  /// handles are on.
+  ///
+  /// The primary one only. A selection of several keeps its shape, so the
+  /// thing that lands on a line is the one being held — the others come
+  /// along.
+  double _anchorOn(GizmoAxis axis, Vector3 pivot) {
+    final scene = _editing;
+    final id = widget.primary;
+    if (scene == null || id == null) return 0;
+    final object = scene[id];
+    if (object == null) return 0;
+
+    final local = object.localBounds(reported: widget.models?.of(object));
+    final world = scene.worldOf(id);
+    // Every corner, because a turned or scaled object's box in the world is
+    // not its box multiplied through.
+    var low = double.infinity;
+    var high = double.negativeInfinity;
+    for (final x in [local.min.x, local.max.x]) {
+      for (final y in [local.min.y, local.max.y]) {
+        for (final z in [local.min.z, local.max.z]) {
+          final at = world.transformed3(Vector3(x, y, z)).dot(axis.direction);
+          if (at < low) low = at;
+          if (at > high) high = at;
+        }
+      }
+    }
+
+    return _snap.anchorFor(
+      axis.direction,
+      pivot,
+      (
+        min: axis.direction * low,
+        max: axis.direction * high,
+      ),
+    );
   }
 
   /// Takes hold of the parts of a mesh.
@@ -728,6 +780,33 @@ class _SceneViewportState extends State<SceneViewport>
     _dragStarted = true;
   }
 
+  /// How far the drag has taken things, for saying so on screen.
+  ///
+  /// In squares as well as metres, because "two squares" is what somebody
+  /// means when they are placing something on a grid, and counting them by
+  /// eye across a viewport is exactly the sort of thing a computer should be
+  /// doing.
+  ({double metres, double squares})? get _dragged {
+    final axis = _dragging;
+    final from = _grabbedPivot;
+    if (axis == null || from == null) return null;
+
+    final scene = _editing;
+    final id = widget.primary;
+    final now = scene == null || id == null
+        ? null
+        : scene.worldOf(id).getTranslation();
+    if (now == null) return null;
+
+    final metres = (now - from).dot(axis.direction);
+    return (
+      metres: metres,
+      squares: widget.snapping.step <= 0
+          ? 0
+          : metres / widget.snapping.step,
+    );
+  }
+
   /// Applies the drag as it stands: one command, however many objects.
   void _dragTo(Offset local) {
     final gizmo = _gizmo;
@@ -758,7 +837,12 @@ class _SceneViewportState extends State<SceneViewport>
       // From where the handle was, so a selection of several keeps its shape
       // and the one the handles are on is the one that lands on a line.
       final from = _grabbedPivot ?? gizmo.pivot;
-      final shift = _snap.along(from, now - grabbed + from, axis.direction);
+      final shift = _snap.along(
+        from,
+        now - grabbed + from,
+        axis.direction,
+        anchor: _grabbedAnchor,
+      );
 
       for (final entry in _before.entries) {
         final object = scene[entry.key];
@@ -823,6 +907,7 @@ class _SceneViewportState extends State<SceneViewport>
       _dragging = null;
       _grabbed = null;
       _grabbedPivot = null;
+      _grabbedAnchor = 0;
       _beforeMesh = null;
       _movingPoints = const [];
       _draggingSelection = null;
@@ -1380,6 +1465,19 @@ class _SceneViewportState extends State<SceneViewport>
                 // here is only what a tool is *doing*, and only while it is
                 // doing it — a viewport is a place to look at a scene, not a
                 // row of buttons that are somewhere else as well.
+                // What the drag has done so far, while it is doing it.
+                if (_dragged case final moved?)
+                  Padding(
+                    padding: const EdgeInsets.only(right: Space.xs),
+                    child: _ViewportChip(
+                      widget.snapping.on
+                          ? '${_signed(moved.squares, 0)} '
+                              '${moved.squares.abs() == 1 ? "square" : "squares"}'
+                              ' · ${_signed(moved.metres, 2)} m'
+                          : '${_signed(moved.metres, 2)} m',
+                      on: true,
+                    ),
+                  ),
                 if (widget.drawing?.tool.isDrawing ?? false)
                   _ViewportChip(
                     '${widget.drawing!.tool.label} · '
@@ -1391,12 +1489,14 @@ class _SceneViewportState extends State<SceneViewport>
                   ),
                 _ViewportChip(
                   widget.snapping.on
-                      ? 'Grid ${_gridLabel(widget.snapping.step)}'
+                      ? 'Grid ${_gridLabel(widget.snapping.step)} · '
+                          '${widget.snapping.to.label.toLowerCase()}'
                       : 'Grid off',
                   on: widget.snapping.on,
-                  tooltip: 'Where a drag lands. Hold control or option to '
-                      'suspend it for one drag; the bracket keys make it '
-                      'coarser and finer.',
+                  tooltip: 'Where a drag lands, and which part of the thing is '
+                      'put on the line. Hold control or option to suspend it '
+                      'for one drag; the brackets make it coarser and finer, '
+                      'and the arrow keys move by whole squares.',
                   onTap: widget.onSnapping == null
                       ? null
                       : () => widget.onSnapping!(
