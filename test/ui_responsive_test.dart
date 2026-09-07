@@ -282,8 +282,12 @@ void main() {
       expect(root.type, 'row');
       expect(root.children, hasLength(3));
       expect(root.children.every((child) => child.type == 'column'), isTrue);
-      expect(root.children.every((child) => child.classes.contains('flex-1')),
-          isTrue);
+      expect(
+        root.children.every((child) => child.classes.contains('md:flex-1')),
+        isTrue,
+      );
+      // Stacked until there is room: equal widths only where they are widths.
+      expect(root.classes, contains('md:row'));
     });
 
     testWidgets('what was in it goes into the first column, without its place',
@@ -301,6 +305,91 @@ void main() {
       for (final child in root.children.first.children) {
         expect(child.placed, isNull);
       }
+    });
+
+    testWidgets('a split row still shows what is in its columns',
+        (tester) async {
+      // The exact path somebody took: add a row to the canvas, split it into
+      // four, put a button in the third column. It rendered nothing, because
+      // four flexible columns inside a row with no width is not a layout
+      // Flutter can do — it throws, and abandons the rest of the frame.
+      await open(tester);
+
+      await press(tester, 'Row');
+      await press(tester, '4');
+
+      await tester.tap(find.text('column').at(2));
+      await tester.pumpAndSettle();
+      await press(tester, 'Button');
+
+      expect(tester.takeException(), isNull);
+      expect(
+        find.descendant(
+          of: find.byType(UiCanvasView),
+          matching: find.text('Button'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('splitting something placed on a stack gives it a width',
+        (tester) async {
+      final path = await open(tester);
+
+      await press(tester, 'Row');
+      await press(tester, '2');
+      await press(tester, 'Save');
+
+      // Reaching the far edge is the honest reading of "split this into
+      // columns", and without it the columns have nothing to divide.
+      final row = saved(tester, path).root.children.last;
+      expect(row.css, contains('right: 0'));
+    });
+
+    testWidgets('columns stack on a phone and sit side by side on a laptop',
+        (tester) async {
+      await open(tester);
+      await press(tester, 'Row');
+      await press(tester, '3');
+
+      Finder rowsOnCanvas() => find.descendant(
+            of: find.byType(UiCanvasView),
+            matching: find.byType(Row),
+          );
+
+      await press(tester, 'Laptop');
+      expect(rowsOnCanvas(), findsWidgets);
+
+      await press(tester, 'Phone');
+      // Three columns across a phone are three columns nobody can read.
+      expect(rowsOnCanvas(), findsNothing);
+    });
+
+    testWidgets('a device can be held sideways', (tester) async {
+      await open(tester);
+
+      await press(tester, 'Phone');
+      expect(find.text('390 × 844'), findsWidgets);
+
+      await press(tester, 'Landscape');
+      expect(find.text('844 × 390'), findsWidgets);
+
+      // The orientation is kept when the device changes, so turning a phone
+      // over and then picking a tablet gives a tablet on its side.
+      await press(tester, 'Tablet');
+      expect(find.text('1112 × 834'), findsWidgets);
+    });
+
+    testWidgets('the grid says when it is drawing fewer columns than authored',
+        (tester) async {
+      await open(tester);
+      expect(find.text('12 across this screen'), findsOneWidget);
+
+      await press(tester, 'Phone');
+      // Not twelve seven-pixel slivers, and it says so rather than leaving
+      // somebody to count them and wonder what happened to their split.
+      expect(find.text('4 across this screen — 12 is too fine here'),
+          findsOneWidget);
     });
 
     testWidgets('the split can be undone', (tester) async {
