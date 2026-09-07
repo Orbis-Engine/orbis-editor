@@ -120,6 +120,11 @@ class TransformMany extends EditorCommand {
   @override
   Object? get mergeKey => (sceneId, 'gizmo', field);
 
+  /// Nothing about what these objects *are* has changed — only where they
+  /// stand. Which is what a drag does sixty times a second.
+  @override
+  bool get onlyMoves => true;
+
   @override
   void absorb(EditorCommand later) {
     if (later is! TransformMany) return;

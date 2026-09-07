@@ -828,7 +828,7 @@ class _EditorShellState extends State<EditorShell> {
     // Read once so the handlers are installed, since a late final is not
     // initialised until something asks for it.
     _stopCatching;
-    _history.addListener(_onChanged);
+    _history.addListener(_onHistoryChanged);
     _workspace.addListener(_onChanged);
     _frames
       ..start()
@@ -894,7 +894,7 @@ class _EditorShellState extends State<EditorShell> {
   @override
   void dispose() {
     _history
-      ..removeListener(_onChanged)
+      ..removeListener(_onHistoryChanged)
       ..dispose();
     _workspace
       ..removeListener(_onChanged)
@@ -916,6 +916,58 @@ class _EditorShellState extends State<EditorShell> {
     _refreshGeometry();
     setState(() {});
   }
+
+  /// A change from the undo stack.
+  ///
+  /// Split from the one above so that a drag — which runs a command a frame
+  /// and only ever moves things — can rebuild the parts that show where
+  /// things are and leave the rest of the editor alone.
+  void _onHistoryChanged() {
+    _refreshGeometry();
+    if (_history.lastOnlyMoved) {
+      _rebuildForMove();
+      return;
+    }
+    setState(() {});
+  }
+
+  /// Whether everything has to be built again, or only what shows movement.
+  ///
+  /// Set by `setState` itself rather than by each caller, so the safe answer
+  /// is the automatic one: a path that forgets to say anything gets a full
+  /// rebuild, which costs a frame. The other way round costs a panel showing
+  /// something that is no longer true.
+  bool _deep = true;
+  bool _shallow = false;
+
+  /// What the frame being built decided. [_deep] is cleared as the build
+  /// starts, and the panels are built after that.
+  bool _deeply = true;
+
+  @override
+  void setState(VoidCallback fn) {
+    if (!_shallow) _deep = true;
+    super.setState(fn);
+  }
+
+  void _rebuildForMove() {
+    _shallow = true;
+    setState(() {});
+    _shallow = false;
+  }
+
+  /// The panels as they were last built, so a panel a move cannot affect is
+  /// handed back unchanged — and Flutter, seeing the same widget, leaves its
+  /// whole subtree alone: no rebuild, no layout, no paint.
+  final Map<String, Widget> _panels = {};
+
+  /// Which panels show where things are.
+  ///
+  /// The inspector is not one of them, even though it shows the numbers: the
+  /// three rows that do listen for themselves, so the rest of it — a dozen
+  /// text fields with their own focus, actions and overlays — is left alone.
+  static bool _showsMovement(PanelKind kind) =>
+      kind == PanelKind.viewport || kind == PanelKind.game;
 
   String _defaultScenePath() =>
       p.join(widget.project.directory, 'scenes', 'main$sceneExtension');
@@ -1795,6 +1847,21 @@ class _EditorShellState extends State<EditorShell> {
   /// the two apart is what lets the arrangement be a file and a drag rather
   /// than a widget tree somebody has to edit.
   Widget _buildPanel(BuildContext context, DockPanel panel) {
+    // A move can only change where things are, so a panel that does not show
+    // that is handed back exactly as it was. Flutter compares the widget by
+    // identity and skips the subtree — which is the whole saving, because a
+    // subtree that is not rebuilt is not laid out or painted either.
+    if (!_deeply && !_showsMovement(panel.kind)) {
+      final was = _panels[panel.id];
+      if (was != null) return was;
+    }
+
+    final built = _panelFor(context, panel);
+    _panels[panel.id] = built;
+    return built;
+  }
+
+  Widget _panelFor(BuildContext context, DockPanel panel) {
     final selected = _primary == null ? null : _inspected?.scene?[_primary!];
 
     return switch (panel.kind) {
@@ -2493,6 +2560,10 @@ class _EditorShellState extends State<EditorShell> {
   @override
   Widget build(BuildContext context) {
     final open = _current;
+    // Read and cleared here, so the next change decides afresh how much has
+    // to be built.
+    _deeply = _deep;
+    _deep = false;
 
     return Shortcuts(
       shortcuts: {

@@ -105,34 +105,25 @@ void main() {
 
     await drag(5);
 
-    // What a frame costs when nothing changed, so the harness's own cost is
-    // not counted as the editor's.
-    final idle = Stopwatch()..start();
-    for (var i = 0; i < 60; i++) {
-      await tester.pump();
-    }
-    idle.stop();
-
-    // The command on its own: everything that happens synchronously inside
-    // `run`, which is the whole of `_onChanged` bar the frame it asks for.
-    final commanding = Stopwatch()..start();
-    for (var i = 0; i < 60; i++) {
+    // Every frame timed on its own, and the *fastest* one reported.
+    //
+    // Not the average. This runs on a machine doing other things, and an
+    // average is dragged around by whatever else the machine was doing —
+    // enough that removing widgets from the tree once measured as making it
+    // slower. The fastest frame is the one where nothing interfered, which is
+    // the closest thing to what the code actually costs.
+    final samples = <double>[];
+    for (var i = 0; i < 120; i++) {
+      final watch = Stopwatch()..start();
       runOne(i);
+      await tester.pump();
+      watch.stop();
+      samples.add(watch.elapsedMicroseconds / 1000);
     }
-    commanding.stop();
-    await tester.pump();
-
-    final watch = Stopwatch()..start();
-    await drag(60);
-    watch.stop();
-    final dragging = watch.elapsedMicroseconds / 60 / 1000;
-    final still = idle.elapsedMicroseconds / 60 / 1000;
-    print('  ${(label ?? '$count shapes').padRight(24)} '
-        '${dragging.toStringAsFixed(2).padLeft(6)} ms a drag frame · '
-        '${(commanding.elapsedMicroseconds / 60 / 1000).toStringAsFixed(2)}'
-        ' of it the command, '
-        '${(dragging - commanding.elapsedMicroseconds / 60 / 1000).toStringAsFixed(2)}'
-        ' the frame');
+    samples.sort();
+    print('  ${(label ?? '$count shapes').padRight(28)} '
+        'best ${samples.first.toStringAsFixed(2).padLeft(6)} ms   '
+        'median ${samples[samples.length ~/ 2].toStringAsFixed(2).padLeft(6)} ms');
     expect(live.length, greaterThan(0));
     root.deleteSync(recursive: true);
   }
@@ -147,8 +138,11 @@ void main() {
     // Twice, because the first measurement in a process pays for code that
     // has not been compiled yet.
     for (var round = 0; round < 2; round++) {
-      await bench(tester, 40, label: 'forty shapes, one selected');
-      await bench(tester, 1, label: 'one shape');
+      await bench(tester, 40, label: 'the usual layout');
+      await bench(tester, 40, panels: ['viewport'], label: 'viewport only');
+      await bench(tester, 40, panels: ['console'], label: 'console only');
+      await bench(tester, 40, panels: ['outliner'], label: 'outliner only');
+      await bench(tester, 40, panels: ['inspector'], label: 'inspector only');
     }
   });
 }

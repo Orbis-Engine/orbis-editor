@@ -42,6 +42,19 @@ abstract class EditorCommand {
   /// command always stands alone.
   Object? get mergeKey => null;
 
+  /// Whether this only moves things about, leaving what they *are* alone.
+  ///
+  /// A drag runs one of these a frame, and most of the editor cannot be
+  /// affected by one: a name is the same name at a different height, a file
+  /// is the same file, a material is the same material. Saying so lets those
+  /// parts be left alone, which is the difference between a drag that keeps
+  /// up and one that does not.
+  ///
+  /// False by default, and deliberately: a command that forgets to say it
+  /// moves things costs a rebuild nobody needed, and one that wrongly claims
+  /// to costs a panel showing something that is no longer true.
+  bool get onlyMoves => false;
+
   /// Set by the history each time this command is run or absorbs another.
   ///
   /// What lets "has anything changed since the last save" be answered exactly.
@@ -68,6 +81,15 @@ abstract class EditorCommand {
 /// predictable.
 class History extends ChangeNotifier {
   History(this.host);
+
+  /// Whether the last thing that happened only moved something.
+  ///
+  /// Read by whoever is deciding how much to rebuild. Undo and redo are never
+  /// move-only however move-only the command was: stepping back through
+  /// history changes what is selected and what is dirty, and something has to
+  /// notice.
+  bool get lastOnlyMoved => _lastOnlyMoved;
+  bool _lastOnlyMoved = false;
 
   final SceneHost host;
 
@@ -124,6 +146,7 @@ class History extends ChangeNotifier {
   /// Throws whatever the command throws, having recorded nothing — a refused
   /// edit must not leave a step on the stack that would undo something else.
   void run(EditorCommand command) {
+    _lastOnlyMoved = command.onlyMoves;
     final key = command.mergeKey;
     if (!_sealed && key != null && _done.isNotEmpty &&
         _done.last.mergeKey == key) {
@@ -151,6 +174,7 @@ class History extends ChangeNotifier {
   void seal() => _sealed = true;
 
   void undo() {
+    _lastOnlyMoved = false;
     if (_done.isEmpty) return;
     final command = _done.removeLast();
     command.revert(host);
@@ -160,6 +184,7 @@ class History extends ChangeNotifier {
   }
 
   void redo() {
+    _lastOnlyMoved = false;
     if (_undone.isEmpty) return;
     final command = _undone.removeLast();
     command.apply(host);
