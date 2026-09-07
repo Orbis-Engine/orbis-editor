@@ -10,7 +10,6 @@ import 'package:orbis_editor/src/editor/data_object.dart';
 import 'package:orbis_editor/src/editor/console_panel.dart';
 import 'package:orbis_editor/src/editor/data_panel.dart';
 import 'package:orbis_editor/src/editor/dock.dart';
-import 'package:orbis_editor/src/editor/dock_view.dart';
 import 'package:orbis_editor/src/editor/game_view.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
 import 'package:orbis_editor/src/editor/inspector.dart';
