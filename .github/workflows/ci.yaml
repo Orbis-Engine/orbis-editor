@@ -4,13 +4,68 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Flutter channel to build against'
+        required: false
+        default: stable
+        type: choice
+        options: [stable, beta, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FLUTTER_CHANNEL: ${{ inputs.channel || 'stable' }}
 
 jobs:
   check:
+    name: Analyze, test and build
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
+      # Both checkouts go under the workspace, which puts them side by side —
+      # which is what the editor's pubspec needs. Its engine dependencies are
+      # path dependencies to ../orbis, deliberately: the renderer and the
+      # editor change together, and a git dependency would put a push and a
+      # pub upgrade between writing a renderer change and seeing it. The cost
+      # is that the sibling has to exist here too, and the directory names
+      # have to be exactly these.
       - uses: actions/checkout@v4
+        with:
+          path: orbis-editor
+      - uses: actions/checkout@v4
+        with:
+          repository: Orbis-Engine/orbis
+          path: orbis
+          token: ${{ secrets.ORBIS_ENGINE_TOKEN }}
+
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
-      - run: ./tool/check.sh
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Cache Filament SDK
+        uses: actions/cache@v4
+        with:
+          path: orbis/packages/orbis_filament/macos/third_party
+          key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/macos/setup.sh') }}
+
+      - name: Analyze and test
+        working-directory: orbis-editor
+        run: ./tool/check.sh
+
+      # Building is a separate claim from analyzing, and the one that catches
+      # a renderer change the editor has not caught up with: analysis reads
+      # Dart, and the thing that breaks is the native side being linked in.
+      - name: Build
+        working-directory: orbis-editor
+        run: flutter build macos --debug
+
+      # No frame smoke here, unlike the viewport. The editor opens on its
+      # launcher — a project list, not a scene — so nothing draws until
+      # somebody opens a project or an example, and a check that waits for a
+      # frame here would wait forever. The renderer's runtime behaviour is
+      # smoked where it does draw on launch, in the engine repository.
