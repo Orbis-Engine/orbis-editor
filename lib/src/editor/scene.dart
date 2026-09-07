@@ -8,6 +8,8 @@ import 'package:orbis_weather/orbis_weather.dart';
 
 import 'package:orbis_mesh/orbis_mesh.dart';
 
+import 'boundary.dart';
+import 'grid.dart';
 import 'surface.dart';
 
 import 'colour.dart';
@@ -53,10 +55,12 @@ class SceneObject {
     this.geometry,
     List<Surface>? surfaces,
     this.outline,
+    Boundary? boundary,
     this.interfaceAsset,
     this.prefab,
     List<String>? data,
   })  : data = data ?? [],
+        boundary = boundary ?? Boundary(),
         surfaces = surfaces ?? [],
         weather = weather ?? WeatherState.of(condition),
         position = position ?? Vector3.zero(),
@@ -216,6 +220,14 @@ class SceneObject {
 
   Mesh? get currentMesh => geometry ?? outline?.build() ?? shape?.build();
 
+  /// Where this object begins and ends, as far as anything but the eye is
+  /// concerned.
+  ///
+  /// A mesh by default, because that is right for anything however odd — a
+  /// doorway is a hole you can walk through rather than a wall you cannot —
+  /// and because a box is only ever right by luck for a shape somebody drew.
+  Boundary boundary;
+
   /// The box this object actually occupies, in its own space.
   ///
   /// What a click is tested against and what the selection outline is drawn
@@ -329,6 +341,7 @@ class SceneObject {
         shape: shape,
         geometry: geometry?.copy(),
         outline: outline?.copy(),
+        boundary: boundary.copyWith(offset: boundary.offset.clone()),
         surfaces: [...surfaces],
         interfaceAsset: interfaceAsset,
         prefab: prefab,
@@ -870,18 +883,23 @@ class EditorScene {
       // comparable between objects.
       final along = inverse.transformed3(origin + direction) - from;
 
-      final box = object.localBounds(reported: boundsOf?.call(object));
+      // Nothing to hit, by choice: decoration somebody should walk straight
+      // through is decoration they should not be able to click either.
+      if (object.boundary.isNothing) continue;
+
+      final box = object.boundary.boxFrom(
+        object.localBounds(reported: boundsOf?.call(object)),
+      );
       final hit = _boxHit(from, along, box.min, box.max);
       if (hit == null || hit >= closest) continue;
 
-      // The box got the ray into the neighbourhood; the geometry decides.
+      // The box got the ray into the neighbourhood; the boundary decides.
       // Clicking the gap in an L-shaped room should select what is behind it,
       // not the room — which is the whole difference between a box round a
       // thing and the thing.
-      final mesh = object.currentMesh;
-      final where = mesh == null || mesh.isEmpty
-          ? hit
-          : _meshHit(mesh, from, along);
+      final shell = object.boundary.meshFrom(object.currentMesh);
+      final where =
+          shell == null || shell.isEmpty ? hit : _meshHit(shell, from, along);
       if (where == null || where >= closest) continue;
 
       closest = where;
@@ -1085,6 +1103,7 @@ class EditorScene {
     String? projectRoot,
     EditorScene? shared,
     String? Function(SceneObject)? geometryOf,
+    GridPlan? grid,
   }) {
     final sky = skyState;
     final driven = dayCycle;
@@ -1119,7 +1138,13 @@ class EditorScene {
         (driven ? sky.ambient : ambient) * (air?.scattered ?? 1) * (1 + flash * 40);
 
     return OrbisScene(
+      materials: [if (grid != null) grid.material],
       objects: [
+        // First, so it is under everything in the list as well as in the
+        // world. Not a scene object: it is never saved, never selected and
+        // never in the outliner, because it is a drawing aid rather than a
+        // thing somebody put there.
+        if (grid != null) grid.object,
         for (final scene in [this, ?shared])
           for (final object in scene._objects)
             if (object.isDrawable)

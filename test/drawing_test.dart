@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/drawing.dart';
 import 'package:orbis_editor/src/editor/editor_shell.dart';
+import 'package:orbis_editor/src/editor/modelling_panel.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
@@ -60,8 +61,14 @@ void main() {
     await tester.pump();
   }
 
+  /// Starts a tool from the modelling panel, which is where they live now —
+  /// the viewport draws what a tool is doing and does not offer the tool.
   Future<void> startTool(WidgetTester tester, ViewportTool tool) async {
-    viewportIn(tester).onTool!(tool);
+    await tester.tap(find.text('MODELLING').first);
+    await tester.pumpAndSettle();
+    tester
+        .widget<ModellingPanel>(find.byType(ModellingPanel))
+        .onTool(tool);
     await tester.pumpAndSettle();
   }
 

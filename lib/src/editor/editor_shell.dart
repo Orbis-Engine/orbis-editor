@@ -13,12 +13,14 @@ import 'asset_browser.dart';
 import 'assets.dart';
 import 'clipboard.dart';
 import 'code_editor.dart';
+import 'boundary.dart';
 import 'commands.dart';
 import 'console.dart';
 import 'console_panel.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
 import 'dock.dart';
+import 'grid.dart';
 import 'drawing.dart';
 import 'dock_view.dart';
 import 'game_view.dart';
@@ -385,6 +387,26 @@ class _EditorShellState extends State<EditorShell> {
     _geometry.pathFor(object);
     setState(() {});
   }
+
+  /// Changes where an object begins and ends.
+  void _setBoundary(SceneObject object, Boundary next, {required bool live}) {
+    final entry = _workspace.sceneHolding(object.id);
+    if (entry == null) return;
+    if (!live) _gesture = Object();
+
+    _run(SetBoundary(
+      sceneId: entry.id,
+      id: object.id,
+      name: object.name,
+      to: next,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+    setState(() {});
+  }
+
+  /// The grid, made once and then only placed.
+  late final GridStore _grid = GridStore(widget.project.directory);
 
   /// How big each imported model says it is, read once a file.
   late final ModelBounds _models = ModelBounds(widget.project.directory);
@@ -800,6 +822,13 @@ class _EditorShellState extends State<EditorShell> {
     _stopCatching;
     _history.addListener(_onChanged);
     _workspace.addListener(_onChanged);
+
+    // The grid's quad and lines, written once. Nothing waits for it: until it
+    // is there `planFor` says there is no grid, and a frame or two without
+    // one at startup is not worth blocking on.
+    _grid.prepare().then((_) {
+      if (mounted) setState(() {});
+    });
 
     final opened = _read(_defaultScenePath(), quiet: true);
     _workspace.add(SceneEntry(
@@ -1799,6 +1828,11 @@ class _EditorShellState extends State<EditorShell> {
                     outline: selected.outline,
                     onOutline: (next, {required live}) =>
                         _setOutline(selected, next, live: live),
+                    boundary: selected.boundary,
+                    onBoundary: (next, {required live}) =>
+                        _setBoundary(selected, next, live: live),
+                    naturalSize:
+                        selected.localBounds(reported: _models.of(selected)),
                     onOpenTools: () => setState(
                       () => _layout = _layout.add(
                         const DockPanel(id: 'modelling',
@@ -1849,11 +1883,11 @@ class _EditorShellState extends State<EditorShell> {
             onSelectElements: _selectElements,
             seeThroughElements: _seeThrough,
             snapping: _snapping,
+            grid: _grid,
             models: _models,
             drawing: _drawing,
             onDrawPoint: _drawPoint,
             onDrawFinish: _finishDrawing,
-            onTool: _useTool,
             onSnapping: (next) => setState(() {
               _snapping
                 ..on = next.on

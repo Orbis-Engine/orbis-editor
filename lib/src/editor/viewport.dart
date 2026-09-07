@@ -14,6 +14,7 @@ import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'drawing.dart';
 import 'gizmo.dart';
+import 'grid.dart';
 import 'model_bounds.dart';
 import 'snapping.dart';
 import 'history.dart';
@@ -212,11 +213,11 @@ class SceneViewport extends StatefulWidget {
     this.seeThroughElements = false,
     required this.snapping,
     this.onSnapping,
+    this.grid,
     this.models,
     this.drawing,
     this.onDrawPoint,
     this.onDrawFinish,
-    this.onTool,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -286,6 +287,9 @@ class SceneViewport extends StatefulWidget {
   /// one scene agree about the grid.
   final Snapping snapping;
 
+  /// The grid, when there is one to draw.
+  final GridStore? grid;
+
   /// How big an imported model says it is. Passed in rather than read here,
   /// so four views share one answer per file instead of reading it four
   /// times.
@@ -308,9 +312,6 @@ class SceneViewport extends StatefulWidget {
   /// Called when a click lands back on the first point, which is how somebody
   /// says they have finished.
   final VoidCallback? onDrawFinish;
-
-  /// Starts or stops a drawing tool.
-  final ValueChanged<ViewportTool>? onTool;
 
   /// Called when the chip or a key changes it.
   final ValueChanged<Snapping>? onSnapping;
@@ -1361,31 +1362,19 @@ class _SceneViewportState extends State<SceneViewport>
                 const SizedBox(width: Space.xs),
                 _ViewportChip(_summary),
                 const SizedBox(width: Space.xs),
-                if (widget.onTool != null) ...[
-                  for (final tool in [
-                    ViewportTool.polyShape,
-                    // Only when there is something to cut. A button that
-                    // cannot do anything teaches nobody when it could.
-                    if (widget.editing != null) ViewportTool.cut,
-                  ]) ...[
-                    _ViewportChip(
-                      tool.label,
-                      on: widget.drawing?.tool == tool,
-                      tooltip: tool == ViewportTool.polyShape
-                          ? 'Click to put down corners, click the first one '
-                              'again or press enter to finish. Backspace takes '
-                              'one back, escape gives up.'
-                          : 'Click along a face from one edge to another, or '
-                              'round in a loop. Enter finishes.',
-                      onTap: () => widget.onTool!(tool),
-                    ),
-                    const SizedBox(width: Space.xs),
-                  ],
-                  if (widget.drawing?.tool.isDrawing ?? false)
-                    _ViewportChip(
-                      '${widget.drawing!.points.length} points',
-                    ),
-                ],
+                // The tools themselves live in the modelling panel. What is
+                // here is only what a tool is *doing*, and only while it is
+                // doing it — a viewport is a place to look at a scene, not a
+                // row of buttons that are somewhere else as well.
+                if (widget.drawing?.tool.isDrawing ?? false)
+                  _ViewportChip(
+                    '${widget.drawing!.tool.label} · '
+                    '${widget.drawing!.points.length} '
+                    '${widget.drawing!.points.length == 1 ? "point" : "points"}',
+                    on: true,
+                    tooltip: 'Enter finishes, backspace takes one back, '
+                        'escape gives up.',
+                  ),
                 _ViewportChip(
                   widget.snapping.on
                       ? 'Grid ${_gridLabel(widget.snapping.step)}'
@@ -1694,6 +1683,10 @@ class _SceneViewportState extends State<SceneViewport>
                   // whichever one is open.
                   shared: widget.workspace.shared,
                   geometryOf: widget.geometryOf,
+                  // Centred on what this view is looking at, so four views
+                  // each get a grid under their own camera rather than one
+                  // grid the others have run off the edge of.
+                  grid: widget.grid?.planFor(widget.snapping, widget.camera.target),
                 ),
                 onSceneNotes: widget.onSceneNotes,
               ),
@@ -1860,6 +1853,11 @@ class _SelectionPainter extends CustomPainter {
   /// the editor does not hold.
   final ModelBounds? models;
 
+  /// Past this many edges an outline is a smear rather than a shape, so the
+  /// box is drawn instead. Nothing the editor builds comes close; an imported
+  /// model would, if the editor ever held its geometry.
+  static const int _tooManyEdges = 3000;
+
   /// The eight corners of a box.
   static List<Vector3> _cornersOf(({Vector3 min, Vector3 max}) box) => [
         for (final x in [box.min.x, box.max.x])
@@ -1900,38 +1898,52 @@ class _SelectionPainter extends CustomPainter {
       final object = scene[id];
       if (object == null || !object.isDrawable) continue;
 
+      if (object.boundary.isNothing) continue;
       final clip = viewProjection.multiplied(scene.worldOf(id));
-      final points = <Offset>[];
-      var visible = true;
 
-      // The box the object actually occupies. It used to be a two-metre cube
-      // for everything, which was right when everything was the placeholder
-      // and wrong for every shape since.
-      final corners = _cornersOf(
-        object.localBounds(reported: models?.of(object)),
-      );
-
-      for (final corner in corners) {
-        final projected =
-            clip.transform(Vector4(corner.x, corner.y, corner.z, 1));
+      Offset? at(Vector3 world) {
+        final projected = clip.transform(Vector4(world.x, world.y, world.z, 1));
         // Behind the camera: the perspective divide flips the point to the
-        // opposite side of the screen, which would draw a box across the whole
-        // viewport. That one is skipped rather than drawn wrong.
-        if (projected.w <= 1e-6) {
-          visible = false;
-          break;
-        }
-        points.add(Offset(
-          (projected.x / projected.w * 0.5 + 0.5) * size.width,
-          (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
-        ));
+        // opposite side of the screen, which would draw a line across the
+        // whole viewport. Skipped rather than drawn wrong.
+        return projected.w <= 1e-6
+            ? null
+            : Offset(
+                (projected.x / projected.w * 0.5 + 0.5) * size.width,
+                (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
+              );
       }
-      if (!visible) continue;
+
+      // The boundary itself, drawn as what it is. A box round a drawn room
+      // says nothing true about where its walls are, and the whole point of a
+      // mesh boundary is that somebody can see it follows the shape.
+      final shell = object.boundary.meshFrom(object.currentMesh);
+      if (shell != null && shell.allEdges.length <= _tooManyEdges) {
+        for (final edge in shell.allEdges) {
+          final a = at(shell.positions[edge.$1]);
+          final b = at(shell.positions[edge.$2]);
+          if (a == null || b == null) continue;
+          path
+            ..moveTo(a.dx, a.dy)
+            ..lineTo(b.dx, b.dy);
+        }
+        continue;
+      }
+
+      // A box: either because that is what was asked for, or because the
+      // shape has more edges than anybody could read as an outline.
+      final corners = _cornersOf(
+        object.boundary.boxFrom(
+          object.localBounds(reported: models?.of(object)),
+        ),
+      );
+      final points = [for (final corner in corners) at(corner)];
+      if (points.any((one) => one == null)) continue;
 
       for (final edge in _edges) {
         path
-          ..moveTo(points[edge[0]].dx, points[edge[0]].dy)
-          ..lineTo(points[edge[1]].dx, points[edge[1]].dy);
+          ..moveTo(points[edge[0]]!.dx, points[edge[0]]!.dy)
+          ..lineTo(points[edge[1]]!.dx, points[edge[1]]!.dy);
       }
     }
 

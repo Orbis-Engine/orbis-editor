@@ -6,6 +6,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 import 'history.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 
+import 'boundary.dart';
 import 'scene.dart';
 import 'surface.dart';
 
@@ -1593,6 +1594,59 @@ class SetOutline extends EditorCommand {
     final object = host.sceneFor(sceneId)?[id];
     if (object == null) return;
     object.outline = _was;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+}
+
+
+/// Changes where an object begins and ends.
+class SetBoundary extends EditorCommand {
+  SetBoundary({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.to,
+    this.gesture,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  Boundary to;
+
+  /// Set while a slider is moving, so the run is one step.
+  final Object? gesture;
+
+  @override
+  Object? get mergeKey => gesture;
+
+  Boundary? _was;
+
+  @override
+  String get label => 'Boundary of $name';
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetBoundary) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    if (object == null) return;
+    _was ??= object.boundary;
+    object.boundary = to;
+    host.sceneFor(sceneId)?.invalidate();
+  }
+
+  @override
+  void revert(SceneHost host) {
+    final object = host.sceneFor(sceneId)?[id];
+    final was = _was;
+    if (object == null || was == null) return;
+    object.boundary = was;
     host.sceneFor(sceneId)?.invalidate();
   }
 }

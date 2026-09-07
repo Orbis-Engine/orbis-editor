@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
+import 'package:vector_math/vector_math_64.dart' hide Colors;
+
+import 'boundary.dart';
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
@@ -20,6 +23,9 @@ class MeshPanel extends StatelessWidget {
     required this.outline,
     required this.onOutline,
     required this.onOpenTools,
+    required this.boundary,
+    required this.onBoundary,
+    required this.naturalSize,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -39,6 +45,17 @@ class MeshPanel extends StatelessWidget {
   /// Opens the modelling panel, for when it is not on screen.
   final VoidCallback onOpenTools;
 
+  /// Where this object begins and ends, as far as anything but the eye is
+  /// concerned.
+  final Boundary boundary;
+
+  /// Called when it changes. [live] is set while a slider is moving.
+  final void Function(Boundary next, {required bool live}) onBoundary;
+
+  /// How big the object is before the boundary has any say, for showing what
+  /// the padding is being added to.
+  final ({Vector3 min, Vector3 max}) naturalSize;
+
   bool get _parametric => shape != null && geometry == null;
 
   @override
@@ -48,8 +65,89 @@ class MeshPanel extends StatelessWidget {
       children: [
         if (outline != null) _outlineSection(),
         if (shape != null) _shapeSection(),
+        _boundarySection(),
         _pointer(),
       ],
+    );
+  }
+
+  /// Where this object begins and ends.
+  ///
+  /// In the inspector rather than the modelling panel because it is a
+  /// property of *this object*, like its position — not a job somebody
+  /// settles into. A crate and the room it stands in want different answers
+  /// and neither is a thing you do fifty times in a row.
+  Widget _boundarySection() {
+    final box = boundary.boxFrom(naturalSize);
+    final size = box.max - box.min;
+    final hasShape = (geometry ?? shape?.build()) != null;
+
+    return _Section(
+      title: 'Boundary',
+      icon: Icons.select_all_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ChoiceRow(
+            label: 'Shape',
+            options: [for (final one in BoundaryKind.values) one.label],
+            selected: boundary.kind.label,
+            onSelect: (label) => onBoundary(
+              boundary.copyWith(
+                kind: BoundaryKind.values
+                    .firstWhere((one) => one.label == label),
+              ),
+              live: false,
+            ),
+          ),
+          const SizedBox(height: Space.xs),
+          Text(
+            boundary.kind == BoundaryKind.mesh && !hasShape
+                ? 'No geometry here, so this falls back to the box.'
+                : boundary.kind.hint,
+            style: OrbisText.caption.copyWith(fontSize: 11),
+          ),
+          if (!boundary.isNothing) ...[
+            SliderRow(
+              label: 'Padding',
+              value: boundary.padding,
+              min: -0.5,
+              max: 1,
+              decimals: 3,
+              onChanged: (value) =>
+                  onBoundary(boundary.copyWith(padding: value), live: true),
+            ),
+            for (final axis in const ['X', 'Y', 'Z'])
+              SliderRow(
+                label: 'Offset $axis',
+                value: switch (axis) {
+                  'X' => boundary.offset.x,
+                  'Y' => boundary.offset.y,
+                  _ => boundary.offset.z,
+                },
+                min: -5,
+                max: 5,
+                decimals: 3,
+                onChanged: (value) => onBoundary(
+                  boundary.copyWith(
+                    offset: Vector3(
+                      axis == 'X' ? value : boundary.offset.x,
+                      axis == 'Y' ? value : boundary.offset.y,
+                      axis == 'Z' ? value : boundary.offset.z,
+                    ),
+                  ),
+                  live: true,
+                ),
+              ),
+            const SizedBox(height: Space.xs),
+            Text(
+              '${size.x.toStringAsFixed(2)} × ${size.y.toStringAsFixed(2)} × '
+              '${size.z.toStringAsFixed(2)} m',
+              style: OrbisText.mono.copyWith(fontSize: 10.5),
+            ),
+          ],
+        ],
+      ),
     );
   }
 

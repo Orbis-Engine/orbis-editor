@@ -8,6 +8,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 import 'colour.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 
+import 'boundary.dart';
 import 'scene.dart';
 import 'surface.dart';
 
@@ -135,6 +136,8 @@ abstract final class SceneDocument {
         if (object.shape != null) 'shape': object.shape!.toJson(),
         if (object.geometry != null) 'geometry': object.geometry!.toJson(),
         if (object.outline != null) 'outline': object.outline!.toJson(),
+        if (object.boundary.toJson().isNotEmpty)
+          'boundary': object.boundary.toJson(),
         if (object.surfaces.isNotEmpty)
           'surfaces': [for (final one in object.surfaces) one.toJson()],
         if (object.prefab != null) 'prefab': object.prefab,
@@ -234,6 +237,7 @@ abstract final class SceneDocument {
       shape: Shape.fromJson(entry['shape']),
       geometry: Mesh.fromJson(entry['geometry']),
       outline: PolyShape.fromJson(entry['outline']),
+      boundary: Boundary.fromJson(entry['boundary']),
       surfaces: entry['surfaces'] is List
           ? [
               for (final one in entry['surfaces']! as List) ?Surface.fromJson(one),
