@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'src/editor/editor_shell.dart';
 import 'src/launcher/launcher_screen.dart';
 import 'src/launcher/project.dart';
+import 'src/launcher/splash.dart';
 import 'src/theme/orbis_theme.dart';
 
 /// Opens the editor, on a project if one was named.
@@ -32,7 +33,13 @@ class OrbisEditorApp extends StatelessWidget {
       title: 'Orbis',
       debugShowCheckedModeBanner: false,
       theme: orbisTheme(),
-      home: EditorRoot(initialProject: initialProject),
+      // The mark first, over whatever is starting behind it. Something has to
+      // be on screen while the window, the renderer and the project list are
+      // all still coming up, and a blank frame reads as an app that failed to
+      // open.
+      home: OrbisSplash(
+        child: EditorRoot(initialProject: initialProject),
+      ),
     );
   }
 }
