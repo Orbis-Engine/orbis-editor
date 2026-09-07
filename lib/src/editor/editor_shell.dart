@@ -22,6 +22,7 @@ import 'data_store.dart';
 import 'dock.dart';
 import 'grid.dart';
 import 'drawing.dart';
+import 'frame_rate.dart';
 import 'dock_view.dart';
 import 'game_view.dart';
 import 'geometry_store.dart';
@@ -404,6 +405,13 @@ class _EditorShellState extends State<EditorShell> {
     if (!live) _gesture = null;
     setState(() {});
   }
+
+  /// How fast the editor is actually drawing.
+  ///
+  /// Listened to rather than read on every build, and it only speaks a couple
+  /// of times a second — a status bar rebuilt sixty times a second to say how
+  /// fast things are would be its own answer to the question.
+  final FrameRate _frames = FrameRate();
 
   /// The grid, made once and then only placed.
   late final GridStore _grid = GridStore(widget.project.directory);
@@ -822,6 +830,9 @@ class _EditorShellState extends State<EditorShell> {
     _stopCatching;
     _history.addListener(_onChanged);
     _workspace.addListener(_onChanged);
+    _frames
+      ..start()
+      ..addListener(_onChanged);
 
     // The grid's quad and lines, written once. Nothing waits for it: until it
     // is there `planFor` says there is no grid, and a frame or two without
@@ -889,6 +900,9 @@ class _EditorShellState extends State<EditorShell> {
       ..removeListener(_onChanged)
       ..dispose();
     _assets.dispose();
+    _frames
+      ..removeListener(_onChanged)
+      ..dispose();
     // Flutter's error handlers are global: leaving ours installed would send
     // the next editor window's errors, and a test's, into a log that is gone.
     _stopCatching();
@@ -2670,6 +2684,13 @@ class _EditorShellState extends State<EditorShell> {
                           ? '${open.title} (unsaved)'
                           : _assets.relative(open.path!)),
                   dirty: open != null && _isUnsaved(open),
+                  rate: _frames.fps,
+                  frameMs: _frames.fps == null
+                      ? null
+                      : (_frames.gpuBound
+                          ? _frames.rasterMs
+                          : _frames.buildMs),
+                  gpuBound: _frames.gpuBound,
                 ),
               ],
             ),
@@ -2945,12 +2966,22 @@ class _StatusBar extends StatelessWidget {
     required this.message,
     required this.file,
     required this.dirty,
+    this.rate,
+    this.frameMs,
+    this.gpuBound = false,
   });
 
   final int objects;
   final String message;
   final String file;
   final bool dirty;
+
+  /// Frames a second, or null before there has been anything to measure.
+  final double? rate;
+
+  /// How long the slower half of a frame takes, and which half it is.
+  final double? frameMs;
+  final bool gpuBound;
 
   @override
   Widget build(BuildContext context) {
@@ -2981,7 +3012,28 @@ class _StatusBar extends StatelessWidget {
           const SizedBox(width: Space.lg),
           Text('$objects objects', style: OrbisText.mono.copyWith(fontSize: 11)),
           const SizedBox(width: Space.lg),
-          Text('— fps', style: OrbisText.mono.copyWith(fontSize: 11)),
+          Text(
+            rate == null ? '— fps' : '${rate!.round()} fps',
+            style: OrbisText.mono.copyWith(
+              fontSize: 11,
+              // Below about fifty a frame is late often enough to feel it.
+              color: rate != null && rate! < 50
+                  ? OrbisColors.warn
+                  : OrbisColors.inkDim,
+            ),
+          ),
+          if (frameMs != null) ...[
+            const SizedBox(width: Space.sm),
+            Text(
+              // Which half of the frame the time went in, because "slow" and
+              // "slow at what" are different questions.
+              '${frameMs!.toStringAsFixed(1)} ms ${gpuBound ? "gpu" : "cpu"}',
+              style: OrbisText.mono.copyWith(
+                fontSize: 11,
+                color: OrbisColors.inkDim,
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -85,12 +85,11 @@ class GridStore {
           Vector3(0.5, 0, 0.5),
           Vector3(0.5, 0, -0.5),
         ],
-        faces: [
-          // Both ways round, so the grid is there when the camera drops below
-          // it — which happens the moment somebody looks up at something.
-          Face([0, 1, 2, 3]),
-          Face([3, 2, 1, 0]),
-        ],
+        // One face. The material culls nothing, so it is there when the
+        // camera drops below it — a second face turned the other way would
+        // only mean drawing the same pixels twice, and this is a
+        // screen-filling blended surface where twice is expensive.
+        faces: [Face([0, 1, 2, 3])],
       );
       final mesh = File(p.join(folder.path, 'grid.glb'));
       await mesh.writeAsBytes(quad.toGlb(name: 'grid'), flush: true);

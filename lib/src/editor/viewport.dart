@@ -1917,9 +1917,10 @@ class _SelectionPainter extends CustomPainter {
       // The boundary itself, drawn as what it is. A box round a drawn room
       // says nothing true about where its walls are, and the whole point of a
       // mesh boundary is that somebody can see it follows the shape.
-      final shell = object.boundary.meshFrom(object.currentMesh);
-      if (shell != null && shell.allEdges.length <= _tooManyEdges) {
-        for (final edge in shell.allEdges) {
+      final shell = object.boundaryMesh;
+      final edges = object.boundaryEdges;
+      if (shell != null && edges.length <= _tooManyEdges) {
+        for (final edge in edges) {
           final a = at(shell.positions[edge.$1]);
           final b = at(shell.positions[edge.$2]);
           if (a == null || b == null) continue;

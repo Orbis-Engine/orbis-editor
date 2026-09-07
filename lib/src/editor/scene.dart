@@ -218,7 +218,33 @@ class SceneObject {
   /// been extruded.
   PolyShape? outline;
 
-  Mesh? get currentMesh => geometry ?? outline?.build() ?? shape?.build();
+  /// The geometry as it stands: edited if it has been, otherwise built from
+  /// whatever describes it.
+  ///
+  /// Cached, because building it is not free and this is asked several times
+  /// a frame — the selection outline wants it, the click test wants it, and
+  /// the writer that hands it to the renderer wants it. Rebuilding a
+  /// twenty-step staircase sixty times a second to draw a line round it is
+  /// the kind of waste that only shows up as "the editor feels slow".
+  ///
+  /// The cache is keyed on the two things that can produce one, by identity.
+  /// A shape or an outline is replaced rather than mutated when it changes —
+  /// every edit goes through a command that hands over a new one — so
+  /// identity is exactly the right test and costs a pointer compare.
+  Mesh? get currentMesh {
+    final made = geometry;
+    if (made != null) return made;
+
+    if (identical(_builtFrom, outline ?? shape) && _built != null) {
+      return _built;
+    }
+    _builtFrom = outline ?? shape;
+    _built = outline?.build() ?? shape?.build();
+    return _built;
+  }
+
+  Mesh? _built;
+  Object? _builtFrom;
 
   /// Where this object begins and ends, as far as anything but the eye is
   /// concerned.
@@ -227,6 +253,42 @@ class SceneObject {
   /// doorway is a hole you can walk through rather than a wall you cannot —
   /// and because a box is only ever right by luck for a shape somebody drew.
   Boundary boundary;
+
+  /// The boundary as geometry, cached the same way and for the same reason.
+  ///
+  /// Two things can change it: the shape underneath, and the boundary's own
+  /// settings. Both are compared by identity, and both are replaced rather
+  /// than edited in place.
+  Mesh? get boundaryMesh {
+    final shape = currentMesh;
+    if (identical(_shellFrom, shape) && identical(_shellFor, boundary)) {
+      return _shell;
+    }
+    _shellFrom = shape;
+    _shellFor = boundary;
+    _shell = boundary.meshFrom(shape);
+    return _shell;
+  }
+
+  Mesh? _shell;
+  Mesh? _shellFrom;
+  Boundary? _shellFor;
+
+  /// The boundary's edges, for drawing it.
+  ///
+  /// Cached beside the mesh because `allEdges` builds a fresh set every time
+  /// it is asked, and the thing asking is a painter running every frame.
+  List<MeshEdge> get boundaryEdges {
+    final shell = boundaryMesh;
+    if (!identical(_edgesFrom, shell)) {
+      _edgesFrom = shell;
+      _edges = shell == null ? const [] : shell.allEdges.toList();
+    }
+    return _edges;
+  }
+
+  List<MeshEdge> _edges = const [];
+  Mesh? _edgesFrom;
 
   /// The box this object actually occupies, in its own space.
   ///
@@ -897,7 +959,7 @@ class EditorScene {
       // Clicking the gap in an L-shaped room should select what is behind it,
       // not the room — which is the whole difference between a box round a
       // thing and the thing.
-      final shell = object.boundary.meshFrom(object.currentMesh);
+      final shell = object.boundaryMesh;
       final where =
           shell == null || shell.isEmpty ? hit : _meshHit(shell, from, along);
       if (where == null || where >= closest) continue;
