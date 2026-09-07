@@ -94,7 +94,30 @@ class _UiEditorState extends State<UiEditor> {
   bool _previewing = false;
   bool _outlines = true;
   bool _guides = true;
+  bool _columns = false;
   bool _dirty = false;
+
+  /// The device being previewed, upright, or null for the canvas's own size.
+  ///
+  /// Not part of the document. Which device somebody is looking at while they
+  /// work is a view, the same way the outlines are — saving it would mean two
+  /// people opening the same file and disagreeing about what it is.
+  Size? _device;
+
+  /// Whether it is being held sideways.
+  ///
+  /// Kept apart from the device rather than folded into it, so turning a phone
+  /// on its side and then picking a tablet gives a tablet on its side. A
+  /// single flipped size would forget which way up somebody was working.
+  bool _landscape = false;
+
+  /// The screen to lay out on: the device the way it is being held.
+  Size? get _preview {
+    final base =
+        _device ?? Size(_document.canvas.width, _document.canvas.height);
+    if (_device == null && !_landscape) return null;
+    return _landscape ? Size(base.height, base.width) : base;
+  }
 
   /// The document as a drag started, so a whole drag is one undo step rather
   /// than one per frame of it.
@@ -177,7 +200,78 @@ class _UiEditorState extends State<UiEditor> {
       ),
       select: [...into, parent.children.length],
     );
+
+    // A container is a decision about where things line up, and the grid is
+    // what they line up against. Putting one in and being shown nothing to
+    // put it against is where somebody has to go looking for the setting that
+    // makes the tool do the obvious thing.
+    if (what == UiElement.column || what == UiElement.row) {
+      setState(() => _columns = true);
+    }
   }
+
+  /// Turns the selected container into a row of equal columns.
+  ///
+  /// The one operation a grid is actually for. Whatever was inside goes into
+  /// the first column rather than being thrown away or spread out — somebody
+  /// splitting a screen in two has content on it already, and a split that
+  /// emptied it would be a split nobody could use twice.
+  void _split(int count) {
+    final path = _selected;
+    final element = path == null ? null : _document.root.at(path);
+    if (path == null || element == null) return;
+
+    // Stripped of their places on the way in. A child that keeps `left` and
+    // `top` becomes a Positioned, and a Positioned that is no longer in a
+    // stack does not lay out badly — it throws, and takes the canvas with it.
+    final kept = [for (final child in element.children) child.unplaced];
+
+    final split = element.copyWith(
+      type: 'row',
+      // Stacked until there is room to sit side by side. Four columns across
+      // a phone are four columns nobody can read, and having to think about
+      // that every time is how a split becomes something to undo.
+      classes: '${_flowing(element.classes)} col md:row'.trim(),
+      children: [
+        for (var i = 0; i < count; i++)
+          UiNode(
+            // Equal widths only where they are widths. Stacked, `flex-1`
+            // would divide the height instead and give four columns a
+            // quarter of the screen each.
+            type: 'column',
+            classes: 'md:flex-1 gap-2',
+            children: i == 0 ? kept : const [],
+          ),
+      ],
+    );
+
+    _change(
+      _document.copyWith(root: _document.root.replaceAt(path, _spanning(split))),
+      select: path,
+    );
+    setState(() => _columns = true);
+  }
+
+  /// A placed element given a width to divide.
+  ///
+  /// Something dropped on a stack has a `left` and nothing else, which leaves
+  /// its width unbounded — and equal columns of an unbounded width are not a
+  /// layout, they are the reason the canvas went blank. Reaching the far edge
+  /// is the honest reading of "split this into columns"; anything that already
+  /// says how wide it is keeps what it says.
+  static UiNode _spanning(UiNode node) {
+    if (node.placed == null) return node;
+
+    final style = UiBuilder().styleOf(node);
+    if (style.width != null || style.right != null) return node;
+
+    final rest = [
+      for (final declaration in node.css.split(';'))
+        if (declaration.trim().isNotEmpty) declaration.trim(),
+    ];
+    return node.copyWith(css: [...rest, 'right: 0'].join('; '));
+  }
+
 
   /// Moves an element while it is being dragged.
   ///
@@ -338,11 +432,13 @@ class _UiEditorState extends State<UiEditor> {
                       Expanded(
                         child: UiCanvasView(
                           document: _document,
+                          previewSize: _preview,
                           selected: _previewing ? null : _selected,
                           hovered: _previewing ? null : _hovered,
                           designing: !_previewing,
                           showOutlines: _outlines,
                           showGuides: _guides,
+                          showColumns: _columns && !_previewing,
                           onSelect: (path) =>
                               setState(() => _selected = path),
                           onHover: (path) => setState(() => _hovered = path),
@@ -353,10 +449,17 @@ class _UiEditorState extends State<UiEditor> {
                       _Side(
                         document: _document,
                         element: _element,
+                        device: _device,
+                        landscape: _landscape,
+                        preview: _preview,
                         onCanvas: (canvas) =>
                             _change(_document.copyWith(canvas: canvas)),
                         onElement: _edit,
                         onAdd: _add,
+                        onSplit: _split,
+                        onDevice: (size) => setState(() => _device = size),
+                        onLandscape: (value) =>
+                            setState(() => _landscape = value),
                       ),
                     ],
                   ),
@@ -405,6 +508,8 @@ class _UiEditorState extends State<UiEditor> {
             tone: ButtonTone.quiet,
             onPressed: _undone.isEmpty ? null : _redo,
           ),
+          const SizedBox(width: Space.md),
+          _Showing(document: _document, preview: _preview),
           const Spacer(),
           // What the game shows, with nothing over it. The one control that
           // answers "is this guide going to be in my screenshot".
@@ -435,10 +540,90 @@ class _UiEditorState extends State<UiEditor> {
                 ? null
                 : (value) => setState(() => _guides = value),
           ),
+          const SizedBox(width: Space.xs),
+          _Toggle(
+            label: 'Column grid',
+            icon: Icons.view_week_outlined,
+            on: _columns && !_previewing,
+            onChanged: _previewing
+                ? null
+                : (value) => setState(() => _columns = value),
+          ),
         ],
       ),
     );
   }
+}
+
+/// What the canvas is being laid out at, and which prefixed classes that
+/// puts in play.
+///
+/// The one thing a responsive canvas has to say out loud. A `md:` class that
+/// appears to do nothing is somebody's afternoon, and the answer is always
+/// that the canvas is narrower than they thought.
+class _Showing extends StatelessWidget {
+  const _Showing({required this.document, required this.preview});
+
+  final UiDocument document;
+  final Size? preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = UiCanvasView.layoutFor(document, preview);
+    final at = const UiTheme().breakpoints.labelAt(size.width);
+
+    return Tooltip(
+      message: 'Laid out at ${size.width.round()} × ${size.height.round()}. '
+          'Classes prefixed $at: and narrower are in effect.',
+      waitDuration: const Duration(milliseconds: 400),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${size.width.round()} × ${size.height.round()}',
+            style: OrbisText.label.copyWith(
+              fontSize: 11,
+              color: OrbisColors.inkDim,
+            ),
+          ),
+          const SizedBox(width: Space.sm),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: OrbisColors.raised,
+              borderRadius: BorderRadius.circular(Radii.control),
+              border: Border.all(color: OrbisColors.line),
+            ),
+            child: Text(
+              at,
+              style: OrbisText.label.copyWith(
+                fontSize: 10.5,
+                color: OrbisColors.inkMid,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A class list with any direction it named taken out.
+///
+/// The type says `row` now, and a leftover `stack` or `md:row` in the classes
+/// is applied over the top of it — the element would keep its old layout and
+/// the change would look like it did nothing.
+String _flowing(String classes) {
+  const directions = {'col', 'column', 'stack', 'row'};
+  final kept = [
+    for (final name in classes.split(RegExp(r'\s+')))
+      if (name.isNotEmpty)
+        if (!directions.contains(name) &&
+            !directions.contains(name.split(':').last))
+          name,
+  ];
+  if (!kept.any((name) => name.startsWith('gap-'))) kept.add('gap-4');
+  return kept.join(' ');
 }
 
 class _SaveIntent extends Intent {
@@ -605,22 +790,64 @@ class _Side extends StatelessWidget {
   const _Side({
     required this.document,
     required this.element,
+    required this.device,
+    required this.landscape,
+    required this.preview,
     required this.onCanvas,
     required this.onElement,
     required this.onAdd,
+    required this.onSplit,
+    required this.onDevice,
+    required this.onLandscape,
   });
 
   final UiDocument document;
   final UiNode? element;
+
+  /// The device chosen, upright, and whether it is being held sideways.
+  final Size? device;
+  final bool landscape;
+
+  /// The two of them together: what the canvas is actually laid out at.
+  final Size? preview;
+
   final ValueChanged<UiCanvas> onCanvas;
   final void Function(UiNode Function(UiNode)) onElement;
   final ValueChanged<UiElement> onAdd;
+  final ValueChanged<int> onSplit;
+  final ValueChanged<Size?> onDevice;
+  final ValueChanged<bool> onLandscape;
+
+  /// Whether a container turns into a column on a narrow screen.
+  static bool _stacks(UiNode node) =>
+      node.classes.split(RegExp(r'\s+')).contains('md:row');
+
+  /// The containers a split means anything for.
+  ///
+  /// Splitting a piece of text into three columns is not a layout, it is a
+  /// question nobody asked.
+  static const _containers = {'column', 'row', 'stack', 'box'};
+
+  /// Screens worth one press. Every one is a real device rather than a round
+  /// number, and between them they cross every breakpoint there is — which is
+  /// the point of having them one press apart.
+  static const _devices = <String, Size?>{
+    'Canvas': null,
+    'Phone': Size(390, 844),
+    'Tablet': Size(834, 1112),
+    'Laptop': Size(1440, 900),
+    'Desktop': Size(1920, 1080),
+    'TV': Size(3840, 2160),
+  };
 
   /// Sizes worth having one press away. Every one is a real screen somebody
   /// ships to, rather than a round number.
   /// What each fit means, since the name is three words and the behaviour is
   /// the thing somebody is choosing between.
   static const _fitExplains = <CanvasFit, String>{
+    CanvasFit.responsive: 'Laid out at whatever size the screen is. Prefixed '
+        'classes decide what changes, and text and spacing grow with the '
+        'screen instead of the whole picture being magnified.',
     CanvasFit.width: 'The width always fills the screen. The bottom of a '
         'taller screen is empty and a shorter one cuts the bottom off.',
     CanvasFit.height: 'The height always fits. A wider screen has space at '
@@ -703,7 +930,7 @@ class _Side extends StatelessWidget {
                           child: ValueField(
                             value: selected.classes,
                             mono: true,
-                            hint: 'p-4 flex-1 bg-slate-800',
+                            hint: 'p-4 flex-1 md:row lg:text-2xl',
                             onChanged: (value) => onElement(
                               (node) => node.copyWith(classes: value),
                             ),
@@ -719,6 +946,44 @@ class _Side extends StatelessWidget {
                                 onElement((node) => node.copyWith(css: value)),
                           ),
                         ),
+                        if (_containers.contains(selected.type))
+                          FieldRow(
+                            label: 'Narrow',
+                            child: _Chip(
+                              label: _stacks(selected) ? 'Stacks' : 'Row',
+                              tooltip: 'Whether this turns into a column on a '
+                                  'screen narrower than the md breakpoint. '
+                                  'Written as the classes col md:row, so it '
+                                  'can be changed by hand as well.',
+                              selected: _stacks(selected),
+                              onTap: () => onElement(
+                                (node) => node.copyWith(
+                                  classes: _stacks(node)
+                                      ? _flowing(node.classes)
+                                      : '${_flowing(node.classes)} col md:row'
+                                            .trim(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (_containers.contains(selected.type))
+                          FieldRow(
+                            label: 'Split',
+                            child: Row(
+                              children: [
+                                for (final count in const [2, 3, 4]) ...[
+                                  _Chip(
+                                    label: '$count',
+                                    tooltip: 'Make this a row of $count equal '
+                                        'columns. What is in it goes into the '
+                                        'first one.',
+                                    onTap: () => onSplit(count),
+                                  ),
+                                  const SizedBox(width: Space.xs),
+                                ],
+                              ],
+                            ),
+                          ),
                         FieldRow(
                           label: 'Handler',
                           child: ValueField(
@@ -799,6 +1064,106 @@ class _Side extends StatelessWidget {
                           document.canvas.copyWith(safeArea: value / 100),
                         ),
                       ),
+                      const SizedBox(height: Space.sm),
+                      Text('PREVIEW ON', style: OrbisText.section),
+                      const SizedBox(height: Space.xs),
+                      // A view rather than a property of the file. A
+                      // responsive interface is a different layout at every
+                      // width, so one that could only be looked at in its own
+                      // reference size would be the one screen nobody worried
+                      // about.
+                      Wrap(
+                        spacing: Space.xs,
+                        runSpacing: Space.xs,
+                        children: [
+                          for (final entry in _devices.entries)
+                            _Chip(
+                              label: entry.key,
+                              tooltip: entry.value == null
+                                  ? 'The size this was drawn against.'
+                                  : '${entry.value!.width.round()} × '
+                                      '${entry.value!.height.round()} upright',
+                              // Against the device, not the size being shown:
+                              // a phone held sideways is still the phone.
+                              selected: device == entry.value,
+                              onTap: () => onDevice(entry.value),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: Space.xs),
+                      // Held which way. Its own control rather than two more
+                      // device chips, because every device has both and a
+                      // list with each of them twice is a list nobody reads.
+                      Row(
+                        children: [
+                          for (final sideways in const [false, true]) ...[
+                            _Chip(
+                              label: sideways ? 'Landscape' : 'Portrait',
+                              selected: landscape == sideways,
+                              onTap: () => onLandscape(sideways),
+                            ),
+                            const SizedBox(width: Space.xs),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                _Group(
+                  title: 'Grid',
+                  icon: Icons.view_week_outlined,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SliderRow(
+                        label: 'Columns',
+                        value: document.canvas.columns.toDouble(),
+                        min: 1,
+                        max: 24,
+                        onChanged: (value) => onCanvas(
+                          document.canvas.copyWith(columns: value.round()),
+                        ),
+                      ),
+                      SliderRow(
+                        label: 'Gutter',
+                        value: document.canvas.gutter,
+                        min: 0,
+                        max: 80,
+                        unit: 'px',
+                        onChanged: (value) =>
+                            onCanvas(document.canvas.copyWith(gutter: value)),
+                      ),
+                      // What is actually drawn, which on a phone is fewer
+                      // than what is authored. Said out loud because a grid
+                      // that quietly changed its mind is a grid somebody
+                      // mistakes for their own layout.
+                      _GridCount(document: document, preview: preview),
+                      // The grid sits inside the safe area, so the outer
+                      // margin and the edge a television eats are one
+                      // measurement rather than two that disagree.
+                      const SizedBox(height: Space.sm),
+                      Text('FLUID RANGE', style: OrbisText.section),
+                      const SizedBox(height: Space.xs),
+                      SliderRow(
+                        label: 'Smallest',
+                        value: document.canvas.minScale * 100,
+                        min: 40,
+                        max: 100,
+                        unit: '%',
+                        onChanged: (value) => onCanvas(
+                          document.canvas.copyWith(minScale: value / 100),
+                        ),
+                      ),
+                      SliderRow(
+                        label: 'Largest',
+                        value: document.canvas.maxScale * 100,
+                        min: 100,
+                        max: 300,
+                        unit: '%',
+                        onChanged: (value) => onCanvas(
+                          document.canvas.copyWith(maxScale: value / 100),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -806,6 +1171,36 @@ class _Side extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// How many columns the grid is drawing, when it is not the authored number.
+class _GridCount extends StatelessWidget {
+  const _GridCount({required this.document, required this.preview});
+
+  final UiDocument document;
+  final Size? preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = UiCanvasView.layoutFor(document, preview).width;
+    final drawn = document.canvas.columnsAt(width);
+    final authored = document.canvas.columns;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: Space.xs),
+      child: Text(
+        drawn == authored
+            ? '$authored across this screen'
+            : (drawn == 0
+                  ? 'No room for a column at this width'
+                  : '$drawn across this screen — $authored is too fine here'),
+        style: OrbisText.label.copyWith(
+          fontSize: 10.5,
+          color: OrbisColors.inkDim,
+        ),
       ),
     );
   }
@@ -902,11 +1297,20 @@ class _Chip extends StatelessWidget {
                 Icon(icon, size: 12, color: OrbisColors.inkMid),
                 const SizedBox(width: 5),
               ],
-              Text(
-                label,
-                style: OrbisText.label.copyWith(
-                  fontSize: 11,
-                  color: selected ? OrbisColors.ember : OrbisColors.inkMid,
+              // Flexible so a long label ellipsizes inside its own chip. An
+              // overflowing Row in a fixed-width panel is a striped bar
+              // across the inspector and, one step further, a layout that
+              // throws — see the unbounded-width traps this editor has hit
+              // before.
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
+                  style: OrbisText.label.copyWith(
+                    fontSize: 11,
+                    color: selected ? OrbisColors.ember : OrbisColors.inkMid,
+                  ),
                 ),
               ),
             ],
