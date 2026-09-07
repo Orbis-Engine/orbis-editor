@@ -404,6 +404,17 @@ class _SceneViewportState extends State<SceneViewport>
   /// Where on the handle the drag began, in world space, and what every
   /// object being dragged looked like before it started.
   Vector3? _grabbed;
+
+  /// Where the handle stood when the drag began.
+  ///
+  /// Not read from the gizmo each frame, which is the whole point. The gizmo
+  /// sits on the thing being dragged, so a grid worked out from it is a grid
+  /// that moves with what it is snapping — and a thing that did not start on
+  /// a line then flickers between two of them for as long as the drag lasts,
+  /// with the pointer perfectly still. The line to land on is decided by
+  /// where the drag started, once.
+  Vector3? _grabbedPivot;
+
   final Map<String, Vector3> _before = {};
   final Map<String, Matrix3> _beforeWorld = {};
 
@@ -588,6 +599,7 @@ class _SceneViewportState extends State<SceneViewport>
       setState(() {
         _dragging = axis;
         _grabbed = grabbed;
+        _grabbedPivot = gizmo.pivot.clone();
       });
       return true;
     }
@@ -605,6 +617,7 @@ class _SceneViewportState extends State<SceneViewport>
     setState(() {
       _dragging = axis;
       _grabbed = grabbed;
+      _grabbedPivot = gizmo.pivot.clone();
     });
     return true;
   }
@@ -689,8 +702,8 @@ class _SceneViewportState extends State<SceneViewport>
       // Snapped in the world, where the grid is, and then taken into the
       // object's frame. Snapping after the conversion would put the grid at
       // whatever angle and scale the object happens to have.
-      final shift = _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot,
-          axis.direction);
+      final from = _grabbedPivot ?? gizmo.pivot;
+      final shift = _snap.along(from, now - grabbed + from, axis.direction);
       next.movePoints(_movingPoints, _intoObject(shift, editing.transform));
       what = 'Move';
     } else {
@@ -744,8 +757,8 @@ class _SceneViewportState extends State<SceneViewport>
       if (now == null) return;
       // From where the handle was, so a selection of several keeps its shape
       // and the one the handles are on is the one that lands on a line.
-      final shift =
-          _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot, axis.direction);
+      final from = _grabbedPivot ?? gizmo.pivot;
+      final shift = _snap.along(from, now - grabbed + from, axis.direction);
 
       for (final entry in _before.entries) {
         final object = scene[entry.key];
@@ -809,6 +822,7 @@ class _SceneViewportState extends State<SceneViewport>
     setState(() {
       _dragging = null;
       _grabbed = null;
+      _grabbedPivot = null;
       _beforeMesh = null;
       _movingPoints = const [];
       _draggingSelection = null;
