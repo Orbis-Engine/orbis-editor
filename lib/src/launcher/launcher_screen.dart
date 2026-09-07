@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'create_view.dart';
+import 'examples_view.dart';
 import 'project.dart';
 import 'projects_view.dart';
 
@@ -18,7 +19,7 @@ String ago(DateTime then) {
 }
 
 /// What the launcher is currently showing.
-enum _View { projects, create }
+enum _View { projects, create, examples }
 
 /// The first thing the editor shows.
 ///
@@ -117,6 +118,10 @@ class _LauncherScreenState extends State<LauncherScreen> {
                     onCreated: widget.onOpen,
                     onFailed: _complain,
                   ),
+                // Kept alive behind the other two, so switching away and back
+                // does not restart whatever was running — an example with a
+                // day cycle in it is worth leaving where it was.
+                _View.examples => const ExamplesView(),
               },
             ),
           ),
@@ -186,6 +191,12 @@ class _Rail extends StatelessWidget {
             icon: Icons.add_box_outlined,
             selected: view == _View.create,
             onTap: () => onView(_View.create),
+          ),
+          _RailItem(
+            label: 'Examples',
+            icon: Icons.auto_stories_outlined,
+            selected: view == _View.examples,
+            onTap: () => onView(_View.examples),
           ),
           const Spacer(),
           OrbisButton(

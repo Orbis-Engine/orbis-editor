@@ -65,6 +65,12 @@ dependencies:
   # into something that was not a shape any more.
   orbis_mesh:
     path: ../orbis/packages/orbis_mesh
+
+  # The worked examples, shown in the launcher beside the projects. The same
+  # package the gallery app uses, so an example only has to be written once
+  # and the editor never drifts from what the gallery shows.
+  orbis_examples:
+    path: ../orbis/packages/orbis_examples
   path: ^1.9.0
   path_provider: ^2.1.5
 
