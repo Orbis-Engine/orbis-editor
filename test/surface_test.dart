@@ -5,6 +5,7 @@ import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/surface.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
+import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 void main() {
   test('a material with nothing said about it is a plain grey one', () {
@@ -81,6 +82,57 @@ void main() {
     expect(read.surfaces, hasLength(2));
     expect(read.surfaces[1].name, 'Brass');
     expect(read.surfaces[1].metallic, 1);
+  });
+
+  test('a drawn outline goes with the object through the scene file', () {
+    final object = SceneObject(
+      id: 'a',
+      name: 'Room',
+      kind: ObjectKind.shape,
+      outline: PolyShape(
+        points: [
+          Vector3(0, 0, 0),
+          Vector3(0, 0, 2),
+          Vector3(2, 0, 2),
+        ],
+        height: 1.5,
+        flipped: true,
+      ),
+    );
+
+    final back = SceneDocument.decode(
+      SceneDocument.encode(EditorScene([object]), name: 'A'),
+    );
+    final read = back.scene.objects.single;
+
+    expect(read.outline, isNotNull);
+    expect(read.outline!.points, hasLength(3));
+    expect(read.outline!.height, 1.5);
+    expect(read.outline!.flipped, isTrue);
+    // And it is still the shape, not just a note about how it was made.
+    expect(read.currentMesh!.faceCount, 5);
+  });
+
+  test('an outline and a mesh can both be there, and the mesh wins', () {
+    final object = SceneObject(
+      id: 'a',
+      name: 'Room',
+      kind: ObjectKind.shape,
+      outline: PolyShape(
+        points: [
+          Vector3(0, 0, 0),
+          Vector3(0, 0, 2),
+          Vector3(2, 0, 2),
+        ],
+        height: 1,
+      ),
+      geometry: Shape.of(ShapeKind.cube).build(),
+    );
+
+    // Because an outline cannot describe a face that has been extruded, and
+    // the corners are kept only so undoing back to them is possible.
+    expect(object.currentMesh!.faceCount, 6);
+    expect(object.outline, isNotNull);
   });
 
   test('a copy of an object gets its own list of slots', () {

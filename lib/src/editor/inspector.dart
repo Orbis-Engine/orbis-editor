@@ -1810,6 +1810,20 @@ class VectorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Listening here rather than being rebuilt from above.
+    //
+    // A drag runs a command a frame, and these three rows are the only part
+    // of the inspector that a move changes — a name is the same name at a
+    // different height. Rebuilding the whole inspector to show three numbers
+    // was over half the cost of a drag frame, most of it text fields with
+    // their own focus, actions and overlays.
+    return ListenableBuilder(
+      listenable: history,
+      builder: (context, _) => _row(),
+    );
+  }
+
+  Widget _row() {
     final value = field.of(object);
 
     return FieldRow(

@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
+import 'package:vector_math/vector_math_64.dart' hide Colors;
+
+import 'boundary.dart';
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
-import 'inspector.dart' show ChoiceRow, ColourRow, SliderRow;
-import 'surface.dart';
-import 'mesh_edit.dart';
-import 'mesh_tools.dart';
+import 'inspector.dart' show ChoiceRow, SliderRow;
 
 /// Building geometry: the shape it started as, and what to do to it now.
 ///
@@ -19,20 +19,13 @@ class MeshPanel extends StatelessWidget {
     super.key,
     required this.shape,
     required this.geometry,
-    required this.context_,
-    required this.mode,
-    required this.selection,
-    required this.amounts,
     required this.onShape,
-    required this.onContext,
-    required this.onMode,
-    required this.onAction,
-    required this.onAmount,
-    required this.seeThrough,
-    required this.onSeeThrough,
-    required this.surfaces,
-    required this.onSurfaces,
-    required this.onPaint,
+    required this.outline,
+    required this.onOutline,
+    required this.onOpenTools,
+    required this.boundary,
+    required this.onBoundary,
+    required this.naturalSize,
   });
 
   /// What it was made from, still true while [geometry] is null.
@@ -41,32 +34,27 @@ class MeshPanel extends StatelessWidget {
   /// What it is now, once somebody edited it.
   final Mesh? geometry;
 
-  final EditContext context_;
-  final ElementMode mode;
-  final ElementSelection selection;
-
-  /// How much each action does, by action name.
-  final Map<String, double> amounts;
-
   final ValueChanged<Shape> onShape;
-  final ValueChanged<EditContext> onContext;
-  final ValueChanged<ElementMode> onMode;
-  final ValueChanged<MeshAction> onAction;
-  final void Function(String action, double amount) onAmount;
+  /// The outline this shape was drawn from, if it was drawn.
+  final PolyShape? outline;
 
-  /// Whether picking reaches what is behind the surface.
-  final bool seeThrough;
-  final ValueChanged<bool> onSeeThrough;
+  /// Called when its height or facing changes. [live] is set while a slider
+  /// is moving.
+  final void Function(PolyShape next, {required bool live}) onOutline;
 
-  /// What this shape's faces can be painted with.
-  final List<Surface> surfaces;
+  /// Opens the modelling panel, for when it is not on screen.
+  final VoidCallback onOpenTools;
 
-  /// Called with the whole list whenever one of them changes. [live] is set
-  /// while a slider is being dragged, so the run is one step to undo.
-  final void Function(List<Surface> surfaces, {required bool live}) onSurfaces;
+  /// Where this object begins and ends, as far as anything but the eye is
+  /// concerned.
+  final Boundary boundary;
 
-  /// Paints the selected faces with the slot at this position.
-  final ValueChanged<int> onPaint;
+  /// Called when it changes. [live] is set while a slider is moving.
+  final void Function(Boundary next, {required bool live}) onBoundary;
+
+  /// How big the object is before the boundary has any say, for showing what
+  /// the padding is being added to.
+  final ({Vector3 min, Vector3 max}) naturalSize;
 
   bool get _parametric => shape != null && geometry == null;
 
@@ -75,10 +63,174 @@ class MeshPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (outline != null) _outlineSection(),
         if (shape != null) _shapeSection(),
-        _editSection(),
-        _materialsSection(),
+        _boundarySection(),
+        _pointer(),
       ],
+    );
+  }
+
+  /// Where this object begins and ends.
+  ///
+  /// In the inspector rather than the modelling panel because it is a
+  /// property of *this object*, like its position — not a job somebody
+  /// settles into. A crate and the room it stands in want different answers
+  /// and neither is a thing you do fifty times in a row.
+  Widget _boundarySection() {
+    final box = boundary.boxFrom(naturalSize);
+    final size = box.max - box.min;
+    final hasShape = (geometry ?? shape?.build()) != null;
+
+    return _Section(
+      title: 'Boundary',
+      icon: Icons.select_all_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ChoiceRow(
+            label: 'Shape',
+            options: [for (final one in BoundaryKind.values) one.label],
+            selected: boundary.kind.label,
+            onSelect: (label) => onBoundary(
+              boundary.copyWith(
+                kind: BoundaryKind.values
+                    .firstWhere((one) => one.label == label),
+              ),
+              live: false,
+            ),
+          ),
+          const SizedBox(height: Space.xs),
+          Text(
+            boundary.kind == BoundaryKind.mesh && !hasShape
+                ? 'No geometry here, so this falls back to the box.'
+                : boundary.kind.hint,
+            style: OrbisText.caption.copyWith(fontSize: 11),
+          ),
+          if (!boundary.isNothing) ...[
+            SliderRow(
+              label: 'Padding',
+              value: boundary.padding,
+              min: -0.5,
+              max: 1,
+              decimals: 3,
+              onChanged: (value) =>
+                  onBoundary(boundary.copyWith(padding: value), live: true),
+            ),
+            for (final axis in const ['X', 'Y', 'Z'])
+              SliderRow(
+                label: 'Offset $axis',
+                value: switch (axis) {
+                  'X' => boundary.offset.x,
+                  'Y' => boundary.offset.y,
+                  _ => boundary.offset.z,
+                },
+                min: -5,
+                max: 5,
+                decimals: 3,
+                onChanged: (value) => onBoundary(
+                  boundary.copyWith(
+                    offset: Vector3(
+                      axis == 'X' ? value : boundary.offset.x,
+                      axis == 'Y' ? value : boundary.offset.y,
+                      axis == 'Z' ? value : boundary.offset.z,
+                    ),
+                  ),
+                  live: true,
+                ),
+              ),
+            const SizedBox(height: Space.xs),
+            Text(
+              '${size.x.toStringAsFixed(2)} × ${size.y.toStringAsFixed(2)} × '
+              '${size.z.toStringAsFixed(2)} m',
+              style: OrbisText.mono.copyWith(fontSize: 10.5),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Where the rest of it went.
+  ///
+  /// Worth a line and a button: somebody who used to find extrude here will
+  /// look here for it, and being told where it is beats going and reading a
+  /// menu.
+  Widget _pointer() {
+    return Padding(
+      padding: const EdgeInsets.only(top: Space.xs),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Extruding, cutting, materials and export are in the modelling '
+            'panel.',
+            style: OrbisText.caption.copyWith(fontSize: 11),
+          ),
+          const SizedBox(height: Space.xs),
+          OrbisButton(
+            label: 'Modelling tools',
+            icon: Icons.handyman_outlined,
+            expand: true,
+            tone: ButtonTone.quiet,
+            onPressed: onOpenTools,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _outlineSection() {
+    final drawn = outline!;
+    return _Section(
+      title: 'Drawn shape',
+      icon: Icons.polyline_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (geometry != null)
+            Text(
+              'Edited since it was drawn, so the outline no longer describes '
+              'it. Its corners are still here if you undo back.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            )
+          else ...[
+            Text(
+              '${drawn.points.length} corners',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+            SliderRow(
+              label: 'Height',
+              value: drawn.height,
+              min: -8,
+              max: 8,
+              decimals: 2,
+              onChanged: (value) => onOutline(
+                PolyShape(
+                  points: drawn.points,
+                  height: value,
+                  flipped: drawn.flipped,
+                ),
+                live: true,
+              ),
+            ),
+            OrbisButton(
+              label: 'Turn it over',
+              icon: Icons.flip_outlined,
+              expand: true,
+              tone: ButtonTone.quiet,
+              onPressed: () => onOutline(
+                PolyShape(
+                  points: drawn.points,
+                  height: drawn.height,
+                  flipped: !drawn.flipped,
+                ),
+                live: false,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -238,294 +390,10 @@ class MeshPanel extends StatelessWidget {
     };
   }
 
-  Widget _editSection() {
-    final editing = context_ == EditContext.element;
-    final offered = MeshTools.availableIn(editing ? mode : null, selection);
-
-    return _Section(
-      title: 'Geometry',
-      icon: Icons.build_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ChoiceRow(
-            label: 'Editing',
-            options: [for (final one in EditContext.values) one.label],
-            selected: context_.label,
-            onSelect: (label) => onContext(
-              EditContext.values.firstWhere((one) => one.label == label),
-            ),
-          ),
-          if (editing) ...[
-            const SizedBox(height: Space.xs),
-            Row(
-              children: [
-                for (final one in ElementMode.values) ...[
-                  Expanded(
-                    child: OrbisButton(
-                      label: one.label,
-                      icon: one.icon,
-                      expand: true,
-                      tone: one == mode
-                          ? ButtonTone.primary
-                          : ButtonTone.quiet,
-                      onPressed: () => onMode(one),
-                    ),
-                  ),
-                  const SizedBox(width: Space.xs),
-                ],
-              ],
-            ),
-            const SizedBox(height: Space.xs),
-            OrbisButton(
-              label: seeThrough ? 'Seeing through' : 'See through',
-              icon: seeThrough
-                  ? Icons.visibility_outlined
-                  : Icons.visibility_off_outlined,
-              expand: true,
-              tone: seeThrough ? ButtonTone.primary : ButtonTone.quiet,
-              onPressed: () => onSeeThrough(!seeThrough),
-            ),
-            const SizedBox(height: Space.xs),
-            Text(
-              selection.isEmpty
-                  ? 'Click ${mode.label.toLowerCase()} in the viewport. '
-                      'Shift to add. G changes mode, escape leaves.'
-                  : '${selection.countIn(mode)} selected — drag the handles to '
-                      '${mode == ElementMode.face
-                          ? 'move them, shift-drag to extrude'
-                          : 'move them'}',
-              style: OrbisText.caption.copyWith(fontSize: 11),
-            ),
-          ],
-          const SizedBox(height: Space.sm),
-          for (final action in offered) ...[
-            _ActionRow(
-              action: action,
-              amount: amounts[action.label] ?? action.amount?.value ?? 1,
-              onRun: () => onAction(action),
-              onAmount: (value) => onAmount(action.label, value),
-            ),
-            const SizedBox(height: 3),
-          ],
-        ],
-      ),
-    );
-  }
 }
 
 /// One action: what it does, and how much of it.
-class _ActionRow extends StatelessWidget {
-  const _ActionRow({
-    required this.action,
-    required this.amount,
-    required this.onRun,
-    required this.onAmount,
-  });
-
-  final MeshAction action;
-  final double amount;
-  final VoidCallback onRun;
-  final ValueChanged<double> onAmount;
-
-  @override
-  Widget build(BuildContext context) {
-    final takes = action.amount;
-
-    return Tooltip(
-      message: action.hint,
-      waitDuration: const Duration(milliseconds: 500),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          OrbisButton(
-            label: action.label,
-            icon: action.icon,
-            expand: true,
-            tone: ButtonTone.normal,
-            onPressed: onRun,
-          ),
-          // The number under the button that uses it, so it is obvious which
-          // one it belongs to. A panel of sliders above a panel of buttons is
-          // a guess about which goes with which.
-          if (takes != null)
-            SliderRow(
-              label: takes.label,
-              value: amount,
-              min: takes.min,
-              max: takes.max,
-              decimals: takes.max <= 2 ? 2 : 0,
-              onChanged: onAmount,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 /// A titled block, matching the inspector's other sections.
-extension on MeshPanel {
-  /// The material slots, and what paints with them.
-  Widget _materialsSection() {
-    // Which slot each face wears, so a slot can say how much of the shape it
-    // covers — the fastest way to find the one somebody is looking for.
-    final mesh = geometry ?? shape?.build();
-    final worn = <int, int>{};
-    for (final face in mesh?.faces ?? const <Face>[]) {
-      worn[face.material] = (worn[face.material] ?? 0) + 1;
-    }
-    final painting = context_ == EditContext.element &&
-        mode == ElementMode.face &&
-        selection.faces.isNotEmpty;
-
-    return _Section(
-      title: 'Materials',
-      icon: Icons.palette_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (surfaces.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: Space.xs),
-              child: Text(
-                'One material, the renderer\'s own. Add a slot to paint '
-                'faces with something else.',
-                style: OrbisText.caption.copyWith(fontSize: 11),
-              ),
-            ),
-          for (var i = 0; i < surfaces.length; i++) ...[
-            _SurfaceRow(
-              slot: i,
-              surface: surfaces[i],
-              faces: worn[i] ?? 0,
-              painting: painting,
-              onPaint: () => onPaint(i),
-              onChanged: (next, {required live}) {
-                final all = [...surfaces];
-                all[i] = next;
-                onSurfaces(all, live: live);
-              },
-            ),
-            const SizedBox(height: Space.xs),
-          ],
-          OrbisButton(
-            label: 'Add material',
-            icon: Icons.add,
-            expand: true,
-            tone: ButtonTone.quiet,
-            onPressed: () => onSurfaces(
-              [
-                ...surfaces,
-                Surface(name: 'Material ${surfaces.length + 1}'),
-              ],
-              live: false,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// One material slot: what it looks like, how much of the shape wears it, and
-/// the button that paints more of it.
-class _SurfaceRow extends StatelessWidget {
-  const _SurfaceRow({
-    required this.slot,
-    required this.surface,
-    required this.faces,
-    required this.painting,
-    required this.onPaint,
-    required this.onChanged,
-  });
-
-  final int slot;
-  final Surface surface;
-  final int faces;
-
-  /// Whether there are faces selected for the paint button to act on.
-  final bool painting;
-  final VoidCallback onPaint;
-  final void Function(Surface next, {required bool live}) onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(Space.xs),
-      decoration: BoxDecoration(
-        color: OrbisColors.ground,
-        borderRadius: BorderRadius.circular(Radii.control),
-        border: Border.all(color: OrbisColors.lineSoft),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: surface.colour,
-                  borderRadius: BorderRadius.circular(3),
-                  border: Border.all(color: OrbisColors.lineSoft),
-                ),
-              ),
-              const SizedBox(width: Space.xs),
-              Expanded(
-                child: Text(
-                  surface.name,
-                  overflow: TextOverflow.ellipsis,
-                  style: OrbisText.body.copyWith(fontSize: 11.5),
-                ),
-              ),
-              Text(
-                faces == 0 ? 'unused' : '$faces',
-                style: OrbisText.caption.copyWith(fontSize: 10.5),
-              ),
-              const SizedBox(width: Space.xs),
-              // Only when there is something to paint. A button that does
-              // nothing teaches somebody nothing about when it would.
-              if (painting)
-                OrbisButton(
-                  label: 'Paint',
-                  icon: Icons.format_paint_outlined,
-                  tone: ButtonTone.primary,
-                  onPressed: onPaint,
-                ),
-            ],
-          ),
-          const SizedBox(height: Space.xs),
-          ColourRow(
-            label: 'Colour',
-            value: surface.colour,
-            onChanged: (colour) =>
-                onChanged(surface.copyWith(colour: colour), live: false),
-          ),
-          SliderRow(
-            label: 'Metal',
-            value: surface.metallic,
-            min: 0,
-            max: 1,
-            decimals: 2,
-            onChanged: (value) =>
-                onChanged(surface.copyWith(metallic: value), live: true),
-          ),
-          SliderRow(
-            label: 'Rough',
-            value: surface.roughness,
-            min: 0,
-            max: 1,
-            decimals: 2,
-            onChanged: (value) =>
-                onChanged(surface.copyWith(roughness: value), live: true),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _Section extends StatelessWidget {
   const _Section({
     required this.title,

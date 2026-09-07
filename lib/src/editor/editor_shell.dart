@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' hide Clipboard;
 import 'package:flutter/services.dart' as services;
 import 'package:path/path.dart' as p;
+import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
 
 import '../launcher/project.dart';
 import '../theme/orbis_theme.dart';
@@ -12,12 +13,16 @@ import 'asset_browser.dart';
 import 'assets.dart';
 import 'clipboard.dart';
 import 'code_editor.dart';
+import 'boundary.dart';
 import 'commands.dart';
 import 'console.dart';
 import 'console_panel.dart';
 import 'data_panel.dart';
 import 'data_store.dart';
 import 'dock.dart';
+import 'grid.dart';
+import 'drawing.dart';
+import 'frame_rate.dart';
 import 'dock_view.dart';
 import 'game_view.dart';
 import 'geometry_store.dart';
@@ -27,12 +32,15 @@ import 'history.dart';
 import 'inspector.dart';
 import 'mesh_edit.dart';
 import 'mesh_panel.dart';
+import 'model_bounds.dart';
+import 'modelling_panel.dart';
 import 'mesh_tools.dart';
 import 'outliner.dart';
 import 'prefab.dart';
 import 'scene.dart';
 import 'snapping.dart';
 import 'surface.dart';
+import 'uv_panel.dart';
 import 'scene_document.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
@@ -198,6 +206,498 @@ class _EditorShellState extends State<EditorShell> {
   /// is not saved and it is not undone.
   final Snapping _snapping = Snapping();
 
+  /// Everything somebody does to geometry, in one place.
+  ///
+  /// Built here rather than in the inspector because it is a panel of its own
+  /// now: it stays put when the selection changes, and says what it is
+  /// waiting for when there is nothing to work on.
+  Widget _modellingTools() {
+    final chosen = _shapeSelected;
+    return ModellingPanel(
+      shape: chosen?.object.shape,
+      geometry: chosen?.object.geometry,
+      context_: _context,
+      mode: _elementMode,
+      selection: _elements,
+      amounts: _amounts,
+      onContext: _setContext,
+      onMode: (mode) => setState(() => _elementMode = mode),
+      onAction: _runMeshAction,
+      onAmount: (action, amount) =>
+          setState(() => _amounts[action] = amount),
+      seeThrough: _seeThrough,
+      onSeeThrough: (value) => setState(() => _seeThrough = value),
+      surfaces: chosen?.object.surfaces ?? const [],
+      onSurfaces: (surfaces, {required live}) {
+        if (chosen == null) return;
+        _setSurfaces(chosen.object, surfaces, live: live);
+      },
+      onPaint: _paintFaces,
+      format: _format,
+      onFormat: (one) => setState(() => _format = one),
+      onExport: () {
+        if (chosen != null) _exportShape(chosen.object);
+      },
+      tool: _drawing.tool,
+      onTool: _useTool,
+      drawing: _drawing,
+      snapping: _snapping,
+      onSnapping: (_) => setState(() {}),
+    );
+  }
+
+  /// What a drag in the coordinate view does.
+  UvGesture _uvGesture = UvGesture.move;
+
+  /// The coordinate view, and the rule's numbers under it.
+  ///
+  /// One panel rather than a section of the inspector: a texture is looked at
+  /// while the shape is being turned in the viewport, and something that
+  /// takes half a sidebar wants to be somewhere somebody chose to put it.
+  Widget _uvEditor() {
+    final chosen = _shapeSelected;
+    final mesh = chosen?.mesh;
+    final faces = mesh == null ? const <Face>[] : _elements.facesIn(mesh);
+    // Only meaningful for faces: a vertex has as many coordinates as it has
+    // faces, and asking which one somebody means is a question with no good
+    // answer.
+    final wrongMode = _context == EditContext.element &&
+        _elementMode != ElementMode.face;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (wrongMode)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.xs),
+            child: Text(
+              'Texture coordinates belong to faces. Press G until Faces is on.',
+              style: OrbisText.caption.copyWith(fontSize: 11),
+            ),
+          ),
+        UvPanel(
+          mesh: mesh,
+          selection: _elementMode == ElementMode.face
+              ? _elements
+              : nothingSelected,
+          gesture: _uvGesture,
+          onGesture: (one) => setState(() => _uvGesture = one),
+          onNudge: (by) => _editUvs('Move texture', (mesh, faces) {
+            mesh.nudgeUvs(faces, by);
+          }),
+          onScale: (by) => _editUvs('Scale texture', (mesh, faces) {
+            mesh.scaleUvs(faces, by);
+          }),
+          onTurn: (degrees) => _editUvs('Turn texture', (mesh, faces) {
+            mesh.turnUvs(faces, degrees);
+          }),
+          onDone: () => _gesture = null,
+          onAction: _runUvAction,
+        ),
+        if (faces.length == 1 && !faces.single.uv.isManual) ...[
+          const SizedBox(height: Space.sm),
+          UvRuleControls(
+            uv: faces.single.uv,
+            onChanged: (next, {required live}) => _editUvs(
+              'Texture',
+              (mesh, faces) {
+                for (final face in faces) {
+                  face.uv = next;
+                }
+              },
+              live: live,
+            ),
+            onDone: () => _gesture = null,
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Runs one of the coordinate buttons.
+  void _runUvAction(UvAction action) {
+    _editUvs(action.label, (mesh, faces) {
+      switch (action) {
+        case UvAction.freeze:
+          mesh.freezeUvs(faces);
+        case UvAction.release:
+          mesh.releaseUvs(faces);
+        case UvAction.fit:
+          mesh.fitUvs(faces);
+        case UvAction.planar:
+          mesh.projectPlanar(faces);
+        case UvAction.box:
+          mesh.projectBox(faces);
+      }
+    }, live: false);
+  }
+
+  /// One coordinate edit, on a copy, through the undo stack.
+  ///
+  /// [live] folds a run of them into one step, which is what a drag or a
+  /// slider needs and what a button must not have — two presses of Fit are
+  /// two things somebody did.
+  void _editUvs(
+    String what,
+    void Function(Mesh mesh, List<Face> faces) change, {
+    bool live = true,
+  }) {
+    final chosen = _shapeSelected;
+    if (chosen == null) return;
+
+    final next = chosen.mesh.copy();
+    final faces = _elements.facesIn(next);
+    if (faces.isEmpty) return;
+
+    change(next, faces);
+
+    if (!live) {
+      _gesture = null;
+    } else {
+      _gesture ??= Object();
+    }
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: what,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+
+    _geometry.forget(chosen.object.id);
+    _geometry.pathFor(chosen.object);
+    setState(() {});
+  }
+
+  /// Changes a drawn shape's height, or turns it over.
+  void _setOutline(SceneObject object, PolyShape next, {required bool live}) {
+    final entry = _workspace.sceneHolding(object.id);
+    if (entry == null) return;
+    if (!live) _gesture = Object();
+
+    _run(SetOutline(
+      sceneId: entry.id,
+      id: object.id,
+      name: object.name,
+      to: next,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+    _geometry.forget(object.id);
+    _geometry.pathFor(object);
+    setState(() {});
+  }
+
+  /// The arrow keys, as shortcuts.
+  ///
+  /// Built rather than written out: four directions times three modifiers is
+  /// twelve lines that say the same thing, and one of them would be wrong.
+  static final Map<ShortcutActivator, Intent> _nudges = {
+    for (final (key, axis, sign) in [
+      (LogicalKeyboardKey.arrowLeft, _x, -1),
+      (LogicalKeyboardKey.arrowRight, _x, 1),
+      (LogicalKeyboardKey.arrowUp, _z, -1),
+      (LogicalKeyboardKey.arrowDown, _z, 1),
+    ]) ...{
+      SingleActivator(key): _NudgeIntent(axis, sign),
+      SingleActivator(key, alt: true): _NudgeIntent(axis, sign * 10),
+    },
+    // Up and down are the exception: there is no arrow for them, so shift
+    // turns the near-and-far pair into a high-and-low one.
+    SingleActivator(LogicalKeyboardKey.arrowUp, shift: true):
+        _NudgeIntent(_y, 1),
+    SingleActivator(LogicalKeyboardKey.arrowDown, shift: true):
+        _NudgeIntent(_y, -1),
+    SingleActivator(LogicalKeyboardKey.arrowUp, shift: true, alt: true):
+        _NudgeIntent(_y, 10),
+    SingleActivator(LogicalKeyboardKey.arrowDown, shift: true, alt: true):
+        _NudgeIntent(_y, -10),
+  };
+
+  static final Vector3 _x = Vector3(1, 0, 0);
+  static final Vector3 _y = Vector3(0, 1, 0);
+  static final Vector3 _z = Vector3(0, 0, 1);
+
+  /// Moves the selection a whole number of squares.
+  ///
+  /// One press, one step on the undo stack — unlike a drag, which is one step
+  /// however many frames it took. Pressing an arrow twice is two things
+  /// somebody did.
+  void _nudge(Vector3 axis, int squares) {
+    final scene = _working?.scene;
+    final entry = _working;
+    if (scene == null || entry == null) return;
+
+    final ids = [
+      for (final id in _selected)
+        if (scene[id] != null && scene[id]!.kind != ObjectKind.scene) id,
+    ];
+    if (ids.isEmpty) return;
+
+    // The grid's step even when the grid is off: an arrow key is a request
+    // for a definite amount, and the definite amount on offer is a square.
+    final by = axis * (_snapping.step * squares);
+    final changes = <String, ({Vector3 from, Vector3 to})>{};
+    for (final id in ids) {
+      final object = scene[id]!;
+      final parentId = object.parentId;
+      final local = parentId == null || !scene.contains(parentId)
+          ? by
+          : Matrix4.inverted(scene.worldOf(parentId)).rotated3(by.clone());
+      changes[id] = (
+        from: object.position.clone(),
+        to: object.position + local,
+      );
+    }
+
+    _run(TransformMany(
+      sceneId: entry.id,
+      field: TransformField.position,
+      what: ids.length == 1 ? scene[ids.first]!.name : '${ids.length} objects',
+      changes: changes,
+    ));
+    // Sealed, so the next press is its own step rather than merging into
+    // this one the way a drag's frames do.
+    _history.seal();
+  }
+
+  /// Changes where an object begins and ends.
+  void _setBoundary(SceneObject object, Boundary next, {required bool live}) {
+    final entry = _workspace.sceneHolding(object.id);
+    if (entry == null) return;
+    if (!live) _gesture = Object();
+
+    _run(SetBoundary(
+      sceneId: entry.id,
+      id: object.id,
+      name: object.name,
+      to: next,
+      gesture: live ? _gesture : null,
+    ));
+    if (!live) _gesture = null;
+    setState(() {});
+  }
+
+  /// How fast the editor is actually drawing.
+  ///
+  /// Listened to rather than read on every build, and it only speaks a couple
+  /// of times a second — a status bar rebuilt sixty times a second to say how
+  /// fast things are would be its own answer to the question.
+  final FrameRate _frames = FrameRate();
+
+  /// The grid, made once and then only placed.
+  late final GridStore _grid = GridStore(widget.project.directory);
+
+  /// How big each imported model says it is, read once a file.
+  late final ModelBounds _models = ModelBounds(widget.project.directory);
+
+  /// The outline or cut being drawn, if one is.
+  ///
+  /// One for the editor rather than one a viewport, so the same drawing shows
+  /// in all four views and can be finished in a different one from the one it
+  /// was started in.
+  final Drawing _drawing = Drawing();
+
+  /// Starts or stops a drawing tool.
+  void _useTool(ViewportTool tool) {
+    setState(() {
+      if (_drawing.tool == tool) {
+        _drawing.clear();
+        return;
+      }
+      _drawing.start(tool);
+      if (tool == ViewportTool.cut && _shapeSelected == null) {
+        _drawing.clear();
+        _say('Select a shape to cut first.', level: LogLevel.warning);
+      }
+    });
+  }
+
+  /// Puts down one point.
+  void _drawPoint(Vector3 at, Vector3 origin, Vector3 normal, int? face) {
+    setState(() {
+      _drawing.planeAt(origin, normal, onFace: face);
+      _drawing.add(at);
+    });
+  }
+
+  /// Finishes whatever is being drawn.
+  void _finishDrawing() {
+    if (!_drawing.canFinish) {
+      _say(
+        _drawing.tool == ViewportTool.cut
+            ? 'A cut needs two points, both on the edge of a face.'
+            : 'A shape needs three points.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    switch (_drawing.tool) {
+      case ViewportTool.polyShape:
+        _makeDrawnShape();
+      case ViewportTool.cut:
+        _applyCut();
+      case ViewportTool.none:
+        break;
+    }
+  }
+
+  /// Turns the outline into an object.
+  void _makeDrawnShape() {
+    final open = _working;
+    final scene = open?.scene;
+    if (open == null || scene == null) return;
+
+    final normal = _drawing.normal ?? Vector3(0, 1, 0);
+    if (outlineCrosses(_drawing.points, normal)) {
+      _say('That outline crosses itself.', level: LogLevel.warning);
+      return;
+    }
+
+    // The points are kept relative to where the object stands, so moving the
+    // object later moves the outline with it rather than leaving the two
+    // describing different places.
+    final middle = Vector3.zero();
+    for (final at in _drawing.points) {
+      middle.add(at);
+    }
+    middle.scale(1 / _drawing.points.length);
+
+    final outline = PolyShape(
+      points: [for (final at in _drawing.points) at - middle],
+      height: 2,
+    );
+
+    final object = SceneObject(
+      id: _nextObjectId(),
+      name: _uniqueName(scene, 'Shape'),
+      kind: ObjectKind.shape,
+      position: middle,
+      outline: outline,
+      colour: const Color(0xFF8E99A8),
+    );
+
+    _run(AddObject(object, sceneId: open.id));
+    setState(_drawing.clear);
+    _select(object.id);
+    _geometry.forget(object.id);
+    _refreshGeometry();
+    _say('Drew ${object.name}. Its height is in the inspector.');
+  }
+
+  /// Cuts the face the path was drawn on.
+  void _applyCut() {
+    final chosen = _shapeSelected;
+    final face = _drawing.face;
+    if (chosen == null || face == null) {
+      _say('There is no face to cut.', level: LogLevel.warning);
+      return;
+    }
+
+    final next = chosen.mesh.copy();
+    if (face < 0 || face >= next.faces.length) {
+      setState(_drawing.clear);
+      return;
+    }
+
+    // Into the object's own space, which is where its geometry lives.
+    final inverse = Matrix4.inverted(chosen.entry.scene!.worldOf(
+      chosen.object.id,
+    ));
+    final path = [
+      for (final at in _drawing.points) inverse.transformed3(at.clone()),
+    ];
+
+    final made = next.cutFace(next.faces[face], path);
+    if (made.isEmpty) {
+      _say(
+        'A cut has to start and end on the edge of the face, or come back '
+        'to where it began.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+
+    _run(SetGeometry(
+      sceneId: chosen.entry.id,
+      id: chosen.object.id,
+      name: chosen.object.name,
+      to: next,
+      what: 'Cut',
+    ));
+    setState(() {
+      _drawing.clear();
+      // What came out of the cut, because that is what somebody is about to
+      // extrude — which is why they cut it.
+      _elements = ElementSelection(faces: {
+        for (var i = 0; i < next.faces.length; i++)
+          if (made.contains(next.faces[i])) i,
+      });
+      _elementMode = ElementMode.face;
+      _context = EditContext.element;
+    });
+    _geometry.forget(chosen.object.id);
+    _geometry.pathFor(chosen.object);
+    _say('Cut into ${made.length} faces.');
+  }
+
+  /// Which format the export button writes. A view setting: not saved, not
+  /// undone, and remembered only for as long as the editor is open.
+  MeshFormat _format = MeshFormat.obj;
+
+  /// Writes a shape out, into the project's own exports folder.
+  ///
+  /// Inside the project rather than wherever a file dialog was last pointed:
+  /// an export is a thing somebody made and will want again, and a folder
+  /// beside the scenes is where they will look for it.
+  Future<void> _exportShape(SceneObject object) async {
+    final mesh = object.currentMesh;
+    if (mesh == null || mesh.isEmpty) {
+      _say('There is no geometry to export.');
+      return;
+    }
+
+    final name = await promptForName(
+      context,
+      title: 'Export ${object.name}',
+      initial: object.name,
+      hint: 'Goes in exports/, as .${_format.extension}.',
+      action: 'Export',
+    );
+    if (!mounted || name == null || name.isEmpty) return;
+    if (name.contains(p.separator)) {
+      _say('A file name cannot contain a path.');
+      return;
+    }
+
+    final folder = Directory(
+      p.join(widget.project.directory, 'exports'),
+    );
+    final files = mesh.writeAs(
+      _format,
+      name: name,
+      materials: [for (final one in object.surfaces) one.toGlb()],
+    );
+
+    try {
+      folder.createSync(recursive: true);
+      for (final file in files) {
+        File(p.join(folder.path, file.name)).writeAsBytesSync(file.bytes);
+      }
+    } on FileSystemException catch (error) {
+      _say('Could not write the export: ${error.message}');
+      return;
+    }
+
+    // Both names when there are two: an OBJ without the library it names is a
+    // grey model and no clue why.
+    _say('Exported ${files.map((one) => one.name).join(' and ')} to '
+        'exports/.');
+  }
+
   /// Whether picking reaches what is behind the surface.
   ///
   /// A view setting, not a document one: it is not saved and it is not
@@ -322,6 +822,10 @@ class _EditorShellState extends State<EditorShell> {
   /// renderer to write it for — so on a platform Filament has not reached, or
   /// in a headless run, the file never appeared at all.
   void _refreshGeometry() {
+    // Not clearing the imported-size cache. That cache is keyed on an
+    // object's `meshAsset`, which a shape does not have — so clearing it here
+    // never made a shape's box any newer, and did make every imported model
+    // in the scene read its file from disk again. On every frame of a drag.
     for (final entry in [..._workspace.entries, _workspace.sharedEntry]) {
       final scene = entry.scene;
       if (scene == null) continue;
@@ -399,8 +903,18 @@ class _EditorShellState extends State<EditorShell> {
     // Read once so the handlers are installed, since a late final is not
     // initialised until something asks for it.
     _stopCatching;
-    _history.addListener(_onChanged);
+    _history.addListener(_onHistoryChanged);
     _workspace.addListener(_onChanged);
+    _frames
+      ..start()
+      ..addListener(_onChanged);
+
+    // The grid's quad and lines, written once. Nothing waits for it: until it
+    // is there `planFor` says there is no grid, and a frame or two without
+    // one at startup is not worth blocking on.
+    _grid.prepare().then((_) {
+      if (mounted) setState(() {});
+    });
 
     final opened = _read(_defaultScenePath(), quiet: true);
     _workspace.add(SceneEntry(
@@ -455,12 +969,15 @@ class _EditorShellState extends State<EditorShell> {
   @override
   void dispose() {
     _history
-      ..removeListener(_onChanged)
+      ..removeListener(_onHistoryChanged)
       ..dispose();
     _workspace
       ..removeListener(_onChanged)
       ..dispose();
     _assets.dispose();
+    _frames
+      ..removeListener(_onChanged)
+      ..dispose();
     // Flutter's error handlers are global: leaving ours installed would send
     // the next editor window's errors, and a test's, into a log that is gone.
     _stopCatching();
@@ -474,6 +991,58 @@ class _EditorShellState extends State<EditorShell> {
     _refreshGeometry();
     setState(() {});
   }
+
+  /// A change from the undo stack.
+  ///
+  /// Split from the one above so that a drag — which runs a command a frame
+  /// and only ever moves things — can rebuild the parts that show where
+  /// things are and leave the rest of the editor alone.
+  void _onHistoryChanged() {
+    _refreshGeometry();
+    if (_history.lastOnlyMoved) {
+      _rebuildForMove();
+      return;
+    }
+    setState(() {});
+  }
+
+  /// Whether everything has to be built again, or only what shows movement.
+  ///
+  /// Set by `setState` itself rather than by each caller, so the safe answer
+  /// is the automatic one: a path that forgets to say anything gets a full
+  /// rebuild, which costs a frame. The other way round costs a panel showing
+  /// something that is no longer true.
+  bool _deep = true;
+  bool _shallow = false;
+
+  /// What the frame being built decided. [_deep] is cleared as the build
+  /// starts, and the panels are built after that.
+  bool _deeply = true;
+
+  @override
+  void setState(VoidCallback fn) {
+    if (!_shallow) _deep = true;
+    super.setState(fn);
+  }
+
+  void _rebuildForMove() {
+    _shallow = true;
+    setState(() {});
+    _shallow = false;
+  }
+
+  /// The panels as they were last built, so a panel a move cannot affect is
+  /// handed back unchanged — and Flutter, seeing the same widget, leaves its
+  /// whole subtree alone: no rebuild, no layout, no paint.
+  final Map<String, Widget> _panels = {};
+
+  /// Which panels show where things are.
+  ///
+  /// The inspector is not one of them, even though it shows the numbers: the
+  /// three rows that do listen for themselves, so the rest of it — a dozen
+  /// text fields with their own focus, actions and overlays — is left alone.
+  static bool _showsMovement(PanelKind kind) =>
+      kind == PanelKind.viewport || kind == PanelKind.game;
 
   String _defaultScenePath() =>
       p.join(widget.project.directory, 'scenes', 'main$sceneExtension');
@@ -1353,6 +1922,21 @@ class _EditorShellState extends State<EditorShell> {
   /// the two apart is what lets the arrangement be a file and a drag rather
   /// than a widget tree somebody has to edit.
   Widget _buildPanel(BuildContext context, DockPanel panel) {
+    // A move can only change where things are, so a panel that does not show
+    // that is handed back exactly as it was. Flutter compares the widget by
+    // identity and skips the subtree — which is the whole saving, because a
+    // subtree that is not rebuilt is not laid out or painted either.
+    if (!_deeply && !_showsMovement(panel.kind)) {
+      final was = _panels[panel.id];
+      if (was != null) return was;
+    }
+
+    final built = _panelFor(context, panel);
+    _panels[panel.id] = built;
+    return built;
+  }
+
+  Widget _panelFor(BuildContext context, DockPanel panel) {
     final selected = _primary == null ? null : _inspected?.scene?[_primary!];
 
     return switch (panel.kind) {
@@ -1396,23 +1980,21 @@ class _EditorShellState extends State<EditorShell> {
                 : MeshPanel(
                     shape: selected!.shape,
                     geometry: selected.geometry,
-                    context_: _context,
-                    mode: _elementMode,
-                    selection: _elements,
-                    amounts: _amounts,
                     onShape: (shape) => _reshape(selected, shape),
-                    onContext: _setContext,
-                    onMode: (mode) => setState(() => _elementMode = mode),
-                    onAction: _runMeshAction,
-                    onAmount: (action, amount) =>
-                        setState(() => _amounts[action] = amount),
-                    seeThrough: _seeThrough,
-                    onSeeThrough: (value) =>
-                        setState(() => _seeThrough = value),
-                    surfaces: selected.surfaces,
-                    onSurfaces: (surfaces, {required live}) =>
-                        _setSurfaces(selected, surfaces, live: live),
-                    onPaint: (slot) => _paintFaces(slot),
+                    outline: selected.outline,
+                    onOutline: (next, {required live}) =>
+                        _setOutline(selected, next, live: live),
+                    boundary: selected.boundary,
+                    onBoundary: (next, {required live}) =>
+                        _setBoundary(selected, next, live: live),
+                    naturalSize:
+                        selected.localBounds(reported: _models.of(selected)),
+                    onOpenTools: () => setState(
+                      () => _layout = _layout.add(
+                        const DockPanel(id: 'modelling',
+                            kind: PanelKind.modelling),
+                      ),
+                    ),
                   ),
             onOpenInterface: (path) => _openInterface(
             p.join(widget.project.directory, path),
@@ -1457,6 +2039,11 @@ class _EditorShellState extends State<EditorShell> {
             onSelectElements: _selectElements,
             seeThroughElements: _seeThrough,
             snapping: _snapping,
+            grid: _grid,
+            models: _models,
+            drawing: _drawing,
+            onDrawPoint: _drawPoint,
+            onDrawFinish: _finishDrawing,
             onSnapping: (next) => setState(() {
               _snapping
                 ..on = next.on
@@ -1527,6 +2114,14 @@ class _EditorShellState extends State<EditorShell> {
             }),
             ),
       PanelKind.console => ConsolePanel(log: _log),
+      PanelKind.modelling => SingleChildScrollView(
+          padding: const EdgeInsets.all(Space.sm),
+          child: _modellingTools(),
+        ),
+      PanelKind.uvs => SingleChildScrollView(
+          padding: const EdgeInsets.all(Space.sm),
+          child: _uvEditor(),
+        ),
     };
   }
 
@@ -2040,6 +2635,10 @@ class _EditorShellState extends State<EditorShell> {
   @override
   Widget build(BuildContext context) {
     final open = _current;
+    // Read and cleared here, so the next change decides afresh how much has
+    // to be built.
+    _deeply = _deep;
+    _deep = false;
 
     return Shortcuts(
       shortcuts: {
@@ -2055,6 +2654,9 @@ class _EditorShellState extends State<EditorShell> {
         // geometry and G goes round the three ways of selecting it, which is
         // what somebody presses without thinking about it.
         const SingleActivator(LogicalKeyboardKey.escape): _LeaveEditIntent(),
+        const SingleActivator(LogicalKeyboardKey.enter): _FinishDrawIntent(),
+        const SingleActivator(LogicalKeyboardKey.numpadEnter):
+            _FinishDrawIntent(),
         const SingleActivator(LogicalKeyboardKey.keyG): _CycleModeIntent(),
         // The brackets, which is where every tool with a brush size puts
         // them.
@@ -2062,6 +2664,11 @@ class _EditorShellState extends State<EditorShell> {
             _GridIntent(true),
         const SingleActivator(LogicalKeyboardKey.bracketLeft):
             _GridIntent(false),
+        // Whole squares at a time, which is the one way of placing something
+        // that needs no aim at all. The arrows work the floor, because that
+        // is where things are arranged; shift takes them up and down, and
+        // holding option does ten at once.
+        ..._nudges,
         const SingleActivator(LogicalKeyboardKey.keyS, meta: true):
             _SaveIntent(),
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
@@ -2090,7 +2697,23 @@ class _EditorShellState extends State<EditorShell> {
       child: Actions(
         actions: {
           _LeaveEditIntent: CallbackAction<_LeaveEditIntent>(onInvoke: (_) {
+            // A drawing first: somebody halfway through an outline who
+            // presses escape means the outline, not the geometry.
+            if (_drawing.tool.isDrawing) {
+              setState(_drawing.clear);
+              return null;
+            }
             _setContext(EditContext.object);
+            return null;
+          }),
+          _FinishDrawIntent: CallbackAction<_FinishDrawIntent>(
+            onInvoke: (_) {
+              if (_drawing.tool.isDrawing) _finishDrawing();
+              return null;
+            },
+          ),
+          _NudgeIntent: CallbackAction<_NudgeIntent>(onInvoke: (intent) {
+            _nudge(intent.axis, intent.squares);
             return null;
           }),
           _GridIntent: CallbackAction<_GridIntent>(onInvoke: (intent) {
@@ -2118,6 +2741,13 @@ class _EditorShellState extends State<EditorShell> {
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
           _DeleteIntent: CallbackAction<_DeleteIntent>(
             onInvoke: (_) {
+              // While drawing, backspace takes back the last point rather
+              // than deleting what happens to be selected — which would be a
+              // very unwelcome surprise halfway through an outline.
+              if (_drawing.tool.isDrawing) {
+                setState(_drawing.undo);
+                return null;
+              }
               _deleteSelection();
               return null;
             },
@@ -2209,6 +2839,13 @@ class _EditorShellState extends State<EditorShell> {
                           ? '${open.title} (unsaved)'
                           : _assets.relative(open.path!)),
                   dirty: open != null && _isUnsaved(open),
+                  rate: _frames.fps,
+                  frameMs: _frames.fps == null
+                      ? null
+                      : (_frames.gpuBound
+                          ? _frames.rasterMs
+                          : _frames.buildMs),
+                  gpuBound: _frames.gpuBound,
                 ),
               ],
             ),
@@ -2484,12 +3121,22 @@ class _StatusBar extends StatelessWidget {
     required this.message,
     required this.file,
     required this.dirty,
+    this.rate,
+    this.frameMs,
+    this.gpuBound = false,
   });
 
   final int objects;
   final String message;
   final String file;
   final bool dirty;
+
+  /// Frames a second, or null before there has been anything to measure.
+  final double? rate;
+
+  /// How long the slower half of a frame takes, and which half it is.
+  final double? frameMs;
+  final bool gpuBound;
 
   @override
   Widget build(BuildContext context) {
@@ -2520,7 +3167,28 @@ class _StatusBar extends StatelessWidget {
           const SizedBox(width: Space.lg),
           Text('$objects objects', style: OrbisText.mono.copyWith(fontSize: 11)),
           const SizedBox(width: Space.lg),
-          Text('— fps', style: OrbisText.mono.copyWith(fontSize: 11)),
+          Text(
+            rate == null ? '— fps' : '${rate!.round()} fps',
+            style: OrbisText.mono.copyWith(
+              fontSize: 11,
+              // Below about fifty a frame is late often enough to feel it.
+              color: rate != null && rate! < 50
+                  ? OrbisColors.warn
+                  : OrbisColors.inkDim,
+            ),
+          ),
+          if (frameMs != null) ...[
+            const SizedBox(width: Space.sm),
+            Text(
+              // Which half of the frame the time went in, because "slow" and
+              // "slow at what" are different questions.
+              '${frameMs!.toStringAsFixed(1)} ms ${gpuBound ? "gpu" : "cpu"}',
+              style: OrbisText.mono.copyWith(
+                fontSize: 11,
+                color: OrbisColors.inkDim,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -2814,6 +3482,8 @@ class _ViewMenu extends StatelessWidget {
     (PanelKind.game, 'game'),
     (PanelKind.project, 'project'),
     (PanelKind.console, 'console'),
+    (PanelKind.modelling, 'modelling'),
+    (PanelKind.uvs, 'uvs'),
   ];
 
   @override
@@ -2899,6 +3569,22 @@ class _GridIntent extends Intent {
   const _GridIntent(this.coarser);
 
   final bool coarser;
+}
+
+/// Finishes whatever is being drawn.
+/// Moves the selection by whole squares.
+class _NudgeIntent extends Intent {
+  const _NudgeIntent(this.axis, this.squares);
+
+  /// Which way, as a unit vector.
+  final Vector3 axis;
+
+  /// How many squares, signed.
+  final int squares;
+}
+
+class _FinishDrawIntent extends Intent {
+  const _FinishDrawIntent();
 }
 
 class _CycleModeIntent extends Intent {

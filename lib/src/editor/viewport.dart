@@ -12,7 +12,10 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
+import 'drawing.dart';
 import 'gizmo.dart';
+import 'grid.dart';
+import 'model_bounds.dart';
 import 'snapping.dart';
 import 'history.dart';
 import 'mesh_edit.dart';
@@ -210,6 +213,11 @@ class SceneViewport extends StatefulWidget {
     this.seeThroughElements = false,
     required this.snapping,
     this.onSnapping,
+    this.grid,
+    this.models,
+    this.drawing,
+    this.onDrawPoint,
+    this.onDrawFinish,
     this.geometryOf,
     this.interface,
     this.showInterface = true,
@@ -278,6 +286,32 @@ class SceneViewport extends StatefulWidget {
   /// What a drag lands on. Passed in rather than owned here, so four views of
   /// one scene agree about the grid.
   final Snapping snapping;
+
+  /// The grid, when there is one to draw.
+  final GridStore? grid;
+
+  /// How big an imported model says it is. Passed in rather than read here,
+  /// so four views share one answer per file instead of reading it four
+  /// times.
+  final ModelBounds? models;
+
+  /// The outline or cut being drawn, if one is.
+  ///
+  /// Owned by the shell, so the same drawing appears in all four views and
+  /// can be finished in a different one from the one it was started in.
+  final Drawing? drawing;
+
+  /// Called with a point a click landed on, and the plane it landed on.
+  ///
+  /// The plane travels with the point because the first click is what decides
+  /// it: whichever surface was under the pointer then is the one the rest of
+  /// the outline is drawn on, whatever is under the pointer later.
+  final void Function(Vector3 at, Vector3 origin, Vector3 normal, int? face)?
+      onDrawPoint;
+
+  /// Called when a click lands back on the first point, which is how somebody
+  /// says they have finished.
+  final VoidCallback? onDrawFinish;
 
   /// Called when the chip or a key changes it.
   final ValueChanged<Snapping>? onSnapping;
@@ -370,6 +404,22 @@ class _SceneViewportState extends State<SceneViewport>
   /// Where on the handle the drag began, in world space, and what every
   /// object being dragged looked like before it started.
   Vector3? _grabbed;
+
+  /// How far the part being put on the line is from the handle, along the
+  /// axis being dragged. Worked out once, at the start, for the same reason
+  /// the pivot is.
+  double _grabbedAnchor = 0;
+
+  /// Where the handle stood when the drag began.
+  ///
+  /// Not read from the gizmo each frame, which is the whole point. The gizmo
+  /// sits on the thing being dragged, so a grid worked out from it is a grid
+  /// that moves with what it is snapping — and a thing that did not start on
+  /// a line then flickers between two of them for as long as the drag lasts,
+  /// with the pointer perfectly still. The line to land on is decided by
+  /// where the drag started, once.
+  Vector3? _grabbedPivot;
+
   final Map<String, Vector3> _before = {};
   final Map<String, Matrix3> _beforeWorld = {};
 
@@ -449,6 +499,13 @@ class _SceneViewportState extends State<SceneViewport>
     return editing.transform.transformed3(middle);
   }
 
+  /// A number with its sign always shown, because a drag has a direction and
+  /// up two squares is not the same answer as down two.
+  static String _signed(double value, int decimals) {
+    final text = value.toStringAsFixed(decimals);
+    return text.startsWith('-') ? text : '+$text';
+  }
+
   /// A grid step as somebody would say it: millimetres below a centimetre,
   /// centimetres below a metre.
   static String _gridLabel(double step) {
@@ -513,8 +570,13 @@ class _SceneViewportState extends State<SceneViewport>
     // in front of a scene's own is the uncommon way round, and picking the
     // thing somebody is working on when both are under the pointer is the
     // better answer of the two.
-    final hit = scene.objectAlong(ray.origin, ray.direction) ??
-        widget.workspace.shared.objectAlong(ray.origin, ray.direction);
+    final hit =
+        scene.objectAlong(ray.origin, ray.direction, boundsOf: widget.models?.of) ??
+            widget.workspace.shared.objectAlong(
+              ray.origin,
+              ray.direction,
+              boundsOf: widget.models?.of,
+            );
 
     final modifiers = {
       LogicalKeyboardKey.shiftLeft,
@@ -549,6 +611,7 @@ class _SceneViewportState extends State<SceneViewport>
       setState(() {
         _dragging = axis;
         _grabbed = grabbed;
+        _grabbedPivot = gizmo.pivot.clone();
       });
       return true;
     }
@@ -566,8 +629,49 @@ class _SceneViewportState extends State<SceneViewport>
     setState(() {
       _dragging = axis;
       _grabbed = grabbed;
+      _grabbedPivot = gizmo.pivot.clone();
+      _grabbedAnchor = _anchorOn(axis, gizmo.pivot);
     });
     return true;
+  }
+
+  /// How far the snapping anchor is from the handle, for the object the
+  /// handles are on.
+  ///
+  /// The primary one only. A selection of several keeps its shape, so the
+  /// thing that lands on a line is the one being held — the others come
+  /// along.
+  double _anchorOn(GizmoAxis axis, Vector3 pivot) {
+    final scene = _editing;
+    final id = widget.primary;
+    if (scene == null || id == null) return 0;
+    final object = scene[id];
+    if (object == null) return 0;
+
+    final local = object.localBounds(reported: widget.models?.of(object));
+    final world = scene.worldOf(id);
+    // Every corner, because a turned or scaled object's box in the world is
+    // not its box multiplied through.
+    var low = double.infinity;
+    var high = double.negativeInfinity;
+    for (final x in [local.min.x, local.max.x]) {
+      for (final y in [local.min.y, local.max.y]) {
+        for (final z in [local.min.z, local.max.z]) {
+          final at = world.transformed3(Vector3(x, y, z)).dot(axis.direction);
+          if (at < low) low = at;
+          if (at > high) high = at;
+        }
+      }
+    }
+
+    return _snap.anchorFor(
+      axis.direction,
+      pivot,
+      (
+        min: axis.direction * low,
+        max: axis.direction * high,
+      ),
+    );
   }
 
   /// Takes hold of the parts of a mesh.
@@ -650,8 +754,8 @@ class _SceneViewportState extends State<SceneViewport>
       // Snapped in the world, where the grid is, and then taken into the
       // object's frame. Snapping after the conversion would put the grid at
       // whatever angle and scale the object happens to have.
-      final shift = _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot,
-          axis.direction);
+      final from = _grabbedPivot ?? gizmo.pivot;
+      final shift = _snap.along(from, now - grabbed + from, axis.direction);
       next.movePoints(_movingPoints, _intoObject(shift, editing.transform));
       what = 'Move';
     } else {
@@ -674,6 +778,33 @@ class _SceneViewportState extends State<SceneViewport>
 
     report(next, _selectedElements, what, merge: _dragStarted);
     _dragStarted = true;
+  }
+
+  /// How far the drag has taken things, for saying so on screen.
+  ///
+  /// In squares as well as metres, because "two squares" is what somebody
+  /// means when they are placing something on a grid, and counting them by
+  /// eye across a viewport is exactly the sort of thing a computer should be
+  /// doing.
+  ({double metres, double squares})? get _dragged {
+    final axis = _dragging;
+    final from = _grabbedPivot;
+    if (axis == null || from == null) return null;
+
+    final scene = _editing;
+    final id = widget.primary;
+    final now = scene == null || id == null
+        ? null
+        : scene.worldOf(id).getTranslation();
+    if (now == null) return null;
+
+    final metres = (now - from).dot(axis.direction);
+    return (
+      metres: metres,
+      squares: widget.snapping.step <= 0
+          ? 0
+          : metres / widget.snapping.step,
+    );
   }
 
   /// Applies the drag as it stands: one command, however many objects.
@@ -705,8 +836,13 @@ class _SceneViewportState extends State<SceneViewport>
       if (now == null) return;
       // From where the handle was, so a selection of several keeps its shape
       // and the one the handles are on is the one that lands on a line.
-      final shift =
-          _snap.along(gizmo.pivot, now - grabbed + gizmo.pivot, axis.direction);
+      final from = _grabbedPivot ?? gizmo.pivot;
+      final shift = _snap.along(
+        from,
+        now - grabbed + from,
+        axis.direction,
+        anchor: _grabbedAnchor,
+      );
 
       for (final entry in _before.entries) {
         final object = scene[entry.key];
@@ -770,6 +906,8 @@ class _SceneViewportState extends State<SceneViewport>
     setState(() {
       _dragging = null;
       _grabbed = null;
+      _grabbedPivot = null;
+      _grabbedAnchor = 0;
       _beforeMesh = null;
       _movingPoints = const [];
       _draggingSelection = null;
@@ -1067,6 +1205,102 @@ class _SceneViewportState extends State<SceneViewport>
     widget.onSelectElements?.call(found.toList(), add: add);
   }
 
+  /// Puts down a point for whichever tool is drawing.
+  ///
+  /// The first one decides the plane. For a cut that is the face under the
+  /// pointer and nothing else will do; for a shape it is a face if there is
+  /// one and the ground otherwise, because a plan is usually drawn on the
+  /// floor and sometimes on top of a wall.
+  void _drawAt(Offset local) {
+    final drawing = widget.drawing;
+    final surface = _surface;
+    final report = widget.onDrawPoint;
+    if (drawing == null || surface == null || report == null) return;
+    if (!drawing.tool.isDrawing) return;
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+
+    // Once the plane is down, every later point is on it — a plane worked out
+    // afresh each click would follow whatever happened to be behind.
+    final already = drawing.placeOn(ray.origin, ray.direction);
+    if (already != null) {
+      if (drawing.wouldClose(already)) {
+        widget.onDrawFinish?.call();
+        return;
+      }
+      report(already, drawing.origin!, drawing.normal!, drawing.face);
+      return;
+    }
+
+    final onFace = _faceUnder(local);
+    if (onFace != null) {
+      report(onFace.at, onFace.origin, onFace.normal, onFace.face);
+      return;
+    }
+    if (drawing.tool == ViewportTool.cut) return;
+
+    // The ground, at the height the grid is drawn at. A plan is drawn on the
+    // floor unless somebody aimed at something.
+    final at = PolyShape.onPlane(
+      ray.origin,
+      ray.direction,
+      Vector3.zero(),
+      Vector3(0, 1, 0),
+    );
+    if (at == null) return;
+    report(at, Vector3.zero(), Vector3(0, 1, 0), null);
+  }
+
+  /// The face of the shape being edited that a pixel lands on, with its
+  /// plane. Null when nothing of it is under the pointer.
+  ({Vector3 at, Vector3 origin, Vector3 normal, int face})? _faceUnder(
+    Offset local,
+  ) {
+    final editing = widget.editing;
+    final surface = _surface;
+    if (editing == null || surface == null) return null;
+
+    final found = _pickerFor(editing, surface).faceAt(local);
+    if (found == null) return null;
+
+    final face = editing.mesh.faces[found];
+    // Into the world, because the drawing is in the world and the object may
+    // be somewhere else entirely.
+    final centre = editing.transform.transformed3(editing.mesh.centreOf(face));
+    final normal = (editing.transform.rotated3(
+      editing.mesh.normalOf(face).clone(),
+    ))
+      ..normalize();
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+    final at = PolyShape.onPlane(ray.origin, ray.direction, centre, normal);
+    if (at == null) return null;
+
+    return (at: at, origin: centre, normal: normal, face: found);
+  }
+
+  /// Follows the pointer while drawing, so the line reaches it.
+  void _hoverDraw(Offset local) {
+    final drawing = widget.drawing;
+    final surface = _surface;
+    if (drawing == null || surface == null || !drawing.tool.isDrawing) return;
+
+    final ray = ViewportProjection(camera: widget.camera, size: surface)
+        .rayThrough(local);
+    final at = drawing.placeOn(ray.origin, ray.direction) ??
+        _faceUnder(local)?.at ??
+        PolyShape.onPlane(
+          ray.origin,
+          ray.direction,
+          Vector3.zero(),
+          Vector3(0, 1, 0),
+        );
+    if (at == drawing.hovering) return;
+    setState(() => drawing.hovering = at);
+  }
+
   /// What a pixel lands on, in whatever mode is on.
   Object? _elementAt(Offset pixel) {
     final editing = widget.editing;
@@ -1140,6 +1374,7 @@ class _SceneViewportState extends State<SceneViewport>
               child: IgnorePointer(
                 child: CustomPaint(
                   painter: _SelectionPainter(
+                    models: widget.models,
                     workspace: widget.workspace,
                     selected: widget.selected,
                     camera: widget.camera,
@@ -1193,6 +1428,17 @@ class _SceneViewportState extends State<SceneViewport>
                 ),
               ),
             ),
+            if (widget.drawing?.tool.isDrawing ?? false)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: DrawingPainter(
+                      drawing: widget.drawing!,
+                      camera: widget.camera,
+                    ),
+                  ),
+                ),
+              ),
             if (_box != null)
               Positioned.fromRect(
                 rect: _box!,
@@ -1215,14 +1461,42 @@ class _SceneViewportState extends State<SceneViewport>
                 const SizedBox(width: Space.xs),
                 _ViewportChip(_summary),
                 const SizedBox(width: Space.xs),
+                // The tools themselves live in the modelling panel. What is
+                // here is only what a tool is *doing*, and only while it is
+                // doing it — a viewport is a place to look at a scene, not a
+                // row of buttons that are somewhere else as well.
+                // What the drag has done so far, while it is doing it.
+                if (_dragged case final moved?)
+                  Padding(
+                    padding: const EdgeInsets.only(right: Space.xs),
+                    child: _ViewportChip(
+                      widget.snapping.on
+                          ? '${_signed(moved.squares, 0)} '
+                              '${moved.squares.abs() == 1 ? "square" : "squares"}'
+                              ' · ${_signed(moved.metres, 2)} m'
+                          : '${_signed(moved.metres, 2)} m',
+                      on: true,
+                    ),
+                  ),
+                if (widget.drawing?.tool.isDrawing ?? false)
+                  _ViewportChip(
+                    '${widget.drawing!.tool.label} · '
+                    '${widget.drawing!.points.length} '
+                    '${widget.drawing!.points.length == 1 ? "point" : "points"}',
+                    on: true,
+                    tooltip: 'Enter finishes, backspace takes one back, '
+                        'escape gives up.',
+                  ),
                 _ViewportChip(
                   widget.snapping.on
-                      ? 'Grid ${_gridLabel(widget.snapping.step)}'
+                      ? 'Grid ${_gridLabel(widget.snapping.step)} · '
+                          '${widget.snapping.to.label.toLowerCase()}'
                       : 'Grid off',
                   on: widget.snapping.on,
-                  tooltip: 'Where a drag lands. Hold control or option to '
-                      'suspend it for one drag; the bracket keys make it '
-                      'coarser and finer.',
+                  tooltip: 'Where a drag lands, and which part of the thing is '
+                      'put on the line. Hold control or option to suspend it '
+                      'for one drag; the brackets make it coarser and finer, '
+                      'and the arrow keys move by whole squares.',
                   onTap: widget.onSnapping == null
                       ? null
                       : () => widget.onSnapping!(
@@ -1400,6 +1674,10 @@ class _SceneViewportState extends State<SceneViewport>
       },
       child: MouseRegion(
         onHover: (event) {
+          if (widget.drawing?.tool.isDrawing ?? false) {
+            _hoverDraw(event.localPosition);
+            return;
+          }
           if (widget.editing != null) {
             final under = _elementAt(event.localPosition);
             if (under != _hoveredElement) {
@@ -1423,6 +1701,14 @@ class _SceneViewportState extends State<SceneViewport>
           // it away from a name half-typed in the inspector.
           _flyFocus.requestFocus();
 
+          // A tool that is being drawn takes every click: putting a point
+          // down and selecting something are different enough that guessing
+          // between them would get one of them wrong constantly.
+          if (widget.drawing?.tool.isDrawing ?? false) {
+            _drawAt(details.localPosition);
+            return;
+          }
+
           // While somebody is editing a mesh, a click is about its parts.
           // Picking a different object out from under them mid-extrude is not
           // something anybody means by clicking on their own geometry.
@@ -1439,6 +1725,9 @@ class _SceneViewportState extends State<SceneViewport>
         onPanStart: (details) {
           // Already handled as a trackpad gesture.
           if (_onTrackpad) return;
+          // Drawing is clicks, not drags: a drag here would orbit the view
+          // out from under the plane being drawn on.
+          if (widget.drawing?.tool.isDrawing ?? false) return;
           // A handle first: a drag that starts on one is a transform, and
           // anywhere else is the view turning. Nothing to hold down and no
           // mode to be in — the handles are the mode.
@@ -1508,6 +1797,10 @@ class _SceneViewportState extends State<SceneViewport>
                   // whichever one is open.
                   shared: widget.workspace.shared,
                   geometryOf: widget.geometryOf,
+                  // Centred on what this view is looking at, so four views
+                  // each get a grid under their own camera rather than one
+                  // grid the others have run off the edge of.
+                  grid: widget.grid?.planFor(widget.snapping, widget.camera.target),
                 ),
                 onSceneNotes: widget.onSceneNotes,
               ),
@@ -1663,18 +1956,28 @@ class _SelectionPainter extends CustomPainter {
     required this.workspace,
     required this.selected,
     required this.camera,
+    this.models,
   });
 
   final Workspace workspace;
   final Set<String> selected;
   final OrbitCamera camera;
 
-  /// The unit cube the renderer draws for every object, in its own space.
-  static final _corners = [
-    for (final x in [-1.0, 1.0])
-      for (final y in [-1.0, 1.0])
-        for (final z in [-1.0, 1.0]) Vector3(x, y, z),
-  ];
+  /// How big an imported model says it is, for the objects whose geometry
+  /// the editor does not hold.
+  final ModelBounds? models;
+
+  /// Past this many edges an outline is a smear rather than a shape, so the
+  /// box is drawn instead. Nothing the editor builds comes close; an imported
+  /// model would, if the editor ever held its geometry.
+  static const int _tooManyEdges = 3000;
+
+  /// The eight corners of a box.
+  static List<Vector3> _cornersOf(({Vector3 min, Vector3 max}) box) => [
+        for (final x in [box.min.x, box.max.x])
+          for (final y in [box.min.y, box.max.y])
+            for (final z in [box.min.z, box.max.z]) Vector3(x, y, z),
+      ];
 
   /// Pairs of corner indices making the twelve edges.
   static const _edges = [
@@ -1709,31 +2012,53 @@ class _SelectionPainter extends CustomPainter {
       final object = scene[id];
       if (object == null || !object.isDrawable) continue;
 
+      if (object.boundary.isNothing) continue;
       final clip = viewProjection.multiplied(scene.worldOf(id));
-      final points = <Offset>[];
-      var visible = true;
 
-      for (final corner in _corners) {
-        final projected =
-            clip.transform(Vector4(corner.x, corner.y, corner.z, 1));
+      Offset? at(Vector3 world) {
+        final projected = clip.transform(Vector4(world.x, world.y, world.z, 1));
         // Behind the camera: the perspective divide flips the point to the
-        // opposite side of the screen, which would draw a box across the whole
-        // viewport. That one is skipped rather than drawn wrong.
-        if (projected.w <= 1e-6) {
-          visible = false;
-          break;
-        }
-        points.add(Offset(
-          (projected.x / projected.w * 0.5 + 0.5) * size.width,
-          (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
-        ));
+        // opposite side of the screen, which would draw a line across the
+        // whole viewport. Skipped rather than drawn wrong.
+        return projected.w <= 1e-6
+            ? null
+            : Offset(
+                (projected.x / projected.w * 0.5 + 0.5) * size.width,
+                (1 - (projected.y / projected.w * 0.5 + 0.5)) * size.height,
+              );
       }
-      if (!visible) continue;
+
+      // The boundary itself, drawn as what it is. A box round a drawn room
+      // says nothing true about where its walls are, and the whole point of a
+      // mesh boundary is that somebody can see it follows the shape.
+      final shell = object.boundaryMesh;
+      final edges = object.boundaryEdges;
+      if (shell != null && edges.length <= _tooManyEdges) {
+        for (final edge in edges) {
+          final a = at(shell.positions[edge.$1]);
+          final b = at(shell.positions[edge.$2]);
+          if (a == null || b == null) continue;
+          path
+            ..moveTo(a.dx, a.dy)
+            ..lineTo(b.dx, b.dy);
+        }
+        continue;
+      }
+
+      // A box: either because that is what was asked for, or because the
+      // shape has more edges than anybody could read as an outline.
+      final corners = _cornersOf(
+        object.boundary.boxFrom(
+          object.localBounds(reported: models?.of(object)),
+        ),
+      );
+      final points = [for (final corner in corners) at(corner)];
+      if (points.any((one) => one == null)) continue;
 
       for (final edge in _edges) {
         path
-          ..moveTo(points[edge[0]].dx, points[edge[0]].dy)
-          ..lineTo(points[edge[1]].dx, points[edge[1]].dy);
+          ..moveTo(points[edge[0]]!.dx, points[edge[0]]!.dy)
+          ..lineTo(points[edge[1]]!.dx, points[edge[1]]!.dy);
       }
     }
 

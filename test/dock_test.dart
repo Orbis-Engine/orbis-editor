@@ -56,12 +56,13 @@ void main() {
   group('docking', () {
     test('onto a side makes a split', () {
       final was = DockLayout.standard();
-      final now = was.dock('inspector', 'left', DockSide.bottom);
+      // The outliner, because it is the one panel that has a group to itself
+      // — which is what makes the group it leaves collapse.
+      final now = was.dock('outliner', 'right', DockSide.bottom);
 
       expect(splitsIn(now.root), greaterThan(splitsIn(was.root)));
-      expect(now.holds('inspector'), isTrue);
-      // Out of its old group and into a new one under the outliner.
-      expect(panelsIn(now.root, 'right'), isEmpty);
+      expect(now.holds('outliner'), isTrue);
+      expect(panelsIn(now.root, 'left'), isEmpty);
     });
 
     test('onto the centre makes it another tab', () {
@@ -75,10 +76,10 @@ void main() {
 
     test('a group left empty collapses, and so does the split around it', () {
       final was = DockLayout.standard();
-      // The inspector is the only panel in its group.
-      final now = was.dock('inspector', 'left', DockSide.centre);
+      // The outliner is the only panel in its group.
+      final now = was.dock('outliner', 'right', DockSide.centre);
 
-      expect(panelsIn(now.root, 'right'), isEmpty);
+      expect(panelsIn(now.root, 'left'), isEmpty);
       // The middle split had three children and now has two, rather than
       // keeping an empty column.
       final middle = now.root as DockSplit;
@@ -88,9 +89,9 @@ void main() {
 
     test('a split left with one child is replaced by that child', () {
       var layout = DockLayout.standard();
-      layout = layout.dock('inspector', 'left', DockSide.centre);
-      layout = layout.dock('scene', 'left', DockSide.centre);
-      layout = layout.dock('game', 'left', DockSide.centre);
+      for (final panel in ['inspector', 'modelling', 'scene', 'game']) {
+        layout = layout.dock(panel, 'left', DockSide.centre);
+      }
 
       // Everything ended up in one group, so the row that held three columns
       // is gone rather than being a row of one.
@@ -118,7 +119,7 @@ void main() {
       final locked = DockLayout.standard().copyWith(locked: true);
       final after = locked.dock('inspector', 'left', DockSide.bottom);
 
-      expect(panelsIn(after.root, 'right'), ['inspector']);
+      expect(panelsIn(after.root, 'right'), ['inspector', 'modelling']);
       expect(identical(after.root, locked.root), isTrue);
     });
 
@@ -137,9 +138,11 @@ void main() {
 
   group('closing', () {
     test('takes the panel out and collapses what it leaves', () {
-      final now = DockLayout.standard().close('inspector');
+      // The outliner, which is the panel with a group to itself: closing it
+      // is what leaves an empty column for the split to collapse.
+      final now = DockLayout.standard().close('outliner');
 
-      expect(now.holds('inspector'), isFalse);
+      expect(now.holds('outliner'), isFalse);
       final middle = (now.root as DockSplit).children.first as DockSplit;
       expect(middle.children, hasLength(2));
     });

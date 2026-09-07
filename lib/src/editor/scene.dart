@@ -8,6 +8,8 @@ import 'package:orbis_weather/orbis_weather.dart';
 
 import 'package:orbis_mesh/orbis_mesh.dart';
 
+import 'boundary.dart';
+import 'grid.dart';
 import 'surface.dart';
 
 import 'colour.dart';
@@ -52,10 +54,13 @@ class SceneObject {
     this.shape,
     this.geometry,
     List<Surface>? surfaces,
+    this.outline,
+    Boundary? boundary,
     this.interfaceAsset,
     this.prefab,
     List<String>? data,
   })  : data = data ?? [],
+        boundary = boundary ?? Boundary(),
         surfaces = surfaces ?? [],
         weather = weather ?? WeatherState.of(condition),
         position = position ?? Vector3.zero(),
@@ -203,7 +208,108 @@ class SceneObject {
   bool get isParametric => shape != null && geometry == null;
 
   /// The geometry as it stands, whichever of the two it came from.
-  Mesh? get currentMesh => geometry ?? shape?.build();
+  /// An outline somebody drew and pulled up, kept so it can be redrawn.
+  ///
+  /// Beside [shape] rather than one of its kinds, because a shape is a set of
+  /// numbers and this is a set of points — and beside [geometry] rather than
+  /// replaced by it, so a wall can still be moved by dragging the corner it
+  /// belongs to a week later. Editing the mesh directly fills in [geometry],
+  /// and from then on that wins: an outline cannot describe a face that has
+  /// been extruded.
+  PolyShape? outline;
+
+  /// The geometry as it stands: edited if it has been, otherwise built from
+  /// whatever describes it.
+  ///
+  /// Cached, because building it is not free and this is asked several times
+  /// a frame — the selection outline wants it, the click test wants it, and
+  /// the writer that hands it to the renderer wants it. Rebuilding a
+  /// twenty-step staircase sixty times a second to draw a line round it is
+  /// the kind of waste that only shows up as "the editor feels slow".
+  ///
+  /// The cache is keyed on the two things that can produce one, by identity.
+  /// A shape or an outline is replaced rather than mutated when it changes —
+  /// every edit goes through a command that hands over a new one — so
+  /// identity is exactly the right test and costs a pointer compare.
+  Mesh? get currentMesh {
+    final made = geometry;
+    if (made != null) return made;
+
+    if (identical(_builtFrom, outline ?? shape) && _built != null) {
+      return _built;
+    }
+    _builtFrom = outline ?? shape;
+    _built = outline?.build() ?? shape?.build();
+    return _built;
+  }
+
+  Mesh? _built;
+  Object? _builtFrom;
+
+  /// Where this object begins and ends, as far as anything but the eye is
+  /// concerned.
+  ///
+  /// A mesh by default, because that is right for anything however odd — a
+  /// doorway is a hole you can walk through rather than a wall you cannot —
+  /// and because a box is only ever right by luck for a shape somebody drew.
+  Boundary boundary;
+
+  /// The boundary as geometry, cached the same way and for the same reason.
+  ///
+  /// Two things can change it: the shape underneath, and the boundary's own
+  /// settings. Both are compared by identity, and both are replaced rather
+  /// than edited in place.
+  Mesh? get boundaryMesh {
+    final shape = currentMesh;
+    if (identical(_shellFrom, shape) && identical(_shellFor, boundary)) {
+      return _shell;
+    }
+    _shellFrom = shape;
+    _shellFor = boundary;
+    _shell = boundary.meshFrom(shape);
+    return _shell;
+  }
+
+  Mesh? _shell;
+  Mesh? _shellFrom;
+  Boundary? _shellFor;
+
+  /// The boundary's edges, for drawing it.
+  ///
+  /// Cached beside the mesh because `allEdges` builds a fresh set every time
+  /// it is asked, and the thing asking is a painter running every frame.
+  List<MeshEdge> get boundaryEdges {
+    final shell = boundaryMesh;
+    if (!identical(_edgesFrom, shell)) {
+      _edgesFrom = shell;
+      _edges = shell == null ? const [] : shell.allEdges.toList();
+    }
+    return _edges;
+  }
+
+  List<MeshEdge> _edges = const [];
+  Mesh? _edgesFrom;
+
+  /// The box this object actually occupies, in its own space.
+  ///
+  /// What a click is tested against and what the selection outline is drawn
+  /// round. It used to be a two-metre cube for everything, which was right
+  /// when everything *was* the placeholder cube — a shape half a metre across
+  /// was picked and outlined four times its own size, and a model imported at
+  /// any other scale was worse.
+  ///
+  /// [reported] is what a file said about itself, for the objects whose
+  /// geometry the editor does not hold.
+  ({Vector3 min, Vector3 max}) localBounds({
+    ({Vector3 min, Vector3 max})? reported,
+  }) {
+    final mesh = currentMesh;
+    if (mesh != null && !mesh.isEmpty) return mesh.bounds;
+    if (reported != null) return reported;
+    // The placeholder the renderer draws when it has nothing else, which is
+    // genuinely two metres across.
+    return (min: Vector3.all(-1), max: Vector3.all(1));
+  }
 
   /// The materials this shape's faces can be painted with.
   ///
@@ -296,6 +402,8 @@ class SceneObject {
         meshAsset: meshAsset,
         shape: shape,
         geometry: geometry?.copy(),
+        outline: outline?.copy(),
+        boundary: boundary.copyWith(offset: boundary.offset.clone()),
         surfaces: [...surfaces],
         interfaceAsset: interfaceAsset,
         prefab: prefab,
@@ -814,7 +922,11 @@ class EditorScene {
   /// than inside the upright box that would contain it. A real mesh is a finer
   /// question than this can answer — that wants the geometry itself, which
   /// lives on the other side of the channel.
-  String? objectAlong(Vector3 origin, Vector3 direction) {
+  String? objectAlong(
+    Vector3 origin,
+    Vector3 direction, {
+    ({Vector3 min, Vector3 max})? Function(SceneObject)? boundsOf,
+  }) {
     String? nearest;
     var closest = double.infinity;
 
@@ -833,19 +945,94 @@ class EditorScene {
       // comparable between objects.
       final along = inverse.transformed3(origin + direction) - from;
 
-      final hit = _unitCubeHit(from, along);
+      // Nothing to hit, by choice: decoration somebody should walk straight
+      // through is decoration they should not be able to click either.
+      if (object.boundary.isNothing) continue;
+
+      final box = object.boundary.boxFrom(
+        object.localBounds(reported: boundsOf?.call(object)),
+      );
+      final hit = _boxHit(from, along, box.min, box.max);
       if (hit == null || hit >= closest) continue;
-      closest = hit;
+
+      // The box got the ray into the neighbourhood; the boundary decides.
+      // Clicking the gap in an L-shaped room should select what is behind it,
+      // not the room — which is the whole difference between a box round a
+      // thing and the thing.
+      final shell = object.boundaryMesh;
+      final where =
+          shell == null || shell.isEmpty ? hit : _meshHit(shell, from, along);
+      if (where == null || where >= closest) continue;
+
+      closest = where;
       nearest = object.id;
     }
     return nearest;
   }
 
-  /// How far along a ray the unit cube is first met, or null for a miss.
+  /// How far along a ray a box is first met, or null for a miss.
+  static double? _meshHit(Mesh mesh, Vector3 origin, Vector3 direction) {
+    var nearest = double.infinity;
+
+    for (final face in mesh.faces) {
+      final points = mesh.pointsOf(face);
+      if (points.length < 3) continue;
+      // The same fan the renderer draws it with, so what is clicked is what
+      // is on screen. Ear clipping would be exact for a concave face, and the
+      // difference is a click in the dent of one — worth having, and not
+      // worth walking every face twice for.
+      for (var i = 1; i + 1 < points.length; i++) {
+        final hit = _triangleHit(
+          origin,
+          direction,
+          points.first,
+          points[i],
+          points[i + 1],
+        );
+        if (hit != null && hit < nearest) nearest = hit;
+      }
+    }
+    return nearest.isFinite ? nearest : null;
+  }
+
+  /// Möller–Trumbore. Both sides count: clicking the far wall of a room from
+  /// inside it should select the room.
+  static double? _triangleHit(
+    Vector3 origin,
+    Vector3 direction,
+    Vector3 a,
+    Vector3 b,
+    Vector3 c,
+  ) {
+    final edge1 = b - a;
+    final edge2 = c - a;
+    final h = direction.cross(edge2);
+    final det = edge1.dot(h);
+    if (det.abs() < 1e-12) return null;
+
+    final f = 1 / det;
+    final s = origin - a;
+    final u = f * s.dot(h);
+    if (u < 0 || u > 1) return null;
+
+    final q = s.cross(edge1);
+    final v = f * direction.dot(q);
+    if (v < 0 || u + v > 1) return null;
+
+    final t = f * edge2.dot(q);
+    return t > 1e-6 ? t : null;
+  }
+
+  /// How far along a ray a box is first met, or null for a miss.
   ///
   /// The slab method: the span of the ray inside each pair of parallel faces,
   /// intersected. If what is left is empty the ray goes past.
-  static double? _unitCubeHit(Vector3 origin, Vector3 direction) {
+  static double? _boxHit(
+    Vector3 origin,
+    Vector3 direction,
+    Vector3 low,
+    Vector3 high,
+  ) {
     var near = -double.infinity;
     var far = double.infinity;
 
@@ -856,12 +1043,12 @@ class EditorScene {
       if (d.abs() < 1e-9) {
         // Parallel to this pair of faces: either between them for the whole
         // ray, or never.
-        if (o < -1 || o > 1) return null;
+        if (o < low[axis] || o > high[axis]) return null;
         continue;
       }
 
-      final first = (-1 - o) / d;
-      final second = (1 - o) / d;
+      final first = (low[axis] - o) / d;
+      final second = (high[axis] - o) / d;
       near = math.max(near, math.min(first, second));
       far = math.min(far, math.max(first, second));
       if (near > far) return null;
@@ -978,6 +1165,7 @@ class EditorScene {
     String? projectRoot,
     EditorScene? shared,
     String? Function(SceneObject)? geometryOf,
+    GridPlan? grid,
   }) {
     final sky = skyState;
     final driven = dayCycle;
@@ -1012,7 +1200,13 @@ class EditorScene {
         (driven ? sky.ambient : ambient) * (air?.scattered ?? 1) * (1 + flash * 40);
 
     return OrbisScene(
+      materials: [if (grid != null) grid.material],
       objects: [
+        // First, so it is under everything in the list as well as in the
+        // world. Not a scene object: it is never saved, never selected and
+        // never in the outliner, because it is a drawing aid rather than a
+        // thing somebody put there.
+        if (grid != null) grid.object,
         for (final scene in [this, ?shared])
           for (final object in scene._objects)
             if (object.isDrawable)
