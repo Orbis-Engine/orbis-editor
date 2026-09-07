@@ -1,5 +1,8 @@
 // What one editor frame costs on the CPU, for the parts that changed.
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:orbis_editor/src/editor/geometry_store.dart';
 import 'package:orbis_editor/src/editor/boundary.dart';
 import 'package:orbis_editor/src/editor/grid.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
@@ -97,6 +100,44 @@ void main() {
 
   timed('placing the grid', 200, () {
     GridStore('/tmp').planFor(Snapping(), Vector3(3.3, 0, -7.1));
+  });
+
+  // What every frame of a drag runs, because every frame of a drag is a
+  // change and every change asks whether any geometry has to be written.
+  final root = Directory.systemTemp.createTempSync('orbis_cost');
+  addTearDown(() => root.deleteSync(recursive: true));
+  final store = GeometryStore(root.path);
+  for (final object in scene.objects) {
+    store.pathFor(object);
+  }
+
+  timed('checking every shape is written, unchanged', 200, () {
+    for (final object in scene.objects) {
+      store.pathFor(object);
+    }
+  });
+
+  // The two things that used to be in there, measured on their own so the
+  // difference is a number rather than a claim.
+  timed('  ...asking the filesystem, as it did', 200, () {
+    for (final object in scene.objects) {
+      File('${root.path}/.orbis/geometry/${object.id}.glb').existsSync();
+    }
+  });
+
+  timed('  ...walking every vertex, as it did', 200, () {
+    for (final object in scene.objects) {
+      final mesh = object.currentMesh!;
+      var total = 0.0;
+      for (final at in mesh.positions) {
+        total += at.x + at.y * 3 + at.z * 7;
+      }
+      var corners = 0;
+      for (final face in mesh.faces) {
+        corners += face.vertices.length;
+      }
+      '${mesh.positions.length}/$corners/${total.toStringAsFixed(4)}';
+    }
   });
   });
 }

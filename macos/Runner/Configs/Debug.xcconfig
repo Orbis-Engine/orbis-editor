@@ -1,2 +1,12 @@
 #include "../../Flutter/Flutter-Debug.xcconfig"
 #include "Warnings.xcconfig"
+
+// Filament ships arm64 only, so there is nothing to link an Intel slice
+// against. Debug got away without this because it builds the active
+// architecture and nothing else; a profile or release build asks for both and
+// fails on the one that cannot exist.
+//
+// The renderer's podspec used to say this for us. The application dropped
+// CocoaPods, and a Swift package has no way to say it — so it is said here,
+// by the thing being built.
+EXCLUDED_ARCHS = x86_64

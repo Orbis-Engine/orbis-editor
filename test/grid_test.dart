@@ -60,10 +60,11 @@ void main() {
     final plan = grid.planFor(Snapping(step: 1), Vector3.zero())!;
     final scale = plan.transform.getMaxScaleOnAxis();
     expect(scale, closeTo(plan.extent, 1e-6));
-    // A hair below, so anything built on the ground plane wins the depth
-    // test rather than flickering against it.
-    expect(plan.transform.getTranslation().y, lessThan(0));
-    expect(plan.transform.getTranslation().y, greaterThan(-0.01));
+    // On the ground exactly. What keeps it from fighting whatever shares
+    // its plane is the material's depth bias, which works at every height
+    // rather than only at this one.
+    expect(plan.transform.getTranslation().y, 0);
+    expect(plan.material.depthBias, greaterThan(0));
   });
 
   test('it is drawn as a hint rather than as a thing in the world', () {

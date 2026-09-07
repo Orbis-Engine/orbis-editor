@@ -27,8 +27,30 @@ class GeometryStore {
   /// again from the scene.
   Directory get folder => Directory(p.join(projectRoot, '.orbis', 'geometry'));
 
-  /// What was last written for an object, so nothing is written twice.
-  final Map<String, String> _written = {};
+  /// What was last written for an object.
+  ///
+  /// The mesh itself, not a summary of it. Geometry is *replaced* when it
+  /// changes — every edit hands over a new mesh, and a shape's built one is
+  /// cached against the shape it came from — so "is this the same geometry"
+  /// is a pointer compare. It used to be a string built by walking every
+  /// vertex and every face, on every shape in the project, on every change.
+  /// A change is every frame of a drag.
+  /// [seenAt] is when the file was last confirmed to still be there, and
+  /// [relative] is the answer, kept so the common case builds no strings at
+  /// all — a path joined and interpolated for every shape on every frame of a
+  /// drag is most of what this used to cost.
+  final Map<String,
+      ({Mesh mesh, int materials, String relative, int seenAt})> _written = {};
+
+  /// A monotonic clock, for the "is it still there" check.
+  ///
+  /// Not `DateTime.now()`: that is asked once a shape and this is asked for
+  /// every shape in the project on every change, and reading a wall clock
+  /// turns out to be the expensive part of doing nothing.
+  final Stopwatch _clock = Stopwatch()..start();
+
+  /// How long a "yes, it is still there" is trusted for, in milliseconds.
+  static const int _trustFor = 2000;
 
   /// The file an object's geometry lives in, writing it if it has changed.
   ///
@@ -41,14 +63,27 @@ class GeometryStore {
     final mesh = object.currentMesh;
     if (mesh == null || mesh.isEmpty) return null;
 
-    final name = '${object.id}.glb';
-    final relative = p.join('.orbis', 'geometry', name);
-    final stamp = _stampOf(mesh, object.surfaces);
+    final materials = _hashOf(object.surfaces);
+    final was = _written[object.id];
+    final now = _clock.elapsedMilliseconds;
 
-    if (_written[object.id] == stamp) {
-      // Written already, unless somebody deleted it underneath us.
-      if (File(p.join(projectRoot, relative)).existsSync()) return relative;
+    if (was != null && identical(was.mesh, mesh) && was.materials == materials) {
+      // Written already. Whether it is *still* there is worth asking, but not
+      // worth asking sixty times a second — somebody deleting a build folder
+      // under a running editor can wait two seconds to be noticed.
+      if (now - was.seenAt < _trustFor) return was.relative;
+      if (File(p.join(projectRoot, was.relative)).existsSync()) {
+        _written[object.id] = (
+          mesh: was.mesh,
+          materials: was.materials,
+          relative: was.relative,
+          seenAt: now,
+        );
+        return was.relative;
+      }
     }
+
+    final relative = p.join('.orbis', 'geometry', '${object.id}.glb');
 
     try {
       folder.createSync(recursive: true);
@@ -60,7 +95,8 @@ class GeometryStore {
       return null;
     }
 
-    _written[object.id] = stamp;
+    _written[object.id] =
+        (mesh: mesh, materials: materials, relative: relative, seenAt: now);
     return relative;
   }
 
@@ -68,11 +104,29 @@ class GeometryStore {
   bool isStale(SceneObject object) {
     final mesh = object.currentMesh;
     if (mesh == null) return false;
-    return _written[object.id] != _stampOf(mesh, object.surfaces);
+    final was = _written[object.id];
+    return was == null ||
+        !identical(was.mesh, mesh) ||
+        was.materials != _hashOf(object.surfaces);
   }
 
   /// Forgets an object, so the next ask writes again.
   void forget(String id) => _written.remove(id);
+
+  /// The material slots, as one number.
+  ///
+  /// These *are* edited in place — a slot's colour changes without the list
+  /// being replaced — so identity says nothing and they are summed every
+  /// time. There are a handful of them, which is the difference.
+  static int _hashOf(List<Surface> surfaces) {
+    var total = surfaces.length;
+    for (final one in surfaces) {
+      total = total * 31 +
+          Object.hash(one.name, one.colour, one.metallic, one.roughness,
+              one.emissive, one.doubleSided);
+    }
+    return total;
+  }
 
   /// Throws away every file. For when a project is closed.
   void clear() {
@@ -91,26 +145,7 @@ class GeometryStore {
   /// This is asked once a frame per shape, and hashing ten thousand vertices
   /// to find out that nothing moved is the kind of work that only shows up
   /// once somebody has a level full of them.
-  static String _stampOf(Mesh mesh, List<Surface> surfaces) {
-    var total = 0.0;
-    for (final at in mesh.positions) {
-      total += at.x + at.y * 3 + at.z * 7;
-    }
-    var corners = 0;
-    var painted = 0;
-    for (final face in mesh.faces) {
-      corners += face.vertices.length;
-      // Which material each face wears, folded in: painting a face changes
-      // nothing about where its corners are, and without this the file is
-      // never written again.
-      painted = painted * 31 + face.material;
-    }
-    var materials = 0;
-    for (final one in surfaces) {
-      materials = materials * 31 + Object.hash(one.name, one.colour,
-          one.metallic, one.roughness, one.emissive, one.doubleSided);
-    }
-    return '${mesh.positions.length}/${mesh.faces.length}/$corners/$painted/'
-        '$materials/${total.toStringAsFixed(4)}';
-  }
+
+
+
 }

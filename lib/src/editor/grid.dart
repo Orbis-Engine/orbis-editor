@@ -192,11 +192,12 @@ class GridStore {
 extension GridAsScene on GridPlan {
   /// Where the quad stands: flat, centred, and scaled to the whole extent.
   ///
-  /// A hair below nought rather than exactly on it, so anything built on the
-  /// ground plane wins the depth test against it. Two surfaces at the same
-  /// depth flicker, and the one that should lose is the drawing aid.
+  /// Exactly on nought. It used to sit a hair below to lose the depth test
+  /// against anything built on the ground plane, which worked at that height
+  /// and nowhere else — a surface dragged *through* the plane still met it.
+  /// The material's depth bias does that job properly and at every height.
   Matrix4 get transform => Matrix4.identity()
-    ..setTranslation(Vector3(centre.x, -0.002, centre.z))
+    ..setTranslation(Vector3(centre.x, 0, centre.z))
     ..multiply(Matrix4.diagonal3(Vector3(extent, 1, extent)));
 
   OrbisObject get object => OrbisObject(
@@ -219,6 +220,12 @@ extension GridAsScene on GridPlan {
         // Writing depth would make the grid hide what is behind it, and it is
         // a hint about where the floor is rather than a floor.
         depthWrite: false,
+        // And behind anything sharing its plane. A floor built on the ground
+        // plane, or a surface dragged through it, is at the same depth as the
+        // grid for a moment — and two things at the same depth flicker pixel
+        // by pixel as the camera moves. The grid is a hint about where the
+        // ground is; it should lose every time.
+        depthBias: 0.002,
         baseColour: Vector4(0.62, 0.68, 0.78, 0.75),
         // Ten across the image and ten images across the quad: a hundred
         // squares, each one snap step.

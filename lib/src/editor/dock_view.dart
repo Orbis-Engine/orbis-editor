@@ -237,7 +237,14 @@ class _DockGroupViewState extends State<_DockGroupView> {
           Expanded(
             child: showing == null
                 ? const SizedBox.shrink()
-                : ClipRect(child: widget.panel(context, showing)),
+                // A boundary a panel, so a panel that did not change is not
+                // painted again because a different one did. Every edit
+                // rebuilds the editor from the top — a drag does it sixty
+                // times a second — and without these that is a repaint of the
+                // whole window each time.
+                : RepaintBoundary(
+                    child: ClipRect(child: widget.panel(context, showing)),
+                  ),
           ),
         ],
       ),
