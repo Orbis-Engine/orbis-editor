@@ -19,7 +19,15 @@ import '../theme/orbis_theme.dart';
 /// to build, and an answer they have to close their work to reach is an
 /// answer they look up somewhere else instead.
 class ExamplesView extends StatefulWidget {
-  const ExamplesView({super.key});
+  const ExamplesView({super.key, this.examples});
+
+  /// The examples to show, for a test that needs one in a known state.
+  ///
+  /// Null everywhere else, and then the view asks the package — which is the
+  /// point of the list living there. A test that typed its own copy would
+  /// pass for an example nobody can reach.
+  @visibleForTesting
+  final List<Example>? examples;
 
   @override
   State<ExamplesView> createState() => _ExamplesViewState();
@@ -27,7 +35,7 @@ class ExamplesView extends StatefulWidget {
 
 class _ExamplesViewState extends State<ExamplesView>
     with SingleTickerProviderStateMixin {
-  late final List<Example> _examples = engineExamples();
+  late final List<Example> _examples = widget.examples ?? engineExamples();
   late Example _showing = _examples.first;
   late GalleryCamera _camera = GalleryCamera.from(_showing.viewpoint);
 
@@ -105,6 +113,18 @@ class _ExamplesViewState extends State<ExamplesView>
                         if (_showing.overlay(context, _changed)
                             case final over?)
                           Positioned.fill(child: over),
+                        // What the renderer could not do, over the thing it
+                        // could not do it to. In the corner rather than the
+                        // middle: the scene is still worth looking at, and
+                        // this is a footnote to it rather than a failure
+                        // page in front of it.
+                        if (_showing.note case final saying?)
+                          Positioned(
+                            left: Space.md,
+                            bottom: Space.md,
+                            right: Space.md,
+                            child: _Note(saying: saying),
+                          ),
                       ],
                     ),
                   ),
@@ -145,12 +165,15 @@ class _ExamplesViewState extends State<ExamplesView>
             if (example is BenchmarkExample) example.watch(id);
           },
           onSceneNotes: (notes) {
-            // One example has something to say about a file it could not
-            // load; the rest have nothing to report and nowhere to put it.
-            final example = _showing;
-            if (example is MeshesExample && notes.isNotEmpty) {
-              setState(() => example.note = notes.values.first);
-            }
+            // Any of them, not one of them. Whether the renderer has
+            // something to say about a scene is not a property of which
+            // example it is, and the example that never expected a note is
+            // the one whose silence is least helpful — a Bistro whose files
+            // were never downloaded drew a grey placeholder and explained
+            // nothing.
+            setState(() {
+              _showing.note = notes.isEmpty ? null : notes.values.first;
+            });
           },
         ),
       ),
@@ -363,6 +386,44 @@ class _OnlyOnMac extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Something the renderer could not do, said over the scene.
+class _Note extends StatelessWidget {
+  const _Note({required this.saying});
+
+  final String saying;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Space.md,
+          vertical: Space.sm,
+        ),
+        decoration: BoxDecoration(
+          color: const Color(0xE0161A21),
+          borderRadius: BorderRadius.circular(Radii.control),
+          border: Border.all(color: OrbisColors.ember.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.info_outline, size: 15, color: OrbisColors.ember),
+            const SizedBox(width: Space.sm),
+            Flexible(
+              child: Text(
+                saying,
+                style: OrbisText.body.copyWith(fontSize: 12),
+              ),
+            ),
+          ],
         ),
       ),
     );
