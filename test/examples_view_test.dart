@@ -105,6 +105,35 @@ void main() {
     });
   });
 
+  testWidgets('what the renderer could not do is said, for any example',
+      (tester) async {
+    // The renderer draws a placeholder for a model it cannot read and says
+    // why. That report used to reach one example and be dropped for the rest,
+    // so an example whose files were missing showed a grey box in silence —
+    // which reads as the engine being broken rather than a file being absent.
+    final examples = engineExamples();
+    examples.first.note = 'Its files are missing. It will draw untextured.';
+
+    await tester.binding.setSurfaceSize(const Size(1500, 950));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      theme: orbisTheme(),
+      home: Scaffold(body: ExamplesView(examples: examples)),
+    ));
+    await tester.pump();
+
+    expect(
+      find.textContaining('Its files are missing'),
+      findsOneWidget,
+      reason: 'a note the renderer sent should be over the scene it is about',
+    );
+  });
+
+  testWidgets('an example with nothing to say says nothing', (tester) async {
+    await show(tester);
+    expect(find.byIcon(Icons.info_outline), findsNothing);
+  });
+
   group('the example view fills the window', () {
     testWidgets('the sides can be shut, one at a time', (tester) async {
       await show(tester);
