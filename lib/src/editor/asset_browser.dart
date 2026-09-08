@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -618,7 +619,11 @@ class _Grid extends StatelessWidget {
       padding: const EdgeInsets.all(Space.sm),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 96,
-        mainAxisExtent: 84,
+        // Taller than it was, for the thumbnail. A grid of identical glyphs
+        // tells you the kind of every file and which file is which of none
+        // of them, and finding a texture by name in four hundred is not
+        // finding it.
+        mainAxisExtent: 100,
         crossAxisSpacing: Space.xs,
         mainAxisSpacing: Space.xs,
       ),
@@ -857,16 +862,8 @@ class _TileState extends State<_Tile> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  asset.kind.icon,
-                  size: 26,
-                  color: asset.isFolder
-                      ? OrbisColors.inkMid
-                      : (widget.selected
-                          ? OrbisColors.ember
-                          : OrbisColors.inkDim),
-                ),
-                const SizedBox(height: Space.sm),
+                _Thumbnail(asset: asset, selected: widget.selected),
+                const SizedBox(height: Space.xs),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: Text(
@@ -898,6 +895,71 @@ class _TileState extends State<_Tile> {
       feedback: _DragLabel(asset: asset),
       childWhenDragging: Opacity(opacity: 0.35, child: tile),
       child: tile,
+    );
+  }
+}
+
+/// What an asset looks like, where that can be shown, and its kind where it
+/// cannot.
+///
+/// Only the formats Flutter can decode get a picture. A .ktx2 is a compressed
+/// texture meant for a GPU and a .hdr carries more range than a screen has;
+/// neither is something `Image.file` can open, and pretending otherwise would
+/// put a broken-image box where an icon at least says what the file is.
+/// Those, and everything that is not an image at all, keep the glyph — until
+/// the renderer draws their previews, which is the next piece of this.
+class _Thumbnail extends StatelessWidget {
+  const _Thumbnail({required this.asset, required this.selected});
+
+  final Asset asset;
+  final bool selected;
+
+  /// What Flutter's own decoders handle.
+  static const _decodable = {
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
+  };
+
+  static bool showsPicture(Asset asset) =>
+      !asset.isFolder &&
+      asset.kind == AssetKind.texture &&
+      _decodable.contains(p.extension(asset.path).toLowerCase());
+
+  @override
+  Widget build(BuildContext context) {
+    final colour = asset.isFolder
+        ? OrbisColors.inkMid
+        : (selected ? OrbisColors.ember : OrbisColors.inkDim);
+
+    if (!showsPicture(asset)) {
+      return SizedBox(
+        height: 44,
+        child: Center(child: Icon(asset.kind.icon, size: 26, color: colour)),
+      );
+    }
+
+    return SizedBox(
+      height: 44,
+      width: 44,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        // Checked, so a texture with transparency reads as transparent
+        // rather than as a hole or as black.
+        child: ColoredBox(
+          color: OrbisColors.ground,
+          child: Image.file(
+            File(asset.path),
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.medium,
+            // Decoded at the size it is drawn at rather than at the size it
+            // was authored at. A folder of 4K maps is a gigabyte of pixels
+            // nobody is looking at closely.
+            cacheWidth: 88,
+            gaplessPlayback: true,
+            errorBuilder: (context, error, stack) =>
+                Center(child: Icon(asset.kind.icon, size: 26, color: colour)),
+          ),
+        ),
+      ),
     );
   }
 }
