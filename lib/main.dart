@@ -12,7 +12,7 @@ import 'src/theme/orbis_theme.dart';
 /// `code .` work — and the only way to reach the editor without clicking,
 /// which matters for anything driving it from a script.
 void main(List<String> arguments) {
-  final path = arguments.where((argument) => !argument.startsWith('-')).firstOrNull;
+  final path = projectPathIn(arguments);
   final project = path == null ? null : ProjectStore().open(path);
   if (path != null && project == null) {
     // Said out loud rather than falling back to the launcher in silence,
@@ -20,6 +20,26 @@ void main(List<String> arguments) {
     debugPrint('Orbis: "$path" is not a project folder.');
   }
   runApp(OrbisEditorApp(initialProject: project));
+}
+
+/// The folder to open out of what the app was launched with.
+///
+/// macOS puts its own switches in — `-NSDocumentRevisionsDebugMode YES` when
+/// a debug build is started by Xcode, among others — so anything beginning
+/// with a dash is not a path somebody typed, and neither is the value that
+/// follows it.
+String? projectPathIn(List<String> arguments) {
+  for (var i = 0; i < arguments.length; i++) {
+    final argument = arguments[i];
+    if (argument.startsWith('-')) {
+      // Skip its value as well, or `-NSDocumentRevisionsDebugMode YES` opens
+      // a project called YES and reports it missing.
+      if (i + 1 < arguments.length && !arguments[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    return argument;
+  }
+  return null;
 }
 
 class OrbisEditorApp extends StatelessWidget {
