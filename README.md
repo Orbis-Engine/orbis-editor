@@ -35,4 +35,5 @@ its own padding.
 
 ## Licence
 
-MIT.
+MIT, © 2026 Chris Beckett. The editor links the renderer, so builds carry Filament's
+Apache 2.0 licence too — see [LICENSE](LICENSE).
