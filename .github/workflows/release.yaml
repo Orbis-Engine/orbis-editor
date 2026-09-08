@@ -1,0 +1,181 @@
+name: Editor release
+
+# Builds the editor for macOS and attaches the archive, with a checksum, to a
+# GitHub release.
+#
+# Triggered by an orbis-editor-* tag, or run by hand against an existing tag.
+# A tag with "citest" in the name builds and packages the whole thing but does
+# not publish, so the packaging can be checked without cutting a release —
+# packaging is exactly the sort of thing whose first real use is a release day.
+#
+# Signing and notarization run only when the certificate secret is set:
+# MACOS_CERTIFICATE_P12 (base64 of a Developer ID Application .p12) and
+# MACOS_CERTIFICATE_PASSWORD. Notarizing additionally needs
+# MACOS_NOTARY_APPLE_ID, MACOS_NOTARY_PASSWORD (an app-specific password) and
+# MACOS_NOTARY_TEAM_ID. With none of them the build still produces an archive,
+# unsigned — which Gatekeeper will refuse to open without a right-click, and
+# the release notes should say so.
+
+on:
+  push:
+    tags: ['orbis-editor-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and attach the archive to (e.g. orbis-editor-0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package macOS
+    runs-on: macos-latest
+    timeout-minutes: 90
+    # At job level, not on the steps that use them: a step's `if` is evaluated
+    # before that step's own env exists, so a secret declared beside the script
+    # is empty in the condition guarding it and the step never runs.
+    env:
+      CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: orbis-editor
+          ref: ${{ inputs.tag || github.ref }}
+      # Pinned to the same tag name in the engine, so a release is built
+      # against a known renderer rather than whatever master happened to be.
+      # Falls back to master when no matching tag exists there.
+      - uses: actions/checkout@v4
+        with:
+          # No token: these repositories are public, so the default
+          # GITHUB_TOKEN reads them. Nothing here needs a secret.
+          repository: Orbis-Engine/orbis
+          path: orbis
+
+      - name: Match the engine to the tag
+        working-directory: orbis
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          if git rev-parse "refs/tags/$tag" > /dev/null 2>&1; then
+            git checkout "$tag"
+            echo "engine at $tag"
+          else
+            echo "no $tag in the engine; building against $(git rev-parse --short HEAD) on master"
+          fi
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Cache Filament SDK
+        uses: actions/cache@v4
+        with:
+          path: orbis/packages/orbis_filament/macos/third_party
+          key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/macos/setup.sh') }}
+
+      # Same as CI: the material compilation runs from the podspec under
+      # CocoaPods, and Swift Package Manager has no equivalent hook.
+      - name: Fetch Filament and compile materials
+        run: bash orbis/packages/orbis_filament/macos/setup.sh
+
+      - name: Build
+        working-directory: orbis-editor
+        run: flutter build macos --release
+
+      - name: Sign
+        if: ${{ env.CERT != '' }}
+        env:
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        working-directory: orbis-editor
+        run: |
+          set -euo pipefail
+          # A throwaway keychain rather than the login one: the runner is
+          # discarded anyway, and this keeps the certificate out of any
+          # keychain a later step might read.
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 900 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+
+          echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" > /dev/null
+          security list-keychain -d user -s "$keychain"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Resolved from what was imported rather than named in a secret: the
+          # identity string has to match the certificate exactly, and a
+          # mismatch fails at the end of a ninety-minute build.
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk 'NR==1 {print $2}')
+          echo "signing as $identity"
+
+          # Inside out: the frameworks have to be signed before the bundle
+          # that contains them, or the outer signature is invalidated by them.
+          app=build/macos/Build/Products/Release/orbis_editor.app
+          find "$app/Contents/Frameworks" -name '*.framework' -o -name '*.dylib' \
+            | while read -r item; do
+                codesign --force --timestamp --options runtime \
+                  --sign "$identity" "$item"
+              done
+          codesign --force --timestamp --options runtime \
+            --entitlements macos/Runner/Release.entitlements \
+            --sign "$identity" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+      - name: Notarize
+        if: ${{ env.APPLE_ID != '' }}
+        env:
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        working-directory: orbis-editor
+        run: |
+          set -euo pipefail
+          app=build/macos/Build/Products/Release/orbis_editor.app
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --password "$NOTARY_PASSWORD" \
+            --team-id "$TEAM_ID" --wait
+          # Stapling is what lets the app open on a machine that is offline.
+          # Without it Gatekeeper has to ask Apple, and a first launch with no
+          # network is refused.
+          xcrun stapler staple "$app"
+
+      - name: Archive
+        working-directory: orbis-editor
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          app=build/macos/Build/Products/Release/orbis_editor.app
+          mkdir -p "$RUNNER_TEMP/out"
+          # ditto rather than zip: it keeps the symlinks and the resource
+          # forks a signed bundle depends on, and a plain zip breaks the
+          # signature it took the step above to apply.
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/$tag-macos.zip"
+          cd "$RUNNER_TEMP/out"
+          shasum -a 256 ./*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbis-editor-macos
+          path: ${{ runner.temp }}/out/*
+
+      - name: Publish
+        if: ${{ !contains(inputs.tag || github.ref_name, 'citest') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --title "$tag" --generate-notes
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP"/out/*
