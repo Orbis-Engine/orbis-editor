@@ -49,9 +49,10 @@ jobs:
       # Falls back to master when no matching tag exists there.
       - uses: actions/checkout@v4
         with:
+          # No token: these repositories are public, so the default
+          # GITHUB_TOKEN reads them. Nothing here needs a secret.
           repository: Orbis-Engine/orbis
           path: orbis
-          token: ${{ secrets.ORBIS_ENGINE_TOKEN }}
 
       - name: Match the engine to the tag
         working-directory: orbis
