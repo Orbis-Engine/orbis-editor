@@ -54,6 +54,16 @@ jobs:
           path: orbis/packages/orbis_filament/macos/third_party
           key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/macos/setup.sh') }}
 
+      # Fetches the Filament SDK and compiles the materials into the C
+      # arrays the renderer includes. This runs from the podspec's
+      # prepare_command under CocoaPods, and Swift Package Manager has no
+      # equivalent hook — a package plugin runs sandboxed, with no network —
+      # so on the SPM path, which is now Flutter's default for macOS, nothing
+      # runs it and the build fails on a missing generated header. It is
+      # idempotent, so calling it here is free when the cache is warm.
+      - name: Fetch Filament and compile materials
+        run: bash orbis/packages/orbis_filament/macos/setup.sh
+
       - name: Analyze and test
         working-directory: orbis-editor
         run: ./tool/check.sh

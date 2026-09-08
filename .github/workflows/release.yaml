@@ -76,6 +76,11 @@ jobs:
           path: orbis/packages/orbis_filament/macos/third_party
           key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/macos/setup.sh') }}
 
+      # Same as CI: the material compilation runs from the podspec under
+      # CocoaPods, and Swift Package Manager has no equivalent hook.
+      - name: Fetch Filament and compile materials
+        run: bash orbis/packages/orbis_filament/macos/setup.sh
+
       - name: Build
         working-directory: orbis-editor
         run: flutter build macos --release
