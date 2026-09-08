@@ -41,13 +41,17 @@ class ModelBounds {
     try {
       final file = File(path);
       if (file.existsSync()) {
-        // Only a glb is read this way. A `.gltf` keeps its JSON in the open
-        // and could be read too, but its buffers are beside it and the
-        // accessors are the same either way — worth doing when somebody
-        // brings one.
-        found = p.extension(path).toLowerCase() == '.glb'
-            ? boundsOfGlb(file.readAsBytesSync())
-            : null;
+        // Both glTF containers. They are the same document with the buffers
+        // in different places, and neither is read here — the minimum and
+        // maximum are in the document itself. A `.gltf` beside its textures
+        // is how most model libraries publish, so leaving it out meant the
+        // commonest kind of imported model was the one that could not say
+        // how big it was.
+        found = switch (p.extension(path).toLowerCase()) {
+          '.glb' => boundsOfGlb(file.readAsBytesSync()),
+          '.gltf' => boundsOfGltf(file.readAsStringSync()),
+          _ => null,
+        };
       }
     } on FileSystemException {
       found = null;

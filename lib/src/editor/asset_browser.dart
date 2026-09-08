@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
+import 'asset_preview.dart';
 import 'assets.dart';
 import 'scene.dart';
 
@@ -65,6 +66,14 @@ class _AssetBrowserState extends State<AssetBrowser> {
   late String _directory = widget.tree.root;
   String? _selected;
 
+  /// The selected file itself, which the preview needs — its kind decides
+  /// whether there is anything to draw, and its path is only half of that.
+  Asset? _showing;
+
+  /// Whether the preview is open. A panel along the bottom does not have
+  /// width to spare, so somebody working in a narrow window can shut it.
+  bool _previewing = true;
+
   /// Bumped to force a re-read, by the watcher or by the button.
   int _revision = 0;
 
@@ -95,6 +104,7 @@ class _AssetBrowserState extends State<AssetBrowser> {
     if (oldWidget.tree.root != widget.tree.root) {
       _directory = widget.tree.root;
       _selected = null;
+      _showing = null;
       _listen();
     }
   }
@@ -211,10 +221,14 @@ class _AssetBrowserState extends State<AssetBrowser> {
               _Header(
                 crumb: widget.tree.relative(_directory),
                 count: entries.length,
+                previewing: _previewing,
+                onPreview: () =>
+                    setState(() => _previewing = !_previewing),
                 canGoUp: !p.equals(_directory, widget.tree.root),
                 onUp: () => setState(() {
                   _directory = p.dirname(_directory);
                   _selected = null;
+                  _showing = null;
                 }),
                 onRefresh: () => setState(() => _revision++),
               ),
@@ -231,6 +245,7 @@ class _AssetBrowserState extends State<AssetBrowser> {
                         setState(() {
                           _directory = path;
                           _selected = null;
+                          _showing = null;
                         });
                         widget.onSelectAsset?.call(null);
                       },
@@ -242,7 +257,10 @@ class _AssetBrowserState extends State<AssetBrowser> {
                         entries: entries,
                         selected: _selected,
                         onSelect: (asset) {
-                          setState(() => _selected = asset.path);
+                          setState(() {
+                            _selected = asset.path;
+                            _showing = asset;
+                          });
                           widget.onSelectAsset?.call(asset);
                         },
                         onDelete: _confirmDelete,
@@ -260,10 +278,12 @@ class _AssetBrowserState extends State<AssetBrowser> {
                           setState(() {
                             _directory = asset.path;
                             _selected = null;
+                            _showing = null;
                           });
                         },
                       ),
                     ),
+                    if (_previewing) AssetPreview(asset: _showing),
                   ],
                 ),
               ),
@@ -283,6 +303,8 @@ class _Header extends StatelessWidget {
     required this.crumb,
     required this.count,
     required this.canGoUp,
+    required this.previewing,
+    required this.onPreview,
     required this.onUp,
     required this.onRefresh,
   });
@@ -290,6 +312,8 @@ class _Header extends StatelessWidget {
   final String crumb;
   final int count;
   final bool canGoUp;
+  final bool previewing;
+  final VoidCallback onPreview;
   final VoidCallback onUp;
   final VoidCallback onRefresh;
 
@@ -340,6 +364,15 @@ class _Header extends StatelessWidget {
                 );
               },
             ),
+          ),
+          const SizedBox(width: Space.xs),
+          _IconAction(
+            icon: previewing
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined,
+            tooltip: previewing ? 'Hide the preview' : 'Show the preview',
+            enabled: true,
+            onTap: onPreview,
           ),
           const SizedBox(width: Space.xs),
           _IconAction(
