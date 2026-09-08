@@ -101,6 +101,38 @@ void main() {
       expect(entry.source, 'flutter');
     });
 
+    test('disposing gives Flutter its error handler back', () {
+      // What happened: the handler outlived the log it wrote into. It called
+      // `notifyListeners` on a disposed notifier, which threw, and that throw
+      // was itself an unhandled error — dispatched straight back to the same
+      // handler, which threw again. One real exception became eight hundred
+      // and forty lines, and the real one was the first, off the top.
+      final before = FlutterError.onError;
+
+      final closing = EditorLog();
+      closing.catchFlutterErrors();
+      expect(FlutterError.onError, isNot(same(before)));
+
+      closing.dispose();
+
+      expect(
+        FlutterError.onError,
+        same(before),
+        reason: 'a handler still pointing at a disposed log is the loop',
+      );
+    });
+
+    test('a closed log quietly drops what it is told', () {
+      // Belt as well as braces: even with the handler still installed — a
+      // caller that disposed in the wrong order, say — saying something to a
+      // closed log is a no-op rather than a throw.
+      final closing = EditorLog();
+      closing.dispose();
+
+      expect(() => closing.error('too late'), returnsNormally);
+      expect(closing.entries, isEmpty);
+    });
+
     test('putting the handler back stops it', () {
       log.catchFlutterErrors()();
 
