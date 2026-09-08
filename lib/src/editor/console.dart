@@ -72,6 +72,15 @@ class EditorLog extends ChangeNotifier {
 
   final Queue<LogEntry> _entries = Queue();
 
+  /// Whether this log is finished with.
+  ///
+  /// Kept rather than asked of ChangeNotifier, which only knows in debug, and
+  /// the thing this guards is worst in release.
+  bool _closed = false;
+
+  /// Puts Flutter's error handlers back, if this log took them.
+  VoidCallback? _release;
+
   List<LogEntry> get entries => List.unmodifiable(_entries);
 
   int countOf(LogLevel level) =>
@@ -85,6 +94,14 @@ class EditorLog extends ChangeNotifier {
     String detail = '',
     String source = '',
   }) {
+    // A log that has been disposed has nowhere to put this, and saying so by
+    // throwing is what turns one error into hundreds: this is installed as
+    // Flutter's error handler, so the throw is itself an unhandled error,
+    // which is dispatched straight back here, which throws again. Eight
+    // hundred and forty lines of that once buried the single real exception
+    // at the top of the log — which was the only line worth reading.
+    if (_closed) return;
+
     final entry = LogEntry(
       level: level,
       message: message,
@@ -139,6 +156,14 @@ class EditorLog extends ChangeNotifier {
   VoidCallback catchFlutterErrors() {
     final previousError = FlutterError.onError;
     final previousZone = PlatformDispatcher.instance.onError;
+    // Held as well as returned, so that disposing the log takes them back
+    // even when nobody called the restore. Handlers that outlive what they
+    // write into are how a closed editor keeps reporting.
+    _release = () {
+      FlutterError.onError = previousError;
+      PlatformDispatcher.instance.onError = previousZone;
+      _release = null;
+    };
 
     FlutterError.onError = (details) {
       error(
@@ -154,9 +179,15 @@ class EditorLog extends ChangeNotifier {
       return previousZone?.call(thrown, stack) ?? true;
     };
 
-    return () {
-      FlutterError.onError = previousError;
-      PlatformDispatcher.instance.onError = previousZone;
-    };
+    return () => _release?.call();
+  }
+
+  @override
+  void dispose() {
+    // Before the notifier goes, not after: a handler still pointing here is a
+    // closed editor still trying to write into it.
+    _closed = true;
+    _release?.call();
+    super.dispose();
   }
 }
