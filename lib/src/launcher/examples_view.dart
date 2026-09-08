@@ -19,7 +19,11 @@ import '../theme/orbis_theme.dart';
 /// to build, and an answer they have to close their work to reach is an
 /// answer they look up somewhere else instead.
 class ExamplesView extends StatefulWidget {
-  const ExamplesView({super.key, this.examples});
+  const ExamplesView({super.key, this.onFull, this.examples});
+
+  /// Told when the view wants the whole window, so whatever is around it can
+  /// get out of the way.
+  final ValueChanged<bool>? onFull;
 
   /// The examples to show, for a test that needs one in a known state.
   ///
@@ -44,6 +48,22 @@ class _ExamplesViewState extends State<ExamplesView>
   bool _restarting = true;
   double _seconds = 0;
   Offset? _dragging;
+
+  /// Which of the two side panels are open.
+  ///
+  /// An example is a scene to be looked at, and the list of the others and the
+  /// page of settings are both in front of it. Shutting them is not a tidying
+  /// preference — it is the difference between a picture with a window round
+  /// it and the thing itself.
+  bool _listing = true;
+  bool _settings = true;
+
+  /// Nothing but the scene, and the way back.
+  ///
+  /// The launcher's own rail goes as well, which is why this is reported
+  /// outward rather than kept here: a full view with a navigation rail down
+  /// the side of it is not a full view.
+  bool _full = false;
 
   @override
   void initState() {
@@ -86,21 +106,37 @@ class _ExamplesViewState extends State<ExamplesView>
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _List(
-          examples: _examples,
-          showing: _showing,
-          onShow: _show,
-        ),
+        if (_listing && !_full)
+          _List(
+            examples: _examples,
+            showing: _showing,
+            onShow: _show,
+          ),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _Title(example: _showing),
+              _Title(
+                example: _showing,
+                full: _full,
+                listing: _listing,
+                settings: _settings,
+                onFull: _setFull,
+                onListing: (open) => setState(() => _listing = open),
+                onSettings: (open) => setState(() => _settings = open),
+              ),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(0, 0, Space.lg, Space.lg),
+                  // Edge to edge when it is the only thing on screen. A
+                  // margin and a rounded corner say "this is a panel among
+                  // others", which is the opposite of what a full view means.
+                  padding: _full
+                      ? EdgeInsets.zero
+                      : const EdgeInsets.fromLTRB(0, 0, Space.lg, Space.lg),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(Radii.panel),
+                    borderRadius: BorderRadius.circular(
+                      _full ? 0 : Radii.panel,
+                    ),
                     child: Stack(
                       children: [
                         Positioned.fill(
@@ -133,9 +169,15 @@ class _ExamplesViewState extends State<ExamplesView>
             ],
           ),
         ),
-        _Panel(example: _showing, onChanged: _changed),
+        if (_settings && !_full)
+          _Panel(example: _showing, onChanged: _changed),
       ],
     );
+  }
+
+  void _setFull(bool full) {
+    setState(() => _full = full);
+    widget.onFull?.call(full);
   }
 
   void _changed() => setState(() {});
@@ -291,22 +333,126 @@ class _RowState extends State<_Row> {
 
 /// The name and the one line about it, over the viewport.
 class _Title extends StatelessWidget {
-  const _Title({required this.example});
+  const _Title({
+    required this.example,
+    required this.full,
+    required this.listing,
+    required this.settings,
+    required this.onFull,
+    required this.onListing,
+    required this.onSettings,
+  });
 
   final Example example;
+  final bool full;
+  final bool listing;
+  final bool settings;
+  final ValueChanged<bool> onFull;
+  final ValueChanged<bool> onListing;
+  final ValueChanged<bool> onSettings;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(0, Space.xxl, Space.lg, Space.md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    // Thin and dark when the scene has the window, so the row of controls
+    // reads as a strip over the picture rather than as a page heading with a
+    // picture under it.
+    return Container(
+      color: full ? OrbisColors.surface : null,
+      padding: full
+          ? const EdgeInsets.fromLTRB(Space.sm, Space.sm, Space.sm, Space.sm)
+          : const EdgeInsets.fromLTRB(0, Space.xxl, Space.lg, Space.md),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(example.name, style: OrbisText.title),
-          const SizedBox(height: 2),
-          Text(example.blurb, style: OrbisText.caption),
+          if (full) ...[
+            // The way back, where a window puts it and where a project puts
+            // it: top left, first thing, before what it is a view of.
+            IconButton(
+              iconSize: 18,
+              tooltip: 'Back to the examples',
+              onPressed: () => onFull(false),
+              icon: const Icon(Icons.arrow_back, color: OrbisColors.ink),
+            ),
+            const SizedBox(width: Space.xs),
+          ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  example.name,
+                  style: full ? OrbisText.label : OrbisText.title,
+                ),
+                if (!full) ...[
+                  const SizedBox(height: 2),
+                  Text(example.blurb, style: OrbisText.caption),
+                ],
+              ],
+            ),
+          ),
+          if (!full) ...[
+            _Sider(
+              open: listing,
+              tooltip: listing ? 'Hide the list' : 'Show the list',
+              icon: Icons.view_sidebar_outlined,
+              onTap: () => onListing(!listing),
+            ),
+            _Sider(
+              open: settings,
+              tooltip: settings ? 'Hide the settings' : 'Show the settings',
+              // The same glyph turned over, because it is the same control
+              // for the other side and two unrelated icons would suggest two
+              // unrelated things.
+              icon: Icons.view_sidebar_outlined,
+              flipped: true,
+              onTap: () => onSettings(!settings),
+            ),
+          ],
+          _Sider(
+            open: full,
+            tooltip: full ? 'Leave the full view' : 'Fill the window',
+            icon: full ? Icons.close_fullscreen : Icons.open_in_full,
+            onTap: () => onFull(!full),
+          ),
         ],
       ),
+    );
+  }
+}
+
+/// One of the little toggles along the title row.
+class _Sider extends StatelessWidget {
+  const _Sider({
+    required this.open,
+    required this.tooltip,
+    required this.icon,
+    required this.onTap,
+    this.flipped = false,
+  });
+
+  final bool open;
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool flipped;
+
+  @override
+  Widget build(BuildContext context) {
+    final glyph = Icon(
+      icon,
+      size: 17,
+      color: open ? OrbisColors.ink : OrbisColors.inkDim,
+    );
+
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onTap,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      padding: EdgeInsets.zero,
+      icon: flipped
+          ? Transform.flip(flipX: true, child: glyph)
+          : glyph,
     );
   }
 }

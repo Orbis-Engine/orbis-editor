@@ -133,4 +133,54 @@ void main() {
     await show(tester);
     expect(find.byIcon(Icons.info_outline), findsNothing);
   });
+
+  group('the example view fills the window', () {
+    testWidgets('the sides can be shut, one at a time', (tester) async {
+      await show(tester);
+
+      final examples = engineExamples();
+      // The list is there to begin with: every example is named in it.
+      expect(find.text(examples[1].name), findsWidgets);
+
+      await tester.tap(find.byTooltip('Hide the list'));
+      await tester.pump();
+      expect(
+        find.text(examples[1].name),
+        findsNothing,
+        reason: 'the list of the others should have gone',
+      );
+
+      // The settings panel is the other side, and shuts on its own.
+      expect(find.byTooltip('Hide the settings'), findsOneWidget);
+      await tester.tap(find.byTooltip('Hide the settings'));
+      await tester.pump();
+      expect(find.byTooltip('Show the settings'), findsOneWidget);
+      expect(find.byTooltip('Show the list'), findsOneWidget);
+    });
+
+    testWidgets('filling the window leaves a way back', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1400, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      var full = false;
+      await tester.pumpWidget(MaterialApp(home: Scaffold(
+        body: ExamplesView(onFull: (value) => full = value),
+      )));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Fill the window'));
+      await tester.pump();
+
+      expect(full, isTrue, reason: 'whatever is around it has to be told');
+      // Both sides go with it, and the way back is where a project puts it.
+      expect(find.byTooltip('Hide the list'), findsNothing);
+      expect(find.byTooltip('Back to the examples'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Back to the examples'));
+      await tester.pump();
+
+      expect(full, isFalse);
+      expect(find.byTooltip('Hide the list'), findsOneWidget);
+    });
+  });
 }

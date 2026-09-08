@@ -340,14 +340,14 @@ packages:
       path: "../orbis/packages/orbis_examples"
       relative: true
     source: path
-    version: "0.11.0"
+    version: "0.12.0"
   orbis_filament:
     dependency: "direct main"
     description:
       path: "../orbis/packages/orbis_filament"
       relative: true
     source: path
-    version: "0.8.0"
+    version: "0.9.0"
   orbis_light:
     dependency: "direct main"
     description:
@@ -369,6 +369,13 @@ packages:
       relative: true
     source: path
     version: "0.1.1"
+  orbis_noise:
+    dependency: transitive
+    description:
+      path: "../orbis/packages/orbis_noise"
+      relative: true
+    source: path
+    version: "0.1.0"
   orbis_ui:
     dependency: "direct main"
     description:

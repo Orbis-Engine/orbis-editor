@@ -37,6 +37,13 @@ class LauncherScreen extends StatefulWidget {
 }
 
 class _LauncherScreenState extends State<LauncherScreen> {
+  /// Whether an example has asked for the whole window.
+  ///
+  /// The rail goes with it. A full view of a scene with a navigation rail
+  /// down the side of it is not a full view, and the way back is the button
+  /// the example view puts where a project puts its own.
+  bool _full = false;
+
   final ProjectStore _store = ProjectStore();
   _View _view = _View.projects;
   List<Project> _recents = const [];
@@ -85,11 +92,12 @@ class _LauncherScreenState extends State<LauncherScreen> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _Rail(
-            view: _view,
-            onView: (view) => setState(() => _view = view),
-            onOpenFolder: _openFolder,
-          ),
+          if (!_full)
+            _Rail(
+              view: _view,
+              onView: (view) => setState(() => _view = view),
+              onOpenFolder: _openFolder,
+            ),
           Expanded(
             child: Container(
               color: OrbisColors.ground,
@@ -121,7 +129,9 @@ class _LauncherScreenState extends State<LauncherScreen> {
                 // Kept alive behind the other two, so switching away and back
                 // does not restart whatever was running — an example with a
                 // day cycle in it is worth leaving where it was.
-                _View.examples => const ExamplesView(),
+                _View.examples => ExamplesView(
+                    onFull: (full) => setState(() => _full = full),
+                  ),
               },
             ),
           ),
