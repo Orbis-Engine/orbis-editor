@@ -51,6 +51,7 @@ class SceneObject {
     this.receiveShadows = true,
     this.visible = true,
     this.meshAsset,
+    this.materialAsset,
     this.shape,
     this.geometry,
     List<Surface>? surfaces,
@@ -188,6 +189,18 @@ class SceneObject {
   /// honours it once glTF loading exists. Naming it here rather than pretending
   /// to load it keeps the file honest about what the scene says.
   String? meshAsset;
+
+  /// A texture this object is drawn with, as a project-relative path, or null
+  /// to keep whatever its mesh brought.
+  ///
+  /// The case this exists for: asset packs that ship a model and its colour
+  /// map as two files. The glTF names no texture, so the model loads grey,
+  /// and until now the only fix was a round trip through a modelling package
+  /// to bind the two together and export them again. The renderer can do
+  /// that binding itself — a material named on an object overrides the
+  /// materials its file brought, on every primitive — so this records which
+  /// texture, and the scene builds the material from it.
+  String? materialAsset;
 
   /// What this object is, while it is still a shape.
   ///
@@ -400,6 +413,7 @@ class SceneObject {
         receiveShadows: receiveShadows,
         visible: visible,
         meshAsset: meshAsset,
+        materialAsset: materialAsset,
         shape: shape,
         geometry: geometry?.copy(),
         outline: outline?.copy(),
@@ -1200,7 +1214,23 @@ class EditorScene {
         (driven ? sky.ambient : ambient) * (air?.scattered ?? 1) * (1 + flash * 40);
 
     return OrbisScene(
-      materials: [if (grid != null) grid.material],
+      materials: [
+        if (grid != null) grid.material,
+        // One material per distinct texture rather than one per object, keyed
+        // by the texture so two objects sharing a colour map share the
+        // instance — and so the key is stable from frame to frame, which is
+        // what lets the renderer keep the instance rather than rebuild it.
+        for (final texture in {
+          for (final scene in [this, ?shared])
+            for (final object in scene._objects)
+              if (object.isDrawable && object.materialAsset != null)
+                _resolveMesh(object.materialAsset, projectRoot)!,
+        })
+          OrbisMaterial(
+            key: _materialKeyOf(texture),
+            baseColourMap: OrbisTexture(texture),
+          ),
+      ],
       objects: [
         // First, so it is under everything in the list as well as in the
         // world. Not a scene object: it is never saved, never selected and
@@ -1224,6 +1254,10 @@ class EditorScene {
                       object.meshAsset,
                   projectRoot,
                 ),
+                material: object.materialAsset == null
+                    ? null
+                    : _materialKeyOf(
+                        _resolveMesh(object.materialAsset, projectRoot)!),
                 castShadows: object.castShadows,
                 receiveShadows: object.receiveShadows,
                 visible: scene.isShown(object.id),
@@ -1621,6 +1655,15 @@ class EditorScene {
   }
 
   /// A stored mesh reference as a path the renderer can open.
+  /// The key a texture's material is kept under.
+  ///
+  /// Derived from the path rather than handed out in order, because the
+  /// renderer keeps a material for as long as its key is mentioned: a key
+  /// that shifted when another object lost its texture would rebuild every
+  /// instance after it. Non-negative, because the grid's material sits below
+  /// zero and must not collide.
+  static int _materialKeyOf(String texture) => texture.hashCode & 0x3fffffff;
+
   static String? _resolveMesh(String? reference, String? root) {
     if (reference == null) return null;
     if (root == null || p.isAbsolute(reference)) return reference;

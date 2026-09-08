@@ -1822,6 +1822,41 @@ class _EditorShellState extends State<EditorShell> {
     });
   }
 
+  /// Puts a texture on the selected object.
+  ///
+  /// The case this is for is an asset pack that ships a model and its colour
+  /// map as separate files: the model loads grey, because its file names no
+  /// texture, and the fix used to be a round trip through a modelling package
+  /// to bind the two and export again. The renderer binds them itself — a
+  /// material named on an object overrides whatever its mesh brought — so
+  /// this only has to say which texture.
+  void _applyTexture(String path) {
+    final open = _current;
+    final scene = open?.scene;
+    if (open == null || scene == null) {
+      _say('There is no scene loaded to texture anything in.');
+      return;
+    }
+    final id = _primary;
+    final object = id == null ? null : scene[id];
+    if (object == null) {
+      _say('Select an object first; a texture goes on whatever is selected.');
+      return;
+    }
+    if (!object.isDrawable) {
+      _say('${object.name} is a ${object.kind.name}, and has nothing to '
+          'draw a texture on.');
+      return;
+    }
+    _run(SetMaterialAsset(
+      sceneId: open.id,
+      id: object.id,
+      name: object.name,
+      from: object.materialAsset,
+      to: _assets.relative(path),
+    ));
+  }
+
   void _dropAsset(String path) {
     final kind = AssetKind.of(path);
 
@@ -1841,9 +1876,14 @@ class _EditorShellState extends State<EditorShell> {
       _putInterfaceOnScene(path);
       return;
     }
+    if (kind == AssetKind.texture) {
+      _applyTexture(path);
+      return;
+    }
     if (kind != AssetKind.mesh) {
       _say('${p.basename(path)} is a ${kind.label.toLowerCase()}. '
-          'Meshes, prefabs and scenes are what a scene takes.');
+          'Meshes, prefabs and scenes are what a scene takes; a texture '
+          'goes on whatever is selected.');
       return;
     }
 
@@ -2087,6 +2127,10 @@ class _EditorShellState extends State<EditorShell> {
             }
             if (asset.kind == AssetKind.canvas) {
             _openInterface(asset.path);
+            return;
+            }
+            if (asset.kind == AssetKind.texture) {
+            _applyTexture(asset.path);
             return;
             }
             const editable = {

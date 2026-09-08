@@ -187,6 +187,39 @@ class SetColour extends EditorCommand {
   void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.colour = from;
 }
 
+/// Gives an object a texture, or takes one away.
+///
+/// The texture is the material, for now: a colour map is what an asset pack
+/// ships separately from its model, and binding the two is the whole job.
+class SetMaterialAsset extends EditorCommand {
+  SetMaterialAsset({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  final String? from;
+  final String? to;
+
+  @override
+  String get label => to == null ? 'Clear texture on $name' : 'Texture $name';
+
+  @override
+  void apply(SceneHost host) =>
+      host.sceneFor(sceneId)?[id]?.materialAsset = to;
+
+  @override
+  void revert(SceneHost host) =>
+      host.sceneFor(sceneId)?[id]?.materialAsset = from;
+}
+
 /// Changes a light's power, in watts.
 class SetPower extends EditorCommand {
   SetPower({

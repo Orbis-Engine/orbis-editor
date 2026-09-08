@@ -408,7 +408,7 @@ void main() {
     expect(find.textContaining('Add crate'), findsOneWidget);
   });
 
-  testWidgets('a texture dragged in is refused with a reason', (tester) async {
+  Future<void> dropTexture(WidgetTester tester) async {
     Directory(p.join(root.path, 'assets')).createSync();
     File(p.join(root.path, 'assets', 'rock.png')).writeAsBytesSync([1]);
 
@@ -425,9 +425,42 @@ void main() {
     await tester.pump();
     await gesture.up();
     await tester.pumpAndSettle();
+  }
 
-    expect(find.textContaining('Meshes, prefabs and scenes'), findsOneWidget);
+  testWidgets('a texture dragged in with nothing selected says what to do',
+      (tester) async {
+    await dropTexture(tester);
+
+    expect(find.textContaining('Select an object first'), findsOneWidget);
+    // And nothing was added: a texture is not a thing that stands on its own.
     expect(row('rock'), findsNothing);
+  });
+
+  testWidgets('a texture dragged in goes on the selected object',
+      (tester) async {
+    Directory(p.join(root.path, 'assets')).createSync();
+    File(p.join(root.path, 'assets', 'rock.png')).writeAsBytesSync([1]);
+
+    await open(tester);
+    await tester.tap(row('Crate'));
+    await tester.pumpAndSettle();
+    await openFolder(tester, 'assets');
+
+    final tile = find.descendant(
+      of: find.byType(GridView),
+      matching: find.text('rock.png'),
+    );
+    final gesture = await tester.startGesture(tester.getCenter(tile));
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.moveTo(tester.getCenter(find.byType(SceneViewport)));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // The inspector, still on the crate, now names the texture.
+    expect(find.text('Texture'), findsOneWidget);
+    expect(find.textContaining('rock.png'), findsWidgets);
+    expect(find.textContaining('Select an object first'), findsNothing);
   });
 
   testWidgets('F frames the selection', (tester) async {
@@ -1847,7 +1880,7 @@ void main() {
       // will still see it.
       await tester.tap(find.text('CONSOLE'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Meshes, prefabs and scenes'), findsWidgets);
+      expect(find.textContaining('Select an object first'), findsWidgets);
     });
 
     testWidgets('it can be cleared', (tester) async {

@@ -1530,6 +1530,50 @@ class _Fields extends StatelessWidget {
               label: 'Mesh',
               value: object.meshAsset ?? 'cube (built in)',
             ),
+            // Set by dropping a texture on the object, or opening one with the
+            // object selected; only cleared from here. A picker would be the
+            // obvious thing, and the browser is already a picker.
+            FieldRow(
+              label: 'Texture',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      height: 24,
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: Space.sm),
+                      alignment: Alignment.centerLeft,
+                      decoration: BoxDecoration(
+                        color: OrbisColors.raised,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        object.materialAsset ?? "the mesh's own",
+                        style: OrbisText.monoValue.copyWith(fontSize: 11),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  if (object.materialAsset != null)
+                    GestureDetector(
+                      onTap: () => history
+                        ..run(SetMaterialAsset(
+                          sceneId: sceneId,
+                          id: object.id,
+                          name: object.name,
+                          from: object.materialAsset,
+                          to: null,
+                        ))
+                        ..seal(),
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: Space.xs),
+                        child: Icon(Icons.close, size: 14,
+                            color: OrbisColors.inkDim),
+                      ),
+                    ),
+                ],
+              ),
+            ),
             Padding(
               padding:
                   const EdgeInsets.fromLTRB(Space.md, Space.xs, Space.md, 0),
