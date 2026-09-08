@@ -18,6 +18,7 @@ void main() {
         ..rotation.setValues(-40, 15.5, 90)
         ..scale.setValues(2, 0.5, 3)
         ..meshAsset = 'assets/meshes/crate.glb'
+        ..materialAsset = 'assets/textures/colormap.png'
         ..castShadows = false;
       before.invalidate();
 
@@ -32,6 +33,7 @@ void main() {
         expect(copy.colour.toARGB32(), original.colour.toARGB32());
         expect(copy.castShadows, original.castShadows);
         expect(copy.meshAsset, original.meshAsset);
+        expect(copy.materialAsset, original.materialAsset);
         for (final pair in [
           (copy.position, original.position),
           (copy.rotation, original.rotation),

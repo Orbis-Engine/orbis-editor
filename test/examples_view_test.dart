@@ -24,8 +24,26 @@ void main() {
 
       final expected = engineExamples();
       expect(expected, isNotEmpty);
+      // Scrolled to, not merely looked for. The list builds rows lazily, so
+      // an example below the fold is not in the tree until it is scrolled
+      // into view — and asserting on it without scrolling would fail for
+      // exactly the examples most recently added.
+      // Scoped to the list. The example on show is named twice — once in
+      // the list and once as the title over the viewport — and scrolling to
+      // a finder that matches both is a "too many elements" rather than a
+      // scroll.
+      final list = find.byType(ListView).first;
       for (final example in expected) {
-        expect(find.text(example.name), findsWidgets,
+        final inList = find.descendant(
+          of: list,
+          matching: find.text(example.name),
+        );
+        await tester.scrollUntilVisible(inList, 120,
+            scrollable: find.descendant(
+              of: list,
+              matching: find.byType(Scrollable),
+            ));
+        expect(inList, findsOneWidget,
             reason: '${example.name} is missing from the list');
       }
     });

@@ -128,6 +128,7 @@ abstract final class SceneDocument {
         // the file and out of everybody's diffs.
         if (!object.visible) 'visible': false,
         if (object.meshAsset != null) 'mesh': object.meshAsset,
+        if (object.materialAsset != null) 'material': object.materialAsset,
         if (object.interfaceAsset != null) 'interface': object.interfaceAsset,
         // A shape is a handful of numbers and its geometry is thousands, so
         // only the one that is true is written. An edited shape keeps its
@@ -232,6 +233,8 @@ abstract final class SceneDocument {
       receiveShadows: flag('receiveShadows'),
       visible: flag('visible'),
       meshAsset: entry['mesh'] is String ? entry['mesh']! as String : null,
+      materialAsset:
+          entry['material'] is String ? entry['material']! as String : null,
       interfaceAsset:
           entry['interface'] is String ? entry['interface']! as String : null,
       shape: Shape.fromJson(entry['shape']),
