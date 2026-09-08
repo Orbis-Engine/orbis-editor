@@ -51,8 +51,8 @@ jobs:
       - name: Cache Filament SDK
         uses: actions/cache@v4
         with:
-          path: orbis/packages/orbis_filament/macos/third_party
-          key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/macos/setup.sh') }}
+          path: orbis/packages/orbis_filament/darwin/third_party
+          key: filament-${{ runner.os }}-${{ hashFiles('orbis/packages/orbis_filament/darwin/setup.sh') }}
 
       # Fetches the Filament SDK and compiles the materials into the C
       # arrays the renderer includes. This runs from the podspec's
@@ -62,7 +62,7 @@ jobs:
       # runs it and the build fails on a missing generated header. It is
       # idempotent, so calling it here is free when the cache is warm.
       - name: Fetch Filament and compile materials
-        run: bash orbis/packages/orbis_filament/macos/setup.sh
+        run: bash orbis/packages/orbis_filament/darwin/setup.sh
 
       - name: Analyze and test
         working-directory: orbis-editor
