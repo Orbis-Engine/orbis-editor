@@ -258,6 +258,44 @@ class SetPower extends EditorCommand {
   void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.power = from;
 }
 
+/// Changes how much an object answers the wind.
+class SetSway extends EditorCommand {
+  SetSway({
+    required this.sceneId,
+    required this.id,
+    required this.name,
+    required this.from,
+    required this.to,
+  });
+
+  @override
+  final String sceneId;
+
+  final String id;
+  final String name;
+  final double from;
+
+  /// Not final: a merged run of drags rewrites where it ends up.
+  double to;
+
+  @override
+  String get label => to <= 0 ? 'Stop $name swaying' : 'Set $name sway';
+
+  @override
+  Object? get mergeKey => (id, 'sway');
+
+  @override
+  void absorb(EditorCommand later) {
+    if (later is SetSway) to = later.to;
+  }
+
+  @override
+  void apply(SceneHost host) => host.sceneFor(sceneId)?[id]?.sway = to;
+
+  @override
+  void revert(SceneHost host) => host.sceneFor(sceneId)?[id]?.sway = from;
+}
+
 /// Changes what kind of light an object is.
 ///
 /// The power comes with it, because the units change with the type: a sun is

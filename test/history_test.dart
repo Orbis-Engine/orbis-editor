@@ -57,6 +57,31 @@ void main() {
       expect(scene['cube']!.position.x, 0);
     });
 
+    test('a whole drag of the sway slider is one undo step', () {
+      final rig = open();
+      final scene = rig.scene;
+      final history = rig.history;
+
+      // What a drag actually sends: a command per frame the slider moved.
+      for (var i = 1; i <= 20; i++) {
+        history.run(SetSway(
+          sceneId: 'a',
+          id: 'cube',
+          name: 'Cube',
+          from: scene['cube']!.sway,
+          to: i / 20,
+        ));
+      }
+
+      expect(history.labels, ['Set Cube sway']);
+      expect(scene['cube']!.sway, closeTo(1, 1e-9));
+
+      history.undo();
+      // Back to rigid, which is where the drag began — not to the frame
+      // before it ended.
+      expect(scene['cube']!.sway, 0);
+    });
+
     test('sealing ends the run, so two drags are two steps', () {
       final rig = open();
       final scene = rig.scene;

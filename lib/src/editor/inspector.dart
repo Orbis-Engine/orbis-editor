@@ -1526,6 +1526,24 @@ class _Fields extends StatelessWidget {
                   ..seal();
               },
             ),
+            // Nought for anything rigid, which is almost everything — so the
+            // row reads as off rather than as a number somebody has to
+            // interpret. Only the weather decides how hard it blows; this is
+            // how much this object answers.
+            SliderRow(
+              label: 'Sway',
+              value: object.sway,
+              min: 0,
+              max: 1,
+              onChanged: (value) => history.run(SetSway(
+                sceneId: sceneId,
+                id: object.id,
+                name: object.name,
+                from: object.sway,
+                to: value,
+              )),
+              onSettled: history.seal,
+            ),
             TextRow(
               label: 'Mesh',
               value: object.meshAsset ?? 'cube (built in)',
