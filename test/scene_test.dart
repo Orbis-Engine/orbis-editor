@@ -72,7 +72,7 @@ void main() {
       expect(bulb.falloffRadius, greaterThan(0));
     });
 
-    test('an area light arrives as a point of the same power', () {
+    test('an area light arrives as a rectangle, not as a point', () {
       final scene = EditorScene([
         SceneObject(
           id: 'panel',
@@ -86,10 +86,36 @@ void main() {
 
       final light =
           scene.toRenderScene(OrbitCamera().toRenderCamera()).lights.single;
-      expect(light.kind, OrbisLightKind.point);
-      // Not a point source, though: it keeps a width, so it still casts a
-      // penumbra of about the right size.
-      expect(light.sourceRadius, greaterThan(0.2));
+
+      // It used to arrive as a point with a wide source, because the renderer
+      // had nowhere to put a rectangle. It has one now, and the difference is
+      // not cosmetic: a point of the same power is integrated against a
+      // direction, a rectangle against its own area, so the shape of the
+      // highlight and the gradient of the shadow edge both come out of the
+      // panel's proportions rather than out of one radius.
+      expect(light.kind, OrbisLightKind.area);
+      expect(light.intensity, closeTo(100 * 683, 1));
+    });
+
+    test('a light that has no size is still given one', () {
+      // `orbis_light` leaves width and height at zero for every kind that has
+      // no size, and zero would reach the renderer as a panel with no area to
+      // integrate — a light that emits nothing. Anything that is not an area
+      // light carries the renderer's own default instead.
+      final scene = EditorScene([
+        SceneObject(
+          id: 'bulb',
+          name: 'Bulb',
+          kind: ObjectKind.light,
+          lightType: LightType.point,
+          power: 100,
+        ),
+      ]);
+
+      final light =
+          scene.toRenderScene(OrbitCamera().toRenderCamera()).lights.single;
+      expect(light.width, greaterThan(0));
+      expect(light.height, greaterThan(0));
     });
 
     test('hiding a group hides what is inside it', () {

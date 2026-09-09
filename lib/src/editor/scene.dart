@@ -1635,6 +1635,7 @@ class EditorScene {
         RendererLightKind.directional => OrbisLightKind.directional,
         RendererLightKind.point => OrbisLightKind.point,
         RendererLightKind.spot => OrbisLightKind.spot,
+        RendererLightKind.area => OrbisLightKind.area,
       },
       colour: light.color,
       intensity: light.intensity,
@@ -1651,6 +1652,12 @@ class EditorScene {
       haloSize: isMoon ? 3 : 12,
       haloFalloff: isMoon ? 240 : 70,
       castShadows: light.castShadows,
+      // Only an area light has a size, and `orbis_light` leaves both at zero
+      // for the kinds that do not. Passing that zero through would give the
+      // renderer a panel with no area to integrate, which is a light that
+      // emits nothing — so the renderer's own default stands in instead.
+      width: light.width > 0 ? light.width : 1,
+      height: light.height > 0 ? light.height : 1,
     );
   }
 
