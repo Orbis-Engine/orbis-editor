@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -159,7 +162,13 @@ class _ExamplesViewState extends State<ExamplesView>
                             left: Space.md,
                             bottom: Space.md,
                             right: Space.md,
-                            child: _Note(saying: saying),
+                            child: _Note(
+                              saying: saying,
+                              needs: _showing.needs,
+                              fetching: _fetching,
+                              progress: _progress,
+                              onFetch: _fetch,
+                            ),
                           ),
                       ],
                     ),
@@ -181,6 +190,71 @@ class _ExamplesViewState extends State<ExamplesView>
   }
 
   void _changed() => setState(() {});
+
+  /// Whether a download is running, and the last thing it said.
+  bool _fetching = false;
+  String _progress = '';
+
+  /// Runs the command an example says will fetch what it is missing.
+  ///
+  /// The example describes; this decides. An example that ran a download
+  /// itself would be one that cannot be shown on a machine where downloading
+  /// is somebody else's call — and seven hundred megabytes is exactly the
+  /// kind of thing somebody should be asked about rather than told.
+  Future<void> _fetch(Downloadable needs) async {
+    if (_fetching) return;
+    setState(() {
+      _fetching = true;
+      _progress = 'starting';
+    });
+
+    try {
+      // The engine repository, which is where the fetch scripts live and what
+      // their paths are relative to. Beside this one, in the same way the
+      // examples already find their assets.
+      final root = Directory('${Directory.current.path}/../orbis');
+      if (!root.existsSync()) {
+        setState(() => _progress = 'no engine repository beside this one');
+        return;
+      }
+
+      final running = await Process.start(
+        needs.command.first,
+        needs.command.skip(1).toList(),
+        workingDirectory: root.path,
+      );
+
+      // Shown as it arrives rather than at the end. A download of this size
+      // with no sign of life is one somebody kills.
+      running.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((
+        line,
+      ) {
+        if (mounted && line.trim().isNotEmpty) {
+          setState(() => _progress = line.trim());
+        }
+      });
+      running.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((
+        line,
+      ) {
+        if (mounted && line.trim().isNotEmpty) {
+          setState(() => _progress = line.trim());
+        }
+      });
+
+      final code = await running.exitCode;
+      if (!mounted) return;
+      setState(() {
+        _progress = code == 0 ? 'done' : 'the fetch failed ($code)';
+        // Cleared so the scene is asked for again: the renderer remembers a
+        // file it could not read, and the note goes when the file arrives.
+        if (code == 0) _showing.note = null;
+      });
+    } on ProcessException catch (problem) {
+      if (mounted) setState(() => _progress = problem.message);
+    } finally {
+      if (mounted) setState(() => _fetching = false);
+    }
+  }
 
   Widget _stage() {
     return Listener(
@@ -540,15 +614,28 @@ class _OnlyOnMac extends StatelessWidget {
 
 /// Something the renderer could not do, said over the scene.
 class _Note extends StatelessWidget {
-  const _Note({required this.saying});
+  const _Note({
+    required this.saying,
+    required this.needs,
+    required this.fetching,
+    required this.progress,
+    required this.onFetch,
+  });
 
   final String saying;
+  final Downloadable? needs;
+  final bool fetching;
+  final String progress;
+  final ValueChanged<Downloadable> onFetch;
 
   @override
   Widget build(BuildContext context) {
+    final wanted = needs;
+
     return Align(
       alignment: Alignment.bottomLeft,
       child: Container(
+        constraints: const BoxConstraints(maxWidth: 460),
         padding: const EdgeInsets.symmetric(
           horizontal: Space.md,
           vertical: Space.sm,
@@ -558,17 +645,63 @@ class _Note extends StatelessWidget {
           borderRadius: BorderRadius.circular(Radii.control),
           border: Border.all(color: OrbisColors.ember.withValues(alpha: 0.4)),
         ),
-        child: Row(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.info_outline, size: 15, color: OrbisColors.ember),
-            const SizedBox(width: Space.sm),
-            Flexible(
-              child: Text(
-                saying,
-                style: OrbisText.body.copyWith(fontSize: 12),
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.info_outline,
+                  size: 15,
+                  color: OrbisColors.ember,
+                ),
+                const SizedBox(width: Space.sm),
+                Flexible(
+                  child: Text(
+                    saying,
+                    style: OrbisText.body.copyWith(fontSize: 12),
+                  ),
+                ),
+              ],
             ),
+            if (wanted != null) ...[
+              const SizedBox(height: Space.sm),
+              // What it is and what it costs, before the button rather than
+              // after it. A download button that does not say what it fetches,
+              // how big it is, or whose it is, is one nobody should press.
+              Text(
+                '${wanted.what} — ${wanted.size}\n'
+                '${wanted.from} · ${wanted.licence}',
+                style: OrbisText.caption.copyWith(fontSize: 11, height: 1.4),
+              ),
+              const SizedBox(height: Space.sm),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FilledButton.icon(
+                    onPressed: fetching ? null : () => onFetch(wanted),
+                    icon: Icon(
+                      fetching ? Icons.hourglass_top : Icons.download,
+                      size: 16,
+                    ),
+                    label: Text(fetching ? 'Fetching' : 'Download'),
+                  ),
+                  if (progress.isNotEmpty) ...[
+                    const SizedBox(width: Space.md),
+                    Flexible(
+                      child: Text(
+                        progress,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: OrbisText.caption.copyWith(fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ],
         ),
       ),

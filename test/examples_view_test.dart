@@ -183,4 +183,49 @@ void main() {
       expect(find.byTooltip('Hide the list'), findsOneWidget);
     });
   });
+
+  testWidgets('an example that needs a download offers one', (tester) async {
+    // The note alone leaves somebody reading "the file could not be read"
+    // with nothing to do about it. What is useful next to that is a button —
+    // and one that says what it fetches, how big it is and whose it is,
+    // because a download button that says none of those is one nobody should
+    // press.
+    final examples = engineExamples();
+    final needy = examples.firstWhere((e) => e.needs != null);
+    needy.note = 'The file could not be read.';
+
+    await tester.binding.setSurfaceSize(const Size(1500, 950));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      theme: orbisTheme(),
+      home: Scaffold(body: ExamplesView(examples: [needy])),
+    ));
+    await tester.pump();
+
+    expect(find.text('Download'), findsOneWidget);
+    expect(find.textContaining(needy.needs!.size), findsOneWidget);
+    expect(
+      find.textContaining(needy.needs!.licence),
+      findsOneWidget,
+      reason: 'whose it is belongs beside the button, not in a readme',
+    );
+  });
+
+  testWidgets('an example that needs nothing offers no download',
+      (tester) async {
+    final examples = engineExamples();
+    final happy = examples.firstWhere((e) => e.needs == null);
+    happy.note = 'Something else went wrong.';
+
+    await tester.binding.setSurfaceSize(const Size(1500, 950));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+      theme: orbisTheme(),
+      home: Scaffold(body: ExamplesView(examples: [happy])),
+    ));
+    await tester.pump();
+
+    expect(find.textContaining('Something else went wrong'), findsOneWidget);
+    expect(find.text('Download'), findsNothing);
+  });
 }
