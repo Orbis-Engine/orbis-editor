@@ -72,6 +72,126 @@ void main() {
       expect(bulb.falloffRadius, greaterThan(0));
     });
 
+    test('a surface that sways takes the wind from the weather', () {
+      final scene = EditorScene([
+        SceneObject(
+          id: 'air',
+          name: 'Weather',
+          kind: ObjectKind.weather,
+          condition: WeatherCondition.storm,
+          windDirection: 90,
+        ),
+        SceneObject(
+          id: 'hedge',
+          name: 'Hedge',
+          kind: ObjectKind.mesh,
+          materialAsset: 'leaves.png',
+          sway: 1,
+        ),
+      ]);
+
+      final material = scene
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .materials
+          .single;
+
+      // The bearing comes from the weather object and the speed from the
+      // condition, so the trees lean the way the rain already falls.
+      expect(material.wind.moves, isTrue);
+      expect(material.wind.bearing, 90);
+      expect(material.wind.strength, 1);
+      expect(material.wind.speed, greaterThan(0));
+    });
+
+    test('a scene with no weather leaves everything rigid', () {
+      final scene = EditorScene([
+        SceneObject(
+          id: 'hedge',
+          name: 'Hedge',
+          kind: ObjectKind.mesh,
+          materialAsset: 'leaves.png',
+          sway: 1,
+        ),
+      ]);
+
+      final material = scene
+          .toRenderScene(OrbitCamera().toRenderCamera())
+          .materials
+          .single;
+
+      // Nothing is doing any weather, so there is no wind to answer — and a
+      // surface that claims to sway in still air would sway for ever.
+      expect(material.wind, OrbisWind.none);
+    });
+
+    test('one texture on two swaying differently is two materials', () {
+      // The trap this guards: materials used to be keyed by texture alone, so
+      // the trunk and the canopy cut from the same bark would have shared one
+      // instance — and whichever was built second would have decided how both
+      // of them moved.
+      final scene = EditorScene([
+        SceneObject(
+          id: 'air',
+          name: 'Weather',
+          kind: ObjectKind.weather,
+          condition: WeatherCondition.storm,
+        ),
+        SceneObject(
+          id: 'trunk',
+          name: 'Trunk',
+          kind: ObjectKind.mesh,
+          materialAsset: 'bark.png',
+          sway: 0.1,
+        ),
+        SceneObject(
+          id: 'canopy',
+          name: 'Canopy',
+          kind: ObjectKind.mesh,
+          materialAsset: 'bark.png',
+          sway: 1,
+        ),
+      ]);
+
+      final rendered = scene.toRenderScene(OrbitCamera().toRenderCamera());
+      expect(rendered.materials.length, 2);
+
+      final strengths = rendered.materials
+          .map((m) => m.wind.strength)
+          .toList()
+        ..sort();
+      expect(strengths, [0.1, 1]);
+
+      // And each object names the one that describes it.
+      final trunk = rendered.objects
+          .firstWhere((o) => o.key == scene['trunk']!.renderKey);
+      final canopy = rendered.objects
+          .firstWhere((o) => o.key == scene['canopy']!.renderKey);
+      expect(trunk.material, isNot(canopy.material));
+    });
+
+    test('two rigid objects on one texture still share a material', () {
+      // The other half of the same rule: keying by more than the texture must
+      // not stop the ordinary case from sharing, or a scene of a hundred
+      // identical crates becomes a hundred material instances.
+      final scene = EditorScene([
+        SceneObject(
+          id: 'a',
+          name: 'A',
+          kind: ObjectKind.mesh,
+          materialAsset: 'crate.png',
+        ),
+        SceneObject(
+          id: 'b',
+          name: 'B',
+          kind: ObjectKind.mesh,
+          materialAsset: 'crate.png',
+        ),
+      ]);
+
+      final rendered = scene.toRenderScene(OrbitCamera().toRenderCamera());
+      expect(rendered.materials.length, 1);
+    });
+
     test('an area light arrives as a rectangle, not as a point', () {
       final scene = EditorScene([
         SceneObject(
