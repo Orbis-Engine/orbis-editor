@@ -863,6 +863,10 @@ class _EditorShellState extends State<EditorShell> {
   /// Whether the interface is drawn over the viewport.
   bool _showInterface = true;
 
+  /// Whether the renderer outlines the selection, or the boundaries are drawn
+  /// over the picture instead. Held here so every viewport agrees.
+  bool _outlineSelection = true;
+
 
   /// Everything the editor has said. Kept, rather than shown for four seconds
   /// in a corner and lost.
@@ -2095,6 +2099,10 @@ class _EditorShellState extends State<EditorShell> {
             showInterface: _showInterface,
             onToggleInterface: () => setState(
             () => _showInterface = !_showInterface,
+            ),
+            outlineSelection: _outlineSelection,
+            onToggleOutline: () => setState(
+              () => _outlineSelection = !_outlineSelection,
             ),
             previewOf: (camera) => GameView(
               workspace: _workspace,
