@@ -47,6 +47,7 @@ class SceneObject {
     this.cloudKind,
     this.windDirection = 135,
     this.transitionSeconds = 8,
+    this.sway = 0,
     this.castShadows = true,
     this.receiveShadows = true,
     this.visible = true,
@@ -149,6 +150,15 @@ class SceneObject {
 
   /// How long a change of condition takes to arrive, in seconds.
   double transitionSeconds;
+
+  /// How much this object answers the wind, where nought is rigid.
+  ///
+  /// On the object rather than on the weather, because it is a fact about the
+  /// thing rather than about the air: the same gust moves a canopy and leaves
+  /// a wall alone. One is foliage, a quarter is a heavy branch, nought is
+  /// everything that does not move — which is almost everything, and is why
+  /// it is the default.
+  double sway;
 
   /// The weather this object is on its way from, and when it set off.
   ///
@@ -409,6 +419,7 @@ class SceneObject {
         cloudKind: cloudKind,
         windDirection: windDirection,
         transitionSeconds: transitionSeconds,
+        sway: sway,
         castShadows: castShadows,
         receiveShadows: receiveShadows,
         visible: visible,
@@ -1188,6 +1199,10 @@ class EditorScene {
     // the two has one.
     final lit = celestial ?? shared?.celestial;
     final air = weatherNow ?? shared?.weatherNow;
+    // Which way it blows, from whichever object is the weather — the same
+    // source the fog and the rain already read, so a scene's trees lean the
+    // way its rain falls.
+    final bearing = (weather ?? shared?.weather)?.windDirection ?? 135;
     final flash = air == null || air.lightning <= 0
         ? 0.0
         : WeatherState.flashAt(clock, air.lightning);
@@ -1220,15 +1235,24 @@ class EditorScene {
         // by the texture so two objects sharing a colour map share the
         // instance — and so the key is stable from frame to frame, which is
         // what lets the renderer keep the instance rather than rebuild it.
-        for (final texture in {
+        // Keyed by the texture *and* how much the surface sways, because
+        // two objects sharing a colour map do not necessarily share a
+        // response to the wind: the same bark is on the trunk that barely
+        // moves and the branch that does. Sharing by texture alone would
+        // make one of them wrong.
+        for (final surface in {
           for (final scene in [this, ?shared])
             for (final object in scene._objects)
               if (object.isDrawable && object.materialAsset != null)
-                _resolveMesh(object.materialAsset, projectRoot)!,
+                (
+                  texture: _resolveMesh(object.materialAsset, projectRoot)!,
+                  sway: object.sway,
+                ),
         })
           OrbisMaterial(
-            key: _materialKeyOf(texture),
-            baseColourMap: OrbisTexture(texture),
+            key: _materialKeyOf(surface.texture, surface.sway),
+            baseColourMap: OrbisTexture(surface.texture),
+            wind: _windFor(surface.sway, air, bearing),
           ),
       ],
       objects: [
@@ -1257,7 +1281,9 @@ class EditorScene {
                 material: object.materialAsset == null
                     ? null
                     : _materialKeyOf(
-                        _resolveMesh(object.materialAsset, projectRoot)!),
+                        _resolveMesh(object.materialAsset, projectRoot)!,
+                        object.sway,
+                      ),
                 castShadows: object.castShadows,
                 receiveShadows: object.receiveShadows,
                 visible: scene.isShown(object.id),
@@ -1635,6 +1661,7 @@ class EditorScene {
         RendererLightKind.directional => OrbisLightKind.directional,
         RendererLightKind.point => OrbisLightKind.point,
         RendererLightKind.spot => OrbisLightKind.spot,
+        RendererLightKind.area => OrbisLightKind.area,
       },
       colour: light.color,
       intensity: light.intensity,
@@ -1651,6 +1678,12 @@ class EditorScene {
       haloSize: isMoon ? 3 : 12,
       haloFalloff: isMoon ? 240 : 70,
       castShadows: light.castShadows,
+      // Only an area light has a size, and `orbis_light` leaves both at zero
+      // for the kinds that do not. Passing that zero through would give the
+      // renderer a panel with no area to integrate, which is a light that
+      // emits nothing — so the renderer's own default stands in instead.
+      width: light.width > 0 ? light.width : 1,
+      height: light.height > 0 ? light.height : 1,
     );
   }
 
@@ -1662,7 +1695,16 @@ class EditorScene {
   /// that shifted when another object lost its texture would rebuild every
   /// instance after it. Non-negative, because the grid's material sits below
   /// zero and must not collide.
-  static int _materialKeyOf(String texture) => texture.hashCode & 0x3fffffff;
+  static int _materialKeyOf(String texture, double sway) =>
+      Object.hash(texture, sway) & 0x3fffffff;
+
+  /// The wind a surface of this compliance feels, from whatever the air is
+  /// doing. Still air and a rigid surface both come out as [OrbisWind.none],
+  /// which is the early return in the vertex stage.
+  static OrbisWind _windFor(double sway, WeatherState? air, double bearing) {
+    if (sway <= 0 || air == null || air.windSpeed <= 0) return OrbisWind.none;
+    return OrbisWind(bearing: bearing, speed: air.windSpeed, strength: sway);
+  }
 
   static String? _resolveMesh(String? reference, String? root) {
     if (reference == null) return null;

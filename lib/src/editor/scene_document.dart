@@ -112,6 +112,9 @@ abstract final class SceneDocument {
         if (object.isDrawable) ...{
           'castShadows': object.castShadows,
           'receiveShadows': object.receiveShadows,
+          // Written only when it is set, because almost nothing sways and a
+          // key on every mesh in every scene would be noise in the diff.
+          if (object.sway > 0) 'sway': object.sway,
         },
         if (object.kind == ObjectKind.light) 'castShadows': object.castShadows,
         if (object.kind == ObjectKind.weather) ...{
@@ -228,6 +231,7 @@ abstract final class SceneDocument {
       cloudKind: cloudKind,
       weather: _airFromJson(entry['air'], condition),
       windDirection: number('windDirection', 135),
+      sway: number('sway', 0),
       transitionSeconds: number('transition', 8),
       castShadows: flag('castShadows'),
       receiveShadows: flag('receiveShadows'),
