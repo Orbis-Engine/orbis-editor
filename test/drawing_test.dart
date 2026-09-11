@@ -9,6 +9,7 @@ import 'package:orbis_editor/src/editor/modelling_panel.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
+import 'package:orbis_editor/src/platform/command_shortcuts.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -347,9 +348,9 @@ void main() {
           Vector3(0, 1, 0), top);
       await finish(tester);
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
       await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyUpEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
       await tester.pumpAndSettle();
 
       expect(shapesIn(tester).single.currentMesh!.faceCount, 6);

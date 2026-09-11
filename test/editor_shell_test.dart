@@ -20,6 +20,7 @@ import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
+import 'package:orbis_editor/src/platform/command_shortcuts.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
@@ -129,11 +130,28 @@ void main() {
         matching: find.textContaining(RegExp(r'\.oscene •|Unsaved')),
       );
 
+  // Meta on macOS, Control everywhere else — matched to whatever
+  // commandShortcut actually bound, rather than assuming Meta and leaving
+  // every one of these presses matching nothing once the default test
+  // platform is not macOS (it is not: Flutter's test binding defaults to
+  // Android unless a test says otherwise).
+  final commandKey = commandIsMeta ? LogicalKeyboardKey.meta : LogicalKeyboardKey.control;
+  final commandKeyLeft =
+      commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+
   /// Saves with the keyboard.
   Future<void> save(WidgetTester tester) async {
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyDownEvent(commandKey);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyUpEvent(commandKey);
+    await tester.pumpAndSettle();
+  }
+
+  /// Undoes with the keyboard.
+  Future<void> undo(WidgetTester tester) async {
+    await tester.sendKeyDownEvent(commandKey);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(commandKey);
     await tester.pumpAndSettle();
   }
 
@@ -248,10 +266,7 @@ void main() {
 
     expect(find.text('2.20'), findsNothing, reason: 'the drag did nothing');
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
+    await undo(tester);
 
     expect(find.text('2.20'), findsOneWidget,
         reason: 'one undo should cover the whole drag');
@@ -266,10 +281,7 @@ void main() {
     expect(find.textContaining('Add Group'), findsOneWidget,
         reason: 'the status bar should name the last change');
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
+    await undo(tester);
 
     expect(find.textContaining('Add Group'), findsNothing);
   });
@@ -348,10 +360,7 @@ void main() {
     await add(tester, 'Group');
     expect(unsavedMarker(), findsOneWidget);
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-    await tester.pumpAndSettle();
+    await undo(tester);
 
     // Somebody who changed their mind has not changed the file.
     expect(unsavedMarker(), findsNothing);
@@ -818,9 +827,9 @@ void main() {
   }
 
   Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyDownEvent(commandKey);
     await tester.sendKeyEvent(key);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.sendKeyUpEvent(commandKey);
     await tester.pumpAndSettle();
   }
 
@@ -943,7 +952,7 @@ void main() {
 
     await tester.tap(row('Sun'));
     await tester.pumpAndSettle();
-    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await clickWith(tester, 'Ground', commandKeyLeft);
 
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
@@ -968,8 +977,8 @@ void main() {
 
     await tester.tap(row('Sun'));
     await tester.pumpAndSettle();
-    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
-    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await clickWith(tester, 'Ground', commandKeyLeft);
+    await clickWith(tester, 'Ground', commandKeyLeft);
 
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
@@ -981,7 +990,7 @@ void main() {
 
     await tester.tap(row('Sun'));
     await tester.pumpAndSettle();
-    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await clickWith(tester, 'Ground', commandKeyLeft);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.delete);
     await tester.pumpAndSettle();
@@ -1005,7 +1014,7 @@ void main() {
 
     await tester.tap(row('Sun'));
     await tester.pumpAndSettle();
-    await clickWith(tester, 'Ground', LogicalKeyboardKey.metaLeft);
+    await clickWith(tester, 'Ground', commandKeyLeft);
     await press(tester, LogicalKeyboardKey.keyC);
 
     await loadScene(tester, 'props');
@@ -1146,10 +1155,7 @@ void main() {
       await open(tester);
       await dragToBrowser(tester, 'Cube');
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-      await tester.pumpAndSettle();
+      await undo(tester);
 
       expect(band('Cube.oprefab'), findsNothing);
       // The file stays: undo covers the scene, not the project folder, and
@@ -2518,10 +2524,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(shapeIn(tester).currentMesh!.faces[2].material, 1);
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
-      await tester.pumpAndSettle();
+      await undo(tester);
 
       expect(shapeIn(tester).currentMesh!.faces[2].material, 0);
       expect(shapeIn(tester).surfaces, hasLength(2),

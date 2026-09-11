@@ -8,6 +8,7 @@ import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/scene_document.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
 import 'package:orbis_editor/src/launcher/project.dart';
+import 'package:orbis_editor/src/platform/command_shortcuts.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -123,9 +124,9 @@ void main() {
 
     // Unlike a drag, whose frames merge into one step. Pressing an arrow
     // twice is two things somebody did.
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyUpEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.pumpAndSettle();
 
     expect(where(tester).x, closeTo(step, 1e-9));
