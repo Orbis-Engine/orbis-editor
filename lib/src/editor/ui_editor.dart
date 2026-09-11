@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:path/path.dart' as p;
 
+import '../platform/command_shortcuts.dart';
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'inspector.dart' show FieldRow, SliderRow;
@@ -382,13 +383,15 @@ class _UiEditorState extends State<UiEditor> {
   @override
   Widget build(BuildContext context) {
     return Shortcuts(
-      shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.keyS, meta: true): _SaveIntent(),
-        SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _UndoIntent(),
-        SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true):
-            _RedoIntent(),
-        SingleActivator(LogicalKeyboardKey.delete): _DeleteIntent(),
-        SingleActivator(LogicalKeyboardKey.backspace): _DeleteIntent(),
+      shortcuts: {
+        commandShortcut(LogicalKeyboardKey.keyS): _SaveIntent(),
+        commandShortcut(LogicalKeyboardKey.keyZ): _UndoIntent(),
+        commandShortcut(LogicalKeyboardKey.keyZ, shift: true): _RedoIntent(),
+        if (!commandIsMeta)
+          const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+              _RedoIntent(),
+        const SingleActivator(LogicalKeyboardKey.delete): _DeleteIntent(),
+        const SingleActivator(LogicalKeyboardKey.backspace): _DeleteIntent(),
       },
       child: Actions(
         actions: {

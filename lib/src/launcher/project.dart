@@ -8,6 +8,7 @@ import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../editor/scene.dart';
 import '../editor/scene_document.dart';
+import '../platform/host_paths.dart';
 
 /// What a project looks like on disk.
 ///
@@ -69,7 +70,7 @@ class Project {
   final DateTime lastOpened;
 
   String get displayPath {
-    final home = Platform.environment['HOME'];
+    final home = homeDirectory();
     if (home != null && directory.startsWith(home)) {
       return '~${directory.substring(home.length)}';
     }

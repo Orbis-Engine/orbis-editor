@@ -1,6 +1,5 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -10,6 +9,8 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import '../platform/command_shortcuts.dart';
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'drawing.dart';
@@ -20,6 +21,7 @@ import 'snapping.dart';
 import 'history.dart';
 import 'mesh_edit.dart';
 import 'scene.dart';
+import 'selection_outline.dart';
 import 'ui_canvas.dart';
 import 'workspace.dart';
 
@@ -222,6 +224,8 @@ class SceneViewport extends StatefulWidget {
     this.interface,
     this.showInterface = true,
     this.onToggleInterface,
+    this.outlineSelection = true,
+    this.onToggleOutline,
     this.previewOf,
     this.selected = const {},
     this.onDropAsset,
@@ -351,6 +355,20 @@ class SceneViewport extends StatefulWidget {
   /// Turns that on and off. This is a view setting and not a scene edit —
   /// hiding the canvas object is what hides the interface in the game.
   final VoidCallback? onToggleInterface;
+
+  /// Whether the selection is outlined by the renderer.
+  ///
+  /// On, the renderer draws a line round each selected object's silhouette —
+  /// hidden parts fainter and dashed — and nothing is painted over the
+  /// picture. Off, the object's boundary is drawn over it instead, as it was
+  /// before the renderer could outline: the shape a click or a collision
+  /// meets, which is sometimes the thing being checked rather than where the
+  /// object is.
+  final bool outlineSelection;
+
+  /// Turns that on and off. A view setting, held by the shell so four views
+  /// agree.
+  final VoidCallback? onToggleOutline;
 
   /// What a selected camera sees, shown in the corner.
   ///
@@ -519,6 +537,13 @@ class _SceneViewportState extends State<SceneViewport>
   /// Held down suspends it rather than switching it on, because somebody who
   /// wants a shelf half a millimetre off wants it for one drag and not for
   /// the afternoon.
+  ///
+  /// Deliberately plain Control on every platform rather than routed through
+  /// [isCommandModifierPressed]: this is not a Command shortcut standing in
+  /// for macOS's Meta, it is Control itself, chosen because it sits under the
+  /// same hand as the drag. It does not collide with Control becoming the
+  /// Command modifier off macOS — the two are read at different moments, a
+  /// held key during a drag against a held key when a drag or a click starts.
   Snapping get _snap {
     final held = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isAltPressed;
@@ -578,14 +603,10 @@ class _SceneViewportState extends State<SceneViewport>
               boundsOf: widget.models?.of,
             );
 
-    final modifiers = {
-      LogicalKeyboardKey.shiftLeft,
-      LogicalKeyboardKey.shiftRight,
-      LogicalKeyboardKey.metaLeft,
-      LogicalKeyboardKey.metaRight,
-    };
-    final held = HardwareKeyboard.instance.logicalKeysPressed
-        .any(modifiers.contains);
+    // Command adds to the selection on macOS, Control everywhere else; Shift
+    // does the same on every platform, so it is checked alongside either.
+    final held =
+        HardwareKeyboard.instance.isShiftPressed || isCommandModifierPressed;
 
     widget.onPick?.call(hit, add: held);
   }
@@ -1316,8 +1337,7 @@ class _SceneViewportState extends State<SceneViewport>
     };
   }
 
-  bool get _rendererAvailable =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+  bool get _rendererAvailable => rendererAvailable;
 
   /// What is on screen.
   String get _summary {
@@ -1366,22 +1386,24 @@ class _SceneViewportState extends State<SceneViewport>
                   ),
                 ),
               ),
-            // Drawn in Flutter over the texture rather than as a render pass:
-            // an outline pass in Filament is a real piece of work, and a box
-            // projected with the same camera is honest about where the object
-            // is without pretending to be more than it is.
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _SelectionPainter(
-                    models: widget.models,
-                    workspace: widget.workspace,
-                    selected: widget.selected,
-                    camera: widget.camera,
+            // The selected objects' boundaries, projected over the texture —
+            // only while the renderer's outline is switched off. The outline
+            // follows the silhouette and knows what hides what; this shows the
+            // shape a click or a collision meets, which is worth having back
+            // when that is the thing being checked.
+            if (!widget.outlineSelection)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _SelectionPainter(
+                      models: widget.models,
+                      workspace: widget.workspace,
+                      selected: widget.selected,
+                      camera: widget.camera,
+                    ),
                   ),
                 ),
               ),
-            ),
             // Over the scene and under the handles: an interface is drawn on
             // top of the world in the game, and a gizmo you cannot reach
             // because a heads-up display is over it is a gizmo that does not
@@ -1518,6 +1540,22 @@ class _SceneViewportState extends State<SceneViewport>
                         'go faster. Two fingers or the right button to steer, '
                         'the wheel to change how fast. Escape or ` to stop.',
                     onTap: _toggleFlying,
+                  ),
+                ],
+                // Only while something is selected: it is a switch for how the
+                // selection is shown, and with nothing selected it would change
+                // nothing anybody could see.
+                if (widget.selected.isNotEmpty) ...[
+                  const SizedBox(width: Space.xs),
+                  _ViewportChip(
+                    widget.outlineSelection ? 'Outline' : 'Boundary',
+                    on: widget.outlineSelection,
+                    tooltip: 'How the selection is shown. Outline follows each '
+                        'object\'s silhouette, and draws what something hides '
+                        'fainter and dashed; the active object is the brighter '
+                        'one. Boundary draws the shape a click or a collision '
+                        'meets instead.',
+                    onTap: widget.onToggleOutline,
                   ),
                 ],
                 if (widget.interface != null) ...[
@@ -1715,7 +1753,7 @@ class _SceneViewportState extends State<SceneViewport>
           if (widget.editing != null) {
             widget.onPickElement?.call(
               _elementAt(details.localPosition),
-              add: HardwareKeyboard.instance.isMetaPressed ||
+              add: isCommandModifierPressed ||
                   HardwareKeyboard.instance.isShiftPressed,
             );
             return;
@@ -1765,7 +1803,7 @@ class _SceneViewportState extends State<SceneViewport>
         },
         onPanEnd: (_) {
           if (_boxFrom != null) {
-            _takeBox(HardwareKeyboard.instance.isMetaPressed ||
+            _takeBox(isCommandModifierPressed ||
                 HardwareKeyboard.instance.isShiftPressed);
             setState(() {
               _boxFrom = null;
@@ -1801,6 +1839,18 @@ class _SceneViewportState extends State<SceneViewport>
                   // each get a grid under their own camera rather than one
                   // grid the others have run off the edge of.
                   grid: widget.grid?.planFor(widget.snapping, widget.camera.target),
+                ).copyWith(
+                  // The selection, outlined by the renderer: after tone
+                  // mapping and anti-aliasing, and free when nothing is
+                  // selected.
+                  outline: widget.outlineSelection
+                      ? selectionOutline(
+                          scene: widget.workspace.loaded?.scene,
+                          shared: widget.workspace.shared,
+                          selected: widget.selected,
+                          primary: widget.primary,
+                        )
+                      : OrbisOutline.none,
                 ),
                 onSceneNotes: widget.onSceneNotes,
               ),
@@ -1868,8 +1918,7 @@ class _Placeholder extends StatelessWidget {
               const SizedBox(height: Space.md),
               Text('Viewport', style: OrbisText.label),
               const SizedBox(height: Space.xs),
-              Text('The renderer runs on macOS so far.',
-                  style: OrbisText.caption),
+              Text(rendererUnavailableMessage, style: OrbisText.caption),
             ],
           ),
         ),

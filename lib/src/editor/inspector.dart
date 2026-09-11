@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_light/orbis_light.dart';
 import 'package:orbis_weather/orbis_weather.dart';
+import 'package:path/path.dart' as p;
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 import '../theme/orbis_theme.dart';
@@ -191,7 +192,7 @@ class _PrefabBand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = source.split('/').last;
+    final name = p.basename(source);
 
     return Container(
       padding: const EdgeInsets.symmetric(
@@ -305,7 +306,7 @@ class _DataLink extends StatelessWidget {
               child: GestureDetector(
                 onTap: onOpen,
                 child: Text(
-                  path.split('/').last,
+                  p.basename(path),
                   overflow: TextOverflow.ellipsis,
                   style: OrbisText.label.copyWith(color: OrbisColors.ink),
                 ),
@@ -523,7 +524,7 @@ class _SceneFields extends StatelessWidget {
           child: Text(
             entry.path == null
                 ? 'Not saved to a file yet'
-                : entry.path!.split('/').last,
+                : p.basename(entry.path!),
             overflow: TextOverflow.ellipsis,
             style: OrbisText.mono.copyWith(fontSize: 11),
           ),
@@ -793,7 +794,7 @@ class _Fields extends StatelessWidget {
                           ? null
                           : () => onOpenInterface!(shown),
                       child: Text(
-                        shown.split('/').last,
+                        p.basename(shown),
                         overflow: TextOverflow.ellipsis,
                         style:
                             OrbisText.label.copyWith(color: OrbisColors.ink),

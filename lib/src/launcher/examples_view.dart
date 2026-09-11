@@ -1,13 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:orbis_examples/orbis_examples.dart';
 import 'package:orbis_filament/orbis_filament.dart';
+import 'package:path/path.dart' as p;
 
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 
 /// The engine's worked examples, in the launcher.
@@ -103,8 +104,7 @@ class _ExamplesViewState extends State<ExamplesView>
 
   @override
   Widget build(BuildContext context) {
-    final drawable =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+    final drawable = rendererAvailable;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -145,7 +145,7 @@ class _ExamplesViewState extends State<ExamplesView>
                         Positioned.fill(
                           child: drawable
                               ? _stage()
-                              : const _OnlyOnMac(),
+                              : const _RendererUnavailable(),
                         ),
                         // Whatever an example draws over its scene, which for
                         // most of them is nothing.
@@ -212,7 +212,7 @@ class _ExamplesViewState extends State<ExamplesView>
       // The engine repository, which is where the fetch scripts live and what
       // their paths are relative to. Beside this one, in the same way the
       // examples already find their assets.
-      final root = Directory('${Directory.current.path}/../orbis');
+      final root = Directory(p.normalize(p.join(Directory.current.path, '..', 'orbis')));
       if (!root.existsSync()) {
         setState(() => _progress = 'no engine repository beside this one');
         return;
@@ -582,8 +582,8 @@ class _Panel extends StatelessWidget {
 }
 
 /// What to say where the renderer cannot run.
-class _OnlyOnMac extends StatelessWidget {
-  const _OnlyOnMac();
+class _RendererUnavailable extends StatelessWidget {
+  const _RendererUnavailable();
 
   @override
   Widget build(BuildContext context) {
@@ -599,7 +599,7 @@ class _OnlyOnMac extends StatelessWidget {
                   size: 26, color: OrbisColors.inkDim),
               const SizedBox(height: Space.md),
               Text(
-                'The renderer draws on macOS only so far.\n'
+                '$rendererUnavailableMessage\n'
                 'The settings and the code are still here.',
                 textAlign: TextAlign.center,
                 style: OrbisText.caption,

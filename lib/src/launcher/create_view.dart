@@ -4,6 +4,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
+import '../platform/host_paths.dart';
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'project.dart';
@@ -34,7 +35,7 @@ class _CreateViewState extends State<CreateView> {
     // Defaults somewhere real rather than empty, so the common case is one
     // click. Documents rather than home: a project is a document.
     text: p.join(
-      Platform.environment['HOME'] ?? Directory.current.path,
+      homeDirectory() ?? Directory.current.path,
       'Documents',
       'Orbis',
     ),

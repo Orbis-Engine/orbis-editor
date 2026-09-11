@@ -93,12 +93,26 @@ class CodeEditor {
   /// The fallback for somebody with no editor installed, and useful on its
   /// own: a project is a folder, and sometimes the answer is to look at it.
   static String? reveal(String path) {
-    if (!Directory(path).existsSync() && !File(path).existsSync()) {
+    final isDirectory = Directory(path).existsSync();
+    if (!isDirectory && !File(path).existsSync()) {
       return 'That is not there any more.';
     }
-    final command = Platform.isMacOS
-        ? 'open'
-        : (Platform.isWindows ? 'explorer' : 'xdg-open');
+
+    if (Platform.isWindows) {
+      // Explorer opens a folder given straight to it, but given a file it
+      // launches that file's own default application instead of showing the
+      // folder it is in — there is no one Explorer invocation that means
+      // "reveal" for both, so which command runs depends on what this is.
+      // The empty "" before the path is `start`'s own quirk: its first
+      // quoted argument is read as a window title, and without one there a
+      // path containing spaces would be read as the title instead.
+      final ok = isDirectory
+          ? _run('explorer', [path])
+          : _run('cmd', ['/c', 'start', '""', path]);
+      return ok ? null : 'Could not open $path.';
+    }
+
+    final command = Platform.isMacOS ? 'open' : 'xdg-open';
     return _run(command, [path]) ? null : 'Could not open $path.';
   }
 

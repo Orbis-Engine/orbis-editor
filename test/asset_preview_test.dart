@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orbis_editor/src/editor/asset_browser.dart';
@@ -79,10 +80,34 @@ void main() {
     return (camera.position - camera.target).length;
   }
 
+  /// A [testWidgets] that runs as though the renderer were available, on
+  /// whatever platform actually decides that: everything here except the
+  /// platform-gate test itself is about what the preview draws once it has a
+  /// renderer to draw with, which on whatever machine runs the suite is not a
+  /// given.
+  ///
+  /// Set and reset with try/finally around the test body, rather than through
+  /// [addTearDown] or the file's own [tearDown]: Flutter checks that a test
+  /// has put every debug-only flag it touched back the way it found it
+  /// *before* either of those run, so resetting there is one test too late.
+  void testWidgetsWithRenderer(
+    String description,
+    Future<void> Function(WidgetTester tester) body, {
+    TargetPlatform platform = TargetPlatform.macOS,
+  }) {
+    testWidgets(description, (tester) async {
+      debugDefaultTargetPlatformOverride = platform;
+      try {
+        await body(tester);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  }
+
   group('the asset preview', () {
-    testWidgets('draws a model by pointing the renderer at the file', (
-      tester,
-    ) async {
+    testWidgetsWithRenderer(
+        'draws a model by pointing the renderer at the file', (tester) async {
       final path = p.join(root.path, 'barrel.gltf');
       File(path).writeAsStringSync(_gltf(0.5));
 
@@ -96,7 +121,8 @@ void main() {
       expect(view.scene!.objects.single.mesh, path);
     });
 
-    testWidgets('frames a model by the size it declares', (tester) async {
+    testWidgetsWithRenderer('frames a model by the size it declares',
+        (tester) async {
       // The thing that makes a preview usable rather than decorative. A fixed
       // camera puts a door frame inside the lens and a doorknob in the far
       // distance, and both read as the renderer being broken.
@@ -119,9 +145,9 @@ void main() {
       );
     });
 
-    testWidgets('a model that will not say how big it is still opens', (
-      tester,
-    ) async {
+    testWidgetsWithRenderer(
+        'a model that will not say how big it is still opens',
+        (tester) async {
       // An .obj declares nothing about its extent without being decoded. It
       // gets a sensible distance and a camera somebody can move, which is
       // honest — a confident guess at the wrong scale is worse.
@@ -134,9 +160,9 @@ void main() {
       expect(find.byType(OrbisView), findsOneWidget);
     });
 
-    testWidgets('shows a texture as itself, at the file it came from', (
-      tester,
-    ) async {
+    testWidgetsWithRenderer(
+        'shows a texture as itself, at the file it came from',
+        (tester) async {
       final path = p.join(root.path, 'colormap.png');
       File(path).writeAsBytesSync(_png);
 
@@ -157,7 +183,26 @@ void main() {
       );
     });
 
-    testWidgets('says what a file it cannot draw is', (tester) async {
+    testWidgetsWithRenderer(
+      'off the platforms the renderer runs on, it says so rather than '
+      'drawing nothing',
+      (tester) async {
+        File(p.join(root.path, 'barrel.gltf')).writeAsStringSync(_gltf(0.5));
+
+        await show(tester);
+        await select(tester, 'barrel.gltf');
+
+        expect(find.byType(OrbisView), findsNothing);
+        expect(
+          find.textContaining('not available on this platform'),
+          findsOneWidget,
+        );
+      },
+      platform: TargetPlatform.windows,
+    );
+
+    testWidgetsWithRenderer('says what a file it cannot draw is',
+        (tester) async {
       File(p.join(root.path, 'player.ts')).writeAsStringSync('export {}');
 
       await show(tester);
@@ -169,7 +214,8 @@ void main() {
       expect(find.textContaining(AssetKind.script.label), findsWidgets);
     });
 
-    testWidgets('can be shut, for a narrow window', (tester) async {
+    testWidgetsWithRenderer('can be shut, for a narrow window',
+        (tester) async {
       File(p.join(root.path, 'barrel.gltf')).writeAsStringSync(_gltf(0.5));
 
       await show(tester);

@@ -77,13 +77,17 @@ void main() {
       expect(code.data, engineExamples().first.code.trim());
     });
 
-    testWidgets('off macOS it says so and still shows the code',
+    testWidgets(
+        'where the renderer cannot run it says so and still shows the code',
         (tester) async {
-      // The renderer draws on macOS only so far; a blank panel would read as
-      // a broken editor rather than an unsupported platform.
+      // The renderer is not ported everywhere yet; a blank panel would read
+      // as a broken editor rather than an unsupported platform.
       await show(tester);
 
-      expect(find.textContaining('macOS only'), findsOneWidget);
+      expect(
+        find.textContaining('not available on this platform'),
+        findsOneWidget,
+      );
       expect(find.byType(SelectableText), findsOneWidget);
     });
 
