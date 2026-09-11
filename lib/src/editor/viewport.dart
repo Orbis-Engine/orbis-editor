@@ -1,6 +1,5 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -10,6 +9,7 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'drawing.dart';
@@ -1333,8 +1333,7 @@ class _SceneViewportState extends State<SceneViewport>
     };
   }
 
-  bool get _rendererAvailable =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+  bool get _rendererAvailable => rendererAvailable;
 
   /// What is on screen.
   String get _summary {
@@ -1915,8 +1914,7 @@ class _Placeholder extends StatelessWidget {
               const SizedBox(height: Space.md),
               Text('Viewport', style: OrbisText.label),
               const SizedBox(height: Space.xs),
-              Text('The renderer runs on macOS so far.',
-                  style: OrbisText.caption),
+              Text(rendererUnavailableMessage, style: OrbisText.caption),
             ],
           ),
         ),
