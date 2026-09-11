@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../platform/command_shortcuts.dart';
 import '../theme/orbis_theme.dart';
 import 'scene.dart';
 import 'workspace.dart';
@@ -210,15 +211,10 @@ class _OutlinerState extends State<Outliner> {
                   collapsed: _collapsed.contains(key),
                   onTap: () {
                     if (row.object != null) {
-                      final keys = HardwareKeyboard.instance.logicalKeysPressed;
                       widget.onSelect(
                         row.object!.id,
-                        additive: keys.contains(LogicalKeyboardKey.metaLeft) ||
-                            keys.contains(LogicalKeyboardKey.metaRight) ||
-                            keys.contains(LogicalKeyboardKey.controlLeft) ||
-                            keys.contains(LogicalKeyboardKey.controlRight),
-                        range: keys.contains(LogicalKeyboardKey.shiftLeft) ||
-                            keys.contains(LogicalKeyboardKey.shiftRight),
+                        additive: isCommandModifierPressed,
+                        range: HardwareKeyboard.instance.isShiftPressed,
                       );
                       return;
                     }

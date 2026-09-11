@@ -9,6 +9,7 @@ import 'package:orbis_editor/src/launcher/project.dart';
 import 'package:orbis_editor/src/editor/scene.dart';
 import 'package:orbis_editor/src/editor/uv_panel.dart';
 import 'package:orbis_editor/src/editor/viewport.dart';
+import 'package:orbis_editor/src/platform/command_shortcuts.dart';
 import 'package:orbis_editor/src/theme/orbis_theme.dart';
 import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
@@ -168,9 +169,9 @@ void main() {
     final moved = shapeIn(tester).currentMesh!;
     expect(moved.uvsOf(moved.faces[0]).first.x, closeTo(before + 0.4, 1e-9));
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyUpEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.pumpAndSettle();
 
     final back = shapeIn(tester).currentMesh!;
@@ -195,9 +196,9 @@ void main() {
     final box = fitted.uvBoundsOf(fitted.faces.take(2))!;
     expect(box.min.x, closeTo(0, 1e-9));
 
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyUpEvent((commandIsMeta ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft));
     await tester.pumpAndSettle();
 
     // Back to the projection, not back to the beginning.

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
 
 import '../launcher/project.dart';
+import '../platform/command_shortcuts.dart';
 import '../theme/orbis_theme.dart';
 import '../widgets/controls.dart';
 import 'asset_browser.dart';
@@ -1759,8 +1760,11 @@ class _EditorShellState extends State<EditorShell> {
 
     final first = fresh.first;
     // A path is worth shortening to its file name; a subject like "too many
-    // lights" is not a path and is left as it is.
-    final subject = first.key.contains('/') ? p.basename(first.key) : null;
+    // lights" is not a path and is left as it is. p.basename leaves a bare
+    // word alone (its own basename), so comparing against the original
+    // tells the two apart without assuming '/' is the separator in use.
+    final basename = p.basename(first.key);
+    final subject = basename != first.key ? basename : null;
     _say(
       fresh.length == 1
           ? (subject == null ? first.value : '$subject: ${first.value}')
@@ -2694,11 +2698,14 @@ class _EditorShellState extends State<EditorShell> {
 
     return Shortcuts(
       shortcuts: {
-        SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _UndoIntent(),
-        SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true):
-            _RedoIntent(),
-        SingleActivator(LogicalKeyboardKey.keyZ, control: true): _UndoIntent(),
-        SingleActivator(LogicalKeyboardKey.keyY, control: true): _RedoIntent(),
+        commandShortcut(LogicalKeyboardKey.keyZ): _UndoIntent(),
+        commandShortcut(LogicalKeyboardKey.keyZ, shift: true): _RedoIntent(),
+        // Windows and Linux both also expect Ctrl+Y for redo, alongside the
+        // Ctrl+Shift+Z that commandShortcut above already binds; macOS has no
+        // second convention to match.
+        if (!commandIsMeta)
+          const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+              _RedoIntent(),
         const SingleActivator(LogicalKeyboardKey.delete): _DeleteIntent(),
         const SingleActivator(LogicalKeyboardKey.backspace): _DeleteIntent(),
         const SingleActivator(LogicalKeyboardKey.keyF): _FrameIntent(),
@@ -2721,30 +2728,13 @@ class _EditorShellState extends State<EditorShell> {
         // is where things are arranged; shift takes them up and down, and
         // holding option does ten at once.
         ..._nudges,
-        const SingleActivator(LogicalKeyboardKey.keyS, meta: true):
-            _SaveIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyS, control: true):
-            _SaveIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyS, meta: true, shift: true):
-            _SaveAsIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
-            _NewSceneIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyC, meta: true):
-            _CopyIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyX, meta: true):
-            _CutIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
-            _PasteIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyD, meta: true):
-            _DuplicateIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyC, control: true):
-            _CopyIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyX, control: true):
-            _CutIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
-            _PasteIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyD, control: true):
-            _DuplicateIntent(),
+        commandShortcut(LogicalKeyboardKey.keyS): _SaveIntent(),
+        commandShortcut(LogicalKeyboardKey.keyS, shift: true): _SaveAsIntent(),
+        commandShortcut(LogicalKeyboardKey.keyN): _NewSceneIntent(),
+        commandShortcut(LogicalKeyboardKey.keyC): _CopyIntent(),
+        commandShortcut(LogicalKeyboardKey.keyX): _CutIntent(),
+        commandShortcut(LogicalKeyboardKey.keyV): _PasteIntent(),
+        commandShortcut(LogicalKeyboardKey.keyD): _DuplicateIntent(),
       },
       child: Actions(
         actions: {
@@ -3449,25 +3439,25 @@ class _EditMenu extends StatelessWidget {
       menuChildren: [
         _item(
           selectionCount > 1 ? 'Cut $selectionCount objects' : 'Cut',
-          '⌘X',
+          commandShortcutLabel('X'),
           Icons.content_cut,
           selectionCount > 0 ? onCut : null,
         ),
         _item(
           selectionCount > 1 ? 'Copy $selectionCount objects' : 'Copy',
-          '⌘C',
+          commandShortcutLabel('C'),
           Icons.content_copy,
           selectionCount > 0 ? onCopy : null,
         ),
         _item(
           clipboard.isEmpty ? 'Paste' : 'Paste $clipboard',
-          '⌘V',
+          commandShortcutLabel('V'),
           Icons.content_paste,
           onPaste,
         ),
         _item(
           'Duplicate',
-          '⌘D',
+          commandShortcutLabel('D'),
           Icons.copy_all,
           selectionCount > 0 ? onDuplicate : null,
         ),

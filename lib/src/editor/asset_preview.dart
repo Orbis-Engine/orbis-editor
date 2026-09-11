@@ -9,6 +9,7 @@ import 'package:orbis_mesh/orbis_mesh.dart' show boundsOfGlb, boundsOfGltf;
 import 'package:path/path.dart' as p;
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 import 'assets.dart';
 
@@ -137,6 +138,12 @@ class _AssetPreviewState extends State<AssetPreview>
     if (_Picture.decodable(asset)) return _Picture(asset: asset);
     if (asset.kind != AssetKind.mesh) {
       return _Empty.forKind(asset.kind);
+    }
+    // Ported alongside the rest of the editor, not yet alongside the
+    // renderer itself: this panel draws a mesh by asking Filament for it, so
+    // it can do no more than the viewport can, here.
+    if (!rendererAvailable) {
+      return const _Empty(rendererUnavailableMessage, icon: Icons.view_in_ar_outlined);
     }
     return _model(asset);
   }

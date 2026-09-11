@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:orbis_filament/orbis_filament.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 import 'scene.dart';
 import 'ui_canvas.dart';
@@ -52,8 +52,7 @@ class GameView extends StatelessWidget {
   /// that is selected and therefore obviously there.
   final bool plain;
 
-  static bool get _rendererAvailable =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+  static bool get _rendererAvailable => rendererAvailable;
 
   /// The first camera object in the scene, or null.
   ///
@@ -117,7 +116,7 @@ class GameView extends StatelessWidget {
       children: [
         Positioned.fill(
           child: !_rendererAvailable
-              ? const _Nothing(saying: 'The renderer runs on macOS so far.')
+              ? const _Nothing(saying: rendererUnavailableMessage)
               : OrbisView(
                   scene: scene.toRenderScene(
                     camera,

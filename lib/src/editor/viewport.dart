@@ -1,6 +1,5 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -10,6 +9,8 @@ import 'package:orbis_mesh/orbis_mesh.dart';
 import 'package:orbis_ui/orbis_ui.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
+import '../platform/command_shortcuts.dart';
+import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
 import 'commands.dart';
 import 'drawing.dart';
@@ -536,6 +537,13 @@ class _SceneViewportState extends State<SceneViewport>
   /// Held down suspends it rather than switching it on, because somebody who
   /// wants a shelf half a millimetre off wants it for one drag and not for
   /// the afternoon.
+  ///
+  /// Deliberately plain Control on every platform rather than routed through
+  /// [isCommandModifierPressed]: this is not a Command shortcut standing in
+  /// for macOS's Meta, it is Control itself, chosen because it sits under the
+  /// same hand as the drag. It does not collide with Control becoming the
+  /// Command modifier off macOS — the two are read at different moments, a
+  /// held key during a drag against a held key when a drag or a click starts.
   Snapping get _snap {
     final held = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isAltPressed;
@@ -595,14 +603,10 @@ class _SceneViewportState extends State<SceneViewport>
               boundsOf: widget.models?.of,
             );
 
-    final modifiers = {
-      LogicalKeyboardKey.shiftLeft,
-      LogicalKeyboardKey.shiftRight,
-      LogicalKeyboardKey.metaLeft,
-      LogicalKeyboardKey.metaRight,
-    };
-    final held = HardwareKeyboard.instance.logicalKeysPressed
-        .any(modifiers.contains);
+    // Command adds to the selection on macOS, Control everywhere else; Shift
+    // does the same on every platform, so it is checked alongside either.
+    final held =
+        HardwareKeyboard.instance.isShiftPressed || isCommandModifierPressed;
 
     widget.onPick?.call(hit, add: held);
   }
@@ -1333,8 +1337,7 @@ class _SceneViewportState extends State<SceneViewport>
     };
   }
 
-  bool get _rendererAvailable =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+  bool get _rendererAvailable => rendererAvailable;
 
   /// What is on screen.
   String get _summary {
@@ -1750,7 +1753,7 @@ class _SceneViewportState extends State<SceneViewport>
           if (widget.editing != null) {
             widget.onPickElement?.call(
               _elementAt(details.localPosition),
-              add: HardwareKeyboard.instance.isMetaPressed ||
+              add: isCommandModifierPressed ||
                   HardwareKeyboard.instance.isShiftPressed,
             );
             return;
@@ -1800,7 +1803,7 @@ class _SceneViewportState extends State<SceneViewport>
         },
         onPanEnd: (_) {
           if (_boxFrom != null) {
-            _takeBox(HardwareKeyboard.instance.isMetaPressed ||
+            _takeBox(isCommandModifierPressed ||
                 HardwareKeyboard.instance.isShiftPressed);
             setState(() {
               _boxFrom = null;
@@ -1915,8 +1918,7 @@ class _Placeholder extends StatelessWidget {
               const SizedBox(height: Space.md),
               Text('Viewport', style: OrbisText.label),
               const SizedBox(height: Space.xs),
-              Text('The renderer runs on macOS so far.',
-                  style: OrbisText.caption),
+              Text(rendererUnavailableMessage, style: OrbisText.caption),
             ],
           ),
         ),

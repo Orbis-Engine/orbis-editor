@@ -219,13 +219,21 @@ class AssetTree {
     return found;
   }
 
-  /// Where a path sits relative to the project, for the breadcrumb.
+  /// Where a path sits relative to the project, for the breadcrumb — and for
+  /// the asset references written into scene files, which is why this
+  /// always answers with `/` regardless of the host's own separator.
+  ///
+  /// A scene file is meant to open on whichever platform somebody has the
+  /// project on, and a Windows path here would not: Windows reads a forward
+  /// slash in a path perfectly well, but macOS and Linux do not read a
+  /// backslash as a separator at all, only as an ordinary character in a
+  /// single, wrong, file name.
   ///
   /// Anything outside the project comes back as its own path rather than a
   /// string of `..` segments, which would be both ugly and a sign of a bug.
   String relative(String path) {
     if (!p.isWithin(root, path)) return p.equals(root, path) ? '' : path;
-    return p.relative(path, from: root);
+    return p.posix.joinAll(p.split(p.relative(path, from: root)));
   }
 
   /// Deletes a file or a folder and everything in it.
