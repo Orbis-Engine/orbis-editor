@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:orbis_examples/orbis_examples.dart';
 import 'package:orbis_filament/orbis_filament.dart';
+import 'package:path/path.dart' as p;
 
 import '../platform/renderer_support.dart';
 import '../theme/orbis_theme.dart';
@@ -211,7 +212,7 @@ class _ExamplesViewState extends State<ExamplesView>
       // The engine repository, which is where the fetch scripts live and what
       // their paths are relative to. Beside this one, in the same way the
       // examples already find their assets.
-      final root = Directory('${Directory.current.path}/../orbis');
+      final root = Directory(p.normalize(p.join(Directory.current.path, '..', 'orbis')));
       if (!root.existsSync()) {
         setState(() => _progress = 'no engine repository beside this one');
         return;

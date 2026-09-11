@@ -103,6 +103,18 @@ void main() {
       final outside = p.join(root.path, 'assets');
       expect(tree.relative(outside), outside);
     });
+
+    test('always uses "/", not whatever this host does', () {
+      // Written a segment at a time and joined literally with '/', rather
+      // than with p.join (which would use this host's own separator and
+      // pass the test here regardless of which separator relative() had
+      // actually used) — a scene file is meant to open on whichever platform
+      // somebody has the project on, and a backslash only means something on
+      // one of them.
+      final tree = AssetTree(root.path);
+      final nested = p.join(root.path, 'assets', 'meshes');
+      expect(tree.relative(nested), 'assets/meshes');
+    });
   });
 
   group('watching', () {

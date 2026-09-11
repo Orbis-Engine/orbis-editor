@@ -1760,8 +1760,11 @@ class _EditorShellState extends State<EditorShell> {
 
     final first = fresh.first;
     // A path is worth shortening to its file name; a subject like "too many
-    // lights" is not a path and is left as it is.
-    final subject = first.key.contains('/') ? p.basename(first.key) : null;
+    // lights" is not a path and is left as it is. p.basename leaves a bare
+    // word alone (its own basename), so comparing against the original
+    // tells the two apart without assuming '/' is the separator in use.
+    final basename = p.basename(first.key);
+    final subject = basename != first.key ? basename : null;
     _say(
       fresh.length == 1
           ? (subject == null ? first.value : '$subject: ${first.value}')
